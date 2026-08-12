@@ -349,6 +349,10 @@
   background: var(--danger-strong);
 }
 
+.settings-heartbeat-value.warn .settings-heartbeat-dot {
+  background: var(--warn-strong);
+}
+
 .settings-test-btn {
   margin-top: 20px;
   width: 100%;

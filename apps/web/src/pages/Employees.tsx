@@ -58,7 +58,7 @@ export default function Employees() {
   const [form, setForm] = useState<EmployeeFormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
-  const [deptModalOpen, setDeptModalOpen] = useState(searchParams.get("dept") === "open");
+  const [deptModalOpen, setDeptModalOpen] = useState(searchParams.get("dept") === "open" && isAdmin);
   const [toast, setToast] = useState<ToastState>(null);
 
   async function loadAll() {

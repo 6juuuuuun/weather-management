@@ -190,33 +190,37 @@ export default function Settings() {
     setSaving(true);
     try {
       const now = new Date().toISOString();
-      const alertUpserts = KIND_ORDER.map((kind) => {
-        const s = alertSettings[kind];
-        return {
-          kind: s.kind,
-          enabled: s.enabled,
-          repeat_policy: s.repeat_policy,
-          repeat_accum_threshold: s.repeat_accum_threshold,
-          heat_repeat_basis: s.heat_repeat_basis,
+      // alert_settings는 시드로 4행이 항상 존재하므로 upsert(insert 권한 필요) 대신
+      // kind별 update를 사용한다 — RLS는 admin에게 update만 허용하고 insert는 막혀 있다.
+      const alertResults = await Promise.all(
+        KIND_ORDER.map((kind) => {
+          const s = alertSettings[kind];
+          return supabase
+            .from("alert_settings")
+            .update({
+              enabled: s.enabled,
+              repeat_policy: s.repeat_policy,
+              repeat_accum_threshold: s.repeat_accum_threshold,
+              heat_repeat_basis: s.heat_repeat_basis,
+              updated_at: now,
+            })
+            .eq("kind", kind);
+        }),
+      );
+      const siteRes = await supabase
+        .from("site_settings")
+        .update({
+          address: siteSettings.address,
+          nx: siteSettings.nx,
+          ny: siteSettings.ny,
+          remind_interval_min: siteSettings.remind_interval_min,
+          resolve_notice: siteSettings.resolve_notice,
           updated_at: now,
-        };
-      });
-      const [alertRes, siteRes] = await Promise.all([
-        supabase.from("alert_settings").upsert(alertUpserts, { onConflict: "kind" }),
-        supabase
-          .from("site_settings")
-          .update({
-            address: siteSettings.address,
-            nx: siteSettings.nx,
-            ny: siteSettings.ny,
-            remind_interval_min: siteSettings.remind_interval_min,
-            resolve_notice: siteSettings.resolve_notice,
-            updated_at: now,
-          })
-          .eq("id", 1),
-      ]);
-      if (alertRes.error || siteRes.error) {
-        throw alertRes.error ?? siteRes.error;
+        })
+        .eq("id", 1);
+      const firstAlertError = alertResults.find((r) => r.error)?.error;
+      if (firstAlertError || siteRes.error) {
+        throw firstAlertError ?? siteRes.error;
       }
       setToast({ kind: "ok", message: "변경사항이 저장되었습니다" });
     } catch (err) {
@@ -452,22 +456,24 @@ export default function Settings() {
             </div>
             <div className="settings-heartbeat-row">
               <span>수집 결측</span>
-              <span className="settings-heartbeat-value ok">
+              <span className={`settings-heartbeat-value ${missing24h > 0 ? "warn" : "ok"}`}>
                 <span className="settings-heartbeat-dot" aria-hidden="true" />
                 최근 24시간 {missing24h}회
               </span>
             </div>
-            <button
-              type="button"
-              className="settings-test-btn"
-              onClick={handleSendTest}
-              disabled={sendingTest}
-            >
-              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M4 12 20 4 13 20l-2-7-7-1Z" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              {sendingTest ? "발송 중…" : "나에게 테스트 메시지 보내기"}
-            </button>
+            {isAdmin && (
+              <button
+                type="button"
+                className="settings-test-btn"
+                onClick={handleSendTest}
+                disabled={sendingTest}
+              >
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M4 12 20 4 13 20l-2-7-7-1Z" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                {sendingTest ? "발송 중…" : "나에게 테스트 메시지 보내기"}
+              </button>
+            )}
           </section>
         </div>
       </div>
