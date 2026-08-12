@@ -1,0 +1,344 @@
+/* 날씨경영 — 발송 이력 (design/previews/04-history.png 기준, tokens.css 값만 사용) */
+
+.history-lead {
+  margin: 0 0 24px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--ink-muted-48);
+}
+
+.history-error {
+  margin: 0 0 16px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--danger);
+}
+
+/* ---------- Filters ---------- */
+.history-filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.history-search {
+  position: relative;
+  flex: 1 1 320px;
+  min-width: 220px;
+}
+
+.history-search-icon {
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  stroke: var(--ink-muted-48);
+  pointer-events: none;
+}
+
+.history-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 16px 11px 42px;
+  border-radius: 9999px;
+  border: 1px solid var(--hairline);
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+}
+
+.history-search input:focus {
+  outline: none;
+  border-color: var(--primary-focus);
+}
+
+.history-select {
+  flex-shrink: 0;
+}
+
+.history-select select {
+  appearance: none;
+  padding: 11px 32px 11px 16px;
+  border-radius: 9999px;
+  border: 1px solid var(--hairline);
+  background: var(--canvas)
+    url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237a7a7a' stroke-width='1.5'%3E%3Cpath d='M6 9l6 6 6-6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    no-repeat right 12px center;
+  background-size: 14px;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.history-select select:focus {
+  outline: none;
+  border-color: var(--primary-focus);
+}
+
+/* ---------- Table ---------- */
+.history-table-wrap {
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.history-table thead th {
+  text-align: left;
+  padding: 16px 20px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink-muted-48);
+  border-bottom: 1px solid var(--hairline);
+  white-space: nowrap;
+}
+
+.history-table tbody td {
+  padding: 16px 20px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink);
+  border-bottom: 1px solid var(--divider-soft);
+  white-space: nowrap;
+}
+
+.history-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.history-row {
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.history-row:hover {
+  background: var(--parchment);
+}
+
+.col-kind {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.history-kind-label {
+  font-weight: 600;
+}
+
+.col-recipients {
+  color: var(--ink-muted-80);
+  white-space: normal;
+}
+
+.col-action {
+  text-align: right;
+}
+
+.history-resend-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 9999px;
+  border: 1px solid var(--primary-focus);
+  background: transparent;
+  color: var(--primary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.history-resend-btn:hover {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+.history-resend-btn svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+}
+
+/* ---------- Pagination ---------- */
+.history-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  gap: 16px;
+}
+
+.history-pagination-count {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--ink-muted-48);
+}
+
+.history-pagination-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.history-page-btn {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted-80);
+  font-family: var(--font-num);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.history-page-btn:hover:not(:disabled) {
+  background: var(--parchment);
+}
+
+.history-page-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.history-page-btn-active {
+  background: var(--ink);
+  color: var(--canvas);
+  font-weight: 600;
+}
+
+/* ---------- Footnote ---------- */
+.history-footnote {
+  margin: 16px 4px 0;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--ink-muted-48);
+}
+
+/* ---------- Modal block view ---------- */
+.history-block-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.history-block {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-ctl);
+  padding: 16px;
+}
+
+.history-block-off {
+  opacity: 0.5;
+}
+
+.history-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.history-block-dept {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.history-block-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.history-block-actions {
+  margin: 0;
+  padding-left: 18px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink-muted-80);
+}
+
+.history-block-notice {
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--parchment);
+  border-radius: var(--radius-ctl);
+}
+
+.history-block-notice-label {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary);
+  margin-bottom: 4px;
+}
+
+.history-block-notice p {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.history-block-notice-edit {
+  margin-top: 10px;
+}
+
+.history-block-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-ctl);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink);
+  resize: vertical;
+}
+
+.history-block-textarea:focus {
+  outline: none;
+  border-color: var(--primary-focus);
+}
+
+.history-block-recipients {
+  margin-top: 10px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--ink-muted-48);
+}
+
+@media (max-width: 900px) {
+  .history-table-wrap {
+    overflow-x: auto;
+  }
+
+  .history-table {
+    min-width: 860px;
+  }
+}
