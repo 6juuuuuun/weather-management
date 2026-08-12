@@ -41,8 +41,11 @@ Deno.serve(async (req) => {
     }
 
     const db = serviceClient();
-    const role = profile.email === env("ADMIN_KAKAOWORK_ID") ? "admin" : "staff";
     const { data: existing } = await db.from("employees").select("*").eq("email", profile.email).maybeSingle();
+    // ADMIN_KAKAOWORK_ID와 일치하면 기존 사용자 여부와 무관하게 항상 admin을 보장한다(강등은 하지 않음 —
+    // 일치하지 않는 기존 사용자는 기존 role 유지). env 설정 전/오타 상태로 먼저 가입해 staff로 굳어진 뒤
+    // env를 바로잡아도 영원히 staff로 남아 admin이 0명인 교착을 방지하기 위한 스펙 오너 판정.
+    const role = profile.email === env("ADMIN_KAKAOWORK_ID") ? "admin" : (existing?.role ?? "staff");
     let authUserId = existing?.auth_user_id;
     if (!authUserId) {
       const { data: created } = await db.auth.admin.createUser({
@@ -53,7 +56,7 @@ Deno.serve(async (req) => {
       email: profile.email, auth_user_id: authUserId,
       name: existing?.name ?? profile.name ?? profile.email,
       kakaowork_user_id: profile.user_id,
-      role: existing?.role ?? role,
+      role,
       department_id: existing?.department_id ?? null,
     }, { onConflict: "email" });
 

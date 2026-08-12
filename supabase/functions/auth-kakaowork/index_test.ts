@@ -48,3 +48,22 @@ Deno.test("callback: ADMIN_KAKAOWORK_ID와 일치하면 admin", async () => {
 
   await cleanup(db, "boss@t.co");
 });
+
+Deno.test("callback: 기존에 staff로 가입된 ADMIN_KAKAOWORK_ID 사용자는 재로그인 시 admin으로 승격", async () => {
+  const db = serviceClient();
+  await cleanup(db, "boss@t.co");
+  // env 미설정/오타 상태에서 먼저 staff로 가입해 굳어진 상황을 재현
+  await db.from("employees").insert({
+    name: "boss@t.co", email: "boss@t.co", kakaowork_user_id: "kw-boss-preexisting", role: "staff",
+  });
+
+  const res = await fetch(`${FN}?action=callback&code=x&mock_email=boss@t.co`, { redirect: "manual" });
+  assertEquals(res.status, 302);
+  const loc = res.headers.get("location")!;
+  assertEquals(loc.includes("token_hash="), true);
+
+  const { data: emp } = await db.from("employees").select("*").eq("email", "boss@t.co").single();
+  assertEquals(emp.role, "admin");
+
+  await cleanup(db, "boss@t.co");
+});
