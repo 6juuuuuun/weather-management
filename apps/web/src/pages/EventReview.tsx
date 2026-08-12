@@ -47,18 +47,21 @@ const STATUS_CLASS: Record<EventStatus, string> = {
 };
 
 type NumericObsKey = "rain_mm_per_hr" | "temp_c" | "wind_ms" | "humidity_pct" | "snow_new_cm" | "feels_c";
-type MetricDef = { key: NumericObsKey; label: string; unit: string };
+// "daily_accum"은 관측 1건의 필드가 아니라 KST 자정 이후 합산값(판정 엔진의
+// todayAccums와 동일 로직, supabase/functions/_shared/db.ts 참조)으로 별도 계산한다.
+type MetricSource = NumericObsKey | "daily_accum";
+type MetricDef = { key: MetricSource; label: string; unit: string };
 
 const KIND_METRICS: Record<Kind, MetricDef[]> = {
   rain: [
     { key: "rain_mm_per_hr", label: "시간당 강수량", unit: "mm" },
+    { key: "daily_accum", label: "일 누적", unit: "mm" },
     { key: "wind_ms", label: "풍속", unit: "m/s" },
-    { key: "humidity_pct", label: "습도", unit: "%" },
   ],
   snow: [
     { key: "snow_new_cm", label: "신적설", unit: "cm" },
+    { key: "daily_accum", label: "일 누적", unit: "cm" },
     { key: "temp_c", label: "기온", unit: "℃" },
-    { key: "wind_ms", label: "풍속", unit: "m/s" },
   ],
   wind: [
     { key: "wind_ms", label: "풍속", unit: "m/s" },
@@ -71,6 +74,18 @@ const KIND_METRICS: Record<Kind, MetricDef[]> = {
     { key: "humidity_pct", label: "습도", unit: "%" },
   ],
 };
+
+// 판정 엔진(supabase/functions/_shared/db.ts의 todayAccums)과 동일 기준: KST 자정 이후 합산
+const DAILY_ACCUM_FIELD: Partial<Record<Kind, "rain_mm_per_hr" | "snow_new_cm">> = {
+  rain: "rain_mm_per_hr",
+  snow: "snow_new_cm",
+};
+
+function kstMidnightISO(now: Date): string {
+  const kst = new Date(now.getTime() + 9 * 3600_000);
+  const midnightKst = new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - 9 * 3600_000);
+  return midnightKst.toISOString();
+}
 
 const TRIGGER_THRESHOLD_KEY: Record<Kind, string> = {
   rain: "rain_mm_per_hr",
@@ -277,6 +292,7 @@ export default function EventReview() {
   const [messageId, setMessageId] = useState<string | null>(null);
   const [content, setContent] = useState<DeptBlock[]>([]);
   const [observation, setObservation] = useState<WeatherObservation | null>(null);
+  const [dailyAccum, setDailyAccum] = useState<number | null>(null);
   const [criteria, setCriteria] = useState<WeatherCriteria | null>(null);
   const [alertSetting, setAlertSetting] = useState<AlertSetting | null>(null);
   const [candidatesByDept, setCandidatesByDept] = useState<Record<string, CandidateRecipient[]>>({});
@@ -316,17 +332,32 @@ export default function EventReview() {
       setMessageId(msg.id);
       setContent(msg.content ?? []);
 
-      const [obsRes, criteriaRes, alertRes] = await Promise.all([
+      const accumField = DAILY_ACCUM_FIELD[ev.kind];
+      const [obsRes, criteriaRes, alertRes, accumRes] = await Promise.all([
         ev.trigger_observation_id
           ? supabase.from("weather_observations").select("*").eq("id", ev.trigger_observation_id).single()
           : Promise.resolve({ data: null }),
         supabase.from("weather_criteria").select("*").eq("kind", ev.kind).eq("grade", ev.grade).single(),
         supabase.from("alert_settings").select("*").eq("kind", ev.kind).single(),
+        accumField
+          ? supabase
+              .from("weather_observations")
+              .select(accumField)
+              .gte("observed_at", kstMidnightISO(new Date()))
+              .eq("missing", false)
+          : Promise.resolve({ data: null }),
       ]);
       if (!active) return;
       setObservation((obsRes.data as WeatherObservation | null) ?? null);
       setCriteria((criteriaRes.data as WeatherCriteria | null) ?? null);
       setAlertSetting((alertRes.data as AlertSetting | null) ?? null);
+
+      if (accumField) {
+        const rows = (accumRes.data ?? []) as Record<string, number | null>[];
+        setDailyAccum(rows.length === 0 ? null : rows.reduce((sum, r) => sum + Number(r[accumField] ?? 0), 0));
+      } else {
+        setDailyAccum(null);
+      }
 
       const deptIds = [...new Set((msg.content ?? []).map((b) => b.department_id))];
       if (deptIds.length > 0) {
@@ -485,7 +516,7 @@ export default function EventReview() {
   if (event) {
     metaLine = `오늘 ${formatHM(event.detected_at)} 감지`;
     if (observation && primaryMetric) {
-      const obsVal = observation[primaryMetric.key];
+      const obsVal = primaryMetric.key === "daily_accum" ? dailyAccum : observation[primaryMetric.key as NumericObsKey];
       metaLine += ` · 트리거 ${primaryMetric.label} ${formatNum(obsVal)}${primaryMetric.unit}`;
       const thresholdKey = TRIGGER_THRESHOLD_KEY[event.kind];
       const thresholdVal = criteria?.threshold?.[thresholdKey];
@@ -591,7 +622,9 @@ export default function EventReview() {
                     <div key={m.key}>
                       <div className="rail-obs-item-label">{m.label}</div>
                       <div className={`rail-obs-item-value ${idx === 0 ? "rail-obs-highlight" : ""}`}>
-                        {formatNum(observation ? observation[m.key] : null)}
+                        {formatNum(
+                          m.key === "daily_accum" ? dailyAccum : observation ? observation[m.key as NumericObsKey] : null,
+                        )}
                         <span style={{ fontSize: 13, fontWeight: 400, marginLeft: 2 }}>{m.unit}</span>
                       </div>
                     </div>

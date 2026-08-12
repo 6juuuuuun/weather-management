@@ -134,6 +134,7 @@ function makeQuery(result: { data: unknown; error?: unknown }) {
     select: () => q,
     eq: () => q,
     in: () => q,
+    gte: () => q,
     order: () => q,
     update: () => q,
     single: () => q,
@@ -142,17 +143,29 @@ function makeQuery(result: { data: unknown; error?: unknown }) {
   return q;
 }
 
+// weather_observations는 두 번 조회된다: ①트리거 관측 1건(single) ②KST 자정 이후 일 누적 합산(rows).
+// 호출 순서는 EventReview의 Promise.all 배열 순서와 일치시켜야 한다.
+const baseAccumRows = [{ rain_mm_per_hr: 32.5 }, { rain_mm_per_hr: 45.5 }]; // 합계 78.0mm
+
 function setupSupabase(overrides: Partial<Record<string, { data: unknown; error?: unknown }>> = {}) {
   const table: Record<string, { data: unknown; error?: unknown }> = {
     weather_events: { data: baseEvent, error: null },
     messages: { data: baseMessage, error: null },
     weather_observations: { data: baseObservation, error: null },
+    weather_observations_accum: { data: baseAccumRows, error: null },
     weather_criteria: { data: baseCriteria, error: null },
     alert_settings: { data: baseAlertSetting, error: null },
     recipients: { data: [], error: null },
     ...overrides,
   };
-  mocks.fromImpl = (t: string) => makeQuery(table[t] ?? { data: null, error: null });
+  let obsCalls = 0;
+  mocks.fromImpl = (t: string) => {
+    if (t === "weather_observations") {
+      obsCalls += 1;
+      return makeQuery(obsCalls === 1 ? table.weather_observations : table.weather_observations_accum);
+    }
+    return makeQuery(table[t] ?? { data: null, error: null });
+  };
 }
 
 function renderPage() {
@@ -185,6 +198,13 @@ describe("EventReview", () => {
     expect(screen.getByRole("checkbox", { name: "전체 선택" })).toBeInTheDocument();
     expect(screen.getAllByText(/32\.5/).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /승인 및 발송/ })).toBeInTheDocument();
+  });
+
+  it("rain 트리거 카드에 일 누적 강수량(KST 자정 이후 합산)을 표시한다", async () => {
+    renderPage();
+    expect(await screen.findByText("일 누적")).toBeInTheDocument();
+    expect(screen.getAllByText(/78\.0/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/트리거 시간당 강수량 32\.5mm/)).toBeInTheDocument();
   });
 
   it("승인 및 발송이 성공하면 발송 이력으로 이동한다", async () => {
