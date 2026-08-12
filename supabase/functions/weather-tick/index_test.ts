@@ -166,3 +166,38 @@ Deno.test("weather-tick: 해제 — 승인된 메시지 없는 경우(자동 종
 
   await db.from("alert_recipients").delete().eq("employee_id", emp.id);
 });
+
+Deno.test("weather-tick: 3연속 결측 관측 시 admin 전원에게 시스템 알림 + heartbeat ok:false", async () => {
+  const db = serviceClient();
+  await resetEvents(db);
+  // 이 테스트는 관측 시각의 상대적 순서(직전 2시간이 모두 missing)에 의존하므로,
+  // 이전 테스트들이 남긴 weather_observations와 섞이지 않도록 전체 초기화한다.
+  await db.from("weather_observations").delete().neq("id", -1);
+
+  const admin = await upsertEmployee(db, "admin-alert@t.co", "admin-alert-uid", "admin");
+
+  // missing 경로의 observed_at은 벽시계 현재 시각을 시 단위로 절삭한 값이므로,
+  // 동일한 절삭 규칙으로 직전 2시간에 결측 행을 미리 심어둔다.
+  const hourMs = Math.floor(Date.now() / 3_600_000) * 3_600_000;
+  await db.from("weather_observations").insert([
+    { observed_at: new Date(hourMs - 2 * 3_600_000).toISOString(), missing: true, raw: { seed: true } },
+    { observed_at: new Date(hourMs - 1 * 3_600_000).toISOString(), missing: true, raw: { seed: true } },
+  ]);
+
+  // resultCode !== "00" → parseKmaResponse가 throw → 현재 시(3번째)도 missing으로 저장됨
+  const mock = JSON.stringify({ response: { header: { resultCode: "03" } } });
+  const { res, body } = await tick(mock);
+  assertEquals(res.status, 200);
+  assertEquals(body.actions, []);
+
+  const { data: obsRows } = await db.from("weather_observations")
+    .select("missing").order("observed_at", { ascending: false }).limit(3);
+  assertEquals(obsRows?.length, 3);
+  assertEquals(obsRows?.every((r) => r.missing === true), true);
+
+  const { data: hb } = await db.from("heartbeats").select("*").eq("name", "weather-tick").single();
+  assertEquals(hb.ok, false);
+  assertEquals(hb.note, "missing");
+
+  await db.from("employees").delete().eq("id", admin.id);
+});

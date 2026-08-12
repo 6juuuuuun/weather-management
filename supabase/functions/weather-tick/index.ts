@@ -125,6 +125,6 @@ Deno.serve(async (req) => {
     }
   }
 
-  await db.from("heartbeats").upsert({ name:"weather-tick", last_run_at: now.toISOString(), ok:true });
+  await db.from("heartbeats").upsert({ name:"weather-tick", last_run_at: now.toISOString(), ok:true, note:null });
   return Response.json({ ok: true, actions });
 });
