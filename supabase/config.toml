@@ -375,6 +375,10 @@ allow_dynamic_registration = false
 [functions.weather-tick]
 verify_jwt = false
 
+# remind-tick도 pg_cron이 x-cron-secret 헤더로만 호출
+[functions.remind-tick]
+verify_jwt = false
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.
