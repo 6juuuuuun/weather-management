@@ -58,6 +58,11 @@ create policy w_approver on messages for update
 
 -- dispatches: 클라이언트 쓰기 전면 금지 (Edge Function 전용) — insert/update/delete 정책 없음
 
+-- 브리프 외 추가: 로컬 스택에서 authenticated 롤에 테이블 privilege가 없어
+-- RLS 정책 평가 이전에 "permission denied"가 발생 → 테이블 레벨 GRANT 필요.
+-- GRANT는 스펙 매트릭스보다 좁게 스코프됨 (observations/events/heartbeats/dispatches는 select만).
+-- 실제 접근 제어는 RLS 정책이 담당하며, GRANT는 그 전제 조건일 뿐임.
+
 -- 인증된 사용자 기본 권한 (RLS 정책과 함께 작동)
 grant select, update on site_settings to authenticated;
 grant select, update on weather_criteria to authenticated;
