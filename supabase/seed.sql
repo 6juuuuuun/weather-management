@@ -27,10 +27,12 @@ join (values
 
 -- 예시 지침 (곤지암 목업 — 객실/조리/안전 × 폭우 주의보)
 insert into action_guidelines (department_id, kind, grade, staff_actions, guest_notice)
-select d.id, 'rain', 'watch', a.actions, a.notice from departments d
+select d.id, 'rain', 'watch', a.actions, a.notice
+from departments d
+join departments p on p.id = d.parent_id
 join (values
- ('객실', array['비에 젖은 고객을 위해 객실 별 추가 수건 2개 배포','고객 지연 도착에 대비하여 체크인 혼잡 예상 시간 인력 추가 투입'],
+ ('리조트','객실', array['비에 젖은 고객을 위해 객실 별 추가 수건 2개 배포','고객 지연 도착에 대비하여 체크인 혼잡 예상 시간 인력 추가 투입'],
   '안녕하세요, 곤지암리조트입니다. 오늘 호우 예보로 야외 시설 운영이 제한됩니다. 실내 편의시설은 정상 운영 중입니다.'),
- ('조리', array['외부 음식 구매가 어려워짐에 따라 내부 식사 인원 증가 예상, 전처리 식자재 점검','우천 시 배송 지연 대비 당일 필수 식자재 우선 발주'], ''),
- ('안전', array['옥외 배수로 및 맨홀 점검, 침수 취약 구역 안전선 설치','우천 시 미끄럼 주의 안내판 주요 동선 배치'], '')
-) as a(dept, actions, notice) on d.name = a.dept;
+ ('리조트','조리', array['외부 음식 구매가 어려워짐에 따라 내부 식사 인원 증가 예상, 전처리 식자재 점검','우천 시 배송 지연 대비 당일 필수 식자재 우선 발주'], ''),
+ ('사업지원','안전', array['옥외 배수로 및 맨홀 점검, 침수 취약 구역 안전선 설치','우천 시 미끄럼 주의 안내판 주요 동선 배치'], '')
+) as a(root, dept, actions, notice) on d.name = a.dept and p.name = a.root;
