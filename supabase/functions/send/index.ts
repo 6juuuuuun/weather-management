@@ -49,7 +49,6 @@ Deno.serve(async (req) => {
     return Response.json({ ok: r.ok, error: r.error });
   }
 
-  if (emp.role !== "approver" && emp.role !== "admin") return new Response("forbidden", { status: 403 });
   if (emp.role !== "approver") return new Response("forbidden", { status: 403 }); // 승인은 approver 전용
 
   if (body.mode === "approve") {
@@ -75,7 +74,9 @@ Deno.serve(async (req) => {
   }
 
   if (body.mode === "dismiss") {
-    await db.from("weather_events").update({ status:"DISMISSED" }).eq("id", body.event_id).eq("status","PENDING_APPROVAL");
+    const { data: updated } = await db.from("weather_events").update({ status:"DISMISSED" })
+      .eq("id", body.event_id).eq("status","PENDING_APPROVAL").select();
+    if (!updated || updated.length === 0) return Response.json({ ok:false, error:"무시 가능한 상태가 아닙니다" }, { status: 409 });
     return Response.json({ ok: true });
   }
 

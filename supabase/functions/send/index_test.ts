@@ -69,3 +69,17 @@ Deno.test("send dismiss: approver가 무시하면 DISMISSED + closed_at은 null 
   assertEquals(after!.status, "DISMISSED");
   assertEquals(after!.closed_at, null);
 });
+
+Deno.test("send dismiss: PENDING_APPROVAL이 아니면 409 + 상태 불변", async () => {
+  const db = serviceClient();
+  await resetEvents(db);
+  const { data: ev } = await db.from("weather_events")
+    .insert({ kind:"heat", grade:"watch", status:"ACTIVE" }).select().single();
+  const token = await loginAs("approver", "ap4@t.co");
+  const res = await fetch(FN, { method:"POST",
+    headers: { Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
+    body: JSON.stringify({ mode:"dismiss", event_id: ev.id }) });
+  assertEquals(res.status, 409);
+  const { data: after } = await db.from("weather_events").select("status").eq("id", ev.id).single();
+  assertEquals(after!.status, "ACTIVE");
+});
