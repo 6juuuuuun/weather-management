@@ -8,16 +8,17 @@
 // 흐름:
 //   1) weather-tick(32.5mm) → 폭우 주의보 PENDING_APPROVAL 생성 + 초안(draft) 확인
 //   2) send approve(로그인 사용자 JWT) → ACTIVE + dispatches 1건
-//   3) 당일 누적을 반복 임계(80mm) 위로 올린 뒤 weather-tick(25mm) → repeat → dispatches 2건
+//   3) 당일 누적을 반복 임계(80mm) 위로 올린 뒤 weather-tick(약한 비 5mm) → repeat → dispatches 2건
 //   4) weather-tick(55mm, 경보 기준 돌파) → 기존 주의보 ESCALATED + 신규 경보 PENDING_APPROVAL
 //   5) send approve(경보) → ACTIVE + dispatches 1건
-//   6) 당일 누적을 반복 임계 이하로 되돌린 뒤 weather-tick(2mm) → 경보 RESOLVED
+//   6) weather-tick(강수 0mm — 비가 그침) → 경보 RESOLVED
 //   7) 최종 상태 확인 — 주의보 ESCALATED · 경보 RESOLVED 모두 종료 상태
 //
-// 반복(repeat)/해제(resolve) 판정은 시간당 관측치가 아니라 "당일 누적"(KST 자정 기준,
-// weather_observations 합산)으로 이뤄지므로(seed.sql: rain 반복정책=until_daily_accum_below, 임계 80mm),
-// 단일 mock 값만으로는 임계를 넘기거나 되돌리기 어렵다. 이 스크립트는 이전 시간대 관측 행을
-// 직접 시드/조정해 당일 누적을 원하는 값으로 만든 뒤 마지막에 weather-tick을 호출하는 방식을 쓴다.
+// rain 반복정책은 until_daily_accum_below(seed.sql, 임계 80mm)다. 일 누적(KST 자정 기준
+// weather_observations 합산)은 "반복을 계속할 이유"로만 쓰이고, 해제는 강수 중단(RN1=0)으로
+// 판정한다(스펙 §5, 2026-08-12 판정). 따라서 3)은 이전 시간대 관측을 시드해 누적을 임계 위로
+// 올려 약한 비에서도 repeat이 나는지 보고, 6)은 과거 행을 조작하지 않고 강수량 0인 관측을
+// 그대로 흘려보내 실 운영과 동일한 경로로 해제된다.
 
 import { assertEquals, assertExists } from "jsr:@std/assert";
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -94,11 +95,6 @@ async function seedObservation(baseDate: string, baseTime: string, rainMm: numbe
   }, { onConflict: "observed_at" });
 }
 
-async function lowerObservation(baseDate: string, baseTime: string, rainMm: number) {
-  await db.from("weather_observations").update({ rain_mm_per_hr: rainMm })
-    .eq("observed_at", observedAtIso(baseDate, baseTime));
-}
-
 function deptBlock(deptName: string, uid: string, actions: string[], guestNotice: string) {
   return [{
     department_id: crypto.randomUUID(), department_name: deptName,
@@ -162,11 +158,12 @@ Deno.test("시나리오 2: send approve(승인자 JWT) → 주의보 ACTIVE + di
 
 // --- 3. 반복발송 -----------------------------------------------------------
 
-Deno.test("시나리오 3: 당일 누적 시드 + weather-tick(25mm) → 반복 임계(80mm) 초과 → repeat → dispatches 2건", async () => {
-  // 이전 시간대에 60mm를 직접 시드해, 이번 tick의 25mm를 더하면 당일 누적이 80mm를 넘도록 만든다.
+Deno.test("시나리오 3: 당일 누적 시드 + weather-tick(약한 비 5mm) → 반복 임계(80mm) 초과 → repeat → dispatches 2회차", async () => {
+  // 이전 시간대에 60mm를 직접 시드해, 32.5 + 60 + 5 = 97.5mm로 당일 누적이 80mm를 넘도록 만든다.
+  // 이번 tick의 5mm는 주의보 기준(20mm/h) 미만이므로, 반복이 나면 그것은 일 누적 때문이다.
   await seedObservation(baseDate, "0200", 60);
 
-  const { res } = await tick(kmaMock(25, baseDate, "0300"));
+  const { res } = await tick(kmaMock(5, baseDate, "0300"));
   assertEquals(res.status, 200);
 
   const { data: ev } = await db.from("weather_events").select("status, repeat_count").eq("id", watchEventId).single();
@@ -217,14 +214,10 @@ Deno.test("시나리오 5: send approve(경보) → 경보 ACTIVE + dispatches 1
 
 // --- 6. 해제 ---------------------------------------------------------------
 
-Deno.test("시나리오 6: 당일 누적 완화 + weather-tick(2mm) → 반복 임계 이하 → 경보 RESOLVED", async () => {
-  // 앞서 쌓아둔 시간대별 관측치를 낮춰 당일 누적을 80mm 임계 아래로 되돌린다(12*4=48, +2mm=50 ≤ 80).
-  await lowerObservation(baseDate, "0100", 12);
-  await lowerObservation(baseDate, "0200", 12);
-  await lowerObservation(baseDate, "0300", 12);
-  await lowerObservation(baseDate, "0400", 12);
-
-  const { res } = await tick(kmaMock(2, baseDate, "0500"));
+Deno.test("시나리오 6: weather-tick(강수 0mm — 비가 그침) → 일 누적이 임계 위여도 경보 RESOLVED", async () => {
+  // 과거 관측 행을 조작하지 않는다. 당일 누적은 여전히 152.5mm(> 80mm 임계)로 남아 있지만,
+  // 해제는 강수 중단으로 판정하므로 정상 해제되어야 한다(일 누적은 단조 증가 — 해제 기준 불가).
+  const { res } = await tick(kmaMock(0, baseDate, "0500"));
   assertEquals(res.status, 200);
 
   const { data: resolved } = await db.from("weather_events").select("*").eq("id", warningEventId).single();

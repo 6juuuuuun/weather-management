@@ -13,9 +13,21 @@ function exceeds(kind: Kind, obs: Obs, th: Record<string, number>): boolean|null
   }
 }
 
+// 일 누적(rainToday/snowToday)은 KST 자정까지 단조 증가만 하므로 해제 기준으로 쓸 수 없다
+// (한 번 임계를 넘으면 비가 그쳐도 자정까지 매시간 재발송·미해제). 따라서 누적은 "반복을 계속할
+// 이유"로만 쓰고, 해제는 강수/강설 중단(rain=0, snowNew=0)으로 판정한다.
+// — 스펙 §5, 스펙 오너 판정 (2026-08-12). enum 값 until_daily_accum_below는 스키마 호환 위해 유지.
+function fallingNow(s: AlertSetting, obs: Obs): boolean|null {
+  const v = s.kind === "snow" ? obs.snowNew : obs.rain;
+  return v === null ? null : v > 0;   // null = 결측 → 판정 안 함
+}
+
 function repeatConditionMet(s: AlertSetting, obs: Obs, crit: Criterion): boolean {
   if (s.repeatPolicy === "once") return false;
   if (s.repeatPolicy === "until_daily_accum_below") {
+    // 아직 내리는 중 AND (기준 이상 OR 오늘 누적이 임계 초과) — 약해도 누적이 많으면 침수/적설 위험 지속
+    if (fallingNow(s, obs) !== true) return false;
+    if (exceeds(s.kind, obs, crit.threshold) === true) return true;
     const accum = s.kind === "snow" ? obs.snowToday : obs.rainToday;
     return accum !== null && s.repeatAccumThreshold !== null && accum > s.repeatAccumThreshold;
   }
@@ -30,9 +42,9 @@ function repeatConditionMet(s: AlertSetting, obs: Obs, crit: Criterion): boolean
 
 function resolveConditionMet(s: AlertSetting, obs: Obs, crit: Criterion): boolean {
   if (s.repeatPolicy === "until_daily_accum_below") {
-    const accum = s.kind === "snow" ? obs.snowToday : obs.rainToday;
-    return accum !== null && s.repeatAccumThreshold !== null
-      && accum <= s.repeatAccumThreshold && exceeds(s.kind, obs, crit.threshold) === false;
+    // 해제는 강수/강설 중단으로만 판정. 약한 비가 계속되고 누적도 적으면 repeat도 resolve도
+    // 하지 않고 ACTIVE를 유지한다(알림 없음) — 의도된 동작.
+    return fallingNow(s, obs) === false;
   }
   return exceeds(s.kind, obs, crit.threshold) === false;
 }
