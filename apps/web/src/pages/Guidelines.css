@@ -1,0 +1,473 @@
+/* 날씨경영 — 행동 지침 (design/previews/02-guidelines.png, 02a-guidelines-empty.png 기준) */
+
+.guidelines-lead {
+  margin: 0 0 24px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink-muted-48);
+}
+
+.guidelines-loading {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink-muted-48);
+}
+
+.guidelines-kind-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.guidelines-layout {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .guidelines-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.guidelines-panel {
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+/* ---------- 부서 트리 ---------- */
+.guidelines-tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.guidelines-tree-header h2 {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.guidelines-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-muted-48);
+  white-space: nowrap;
+}
+
+.legend-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  display: inline-block;
+}
+
+.legend-dot + .legend-dot {
+  margin-left: 10px;
+}
+
+.legend-watch {
+  background: var(--warn-strong);
+}
+
+.legend-warning {
+  background: var(--danger-strong);
+}
+
+.guidelines-group {
+  margin-bottom: 4px;
+}
+
+.guidelines-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 10px 4px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-muted-80);
+  cursor: pointer;
+  text-align: left;
+}
+
+.chevron {
+  display: inline-block;
+  font-size: 11px;
+  transition: transform 0.15s ease;
+}
+
+.chevron-collapsed {
+  transform: rotate(-90deg);
+}
+
+.guidelines-leaf {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+  background: none;
+  border: none;
+  border-left: 3px solid transparent;
+  padding: 10px 12px 10px 22px;
+  border-radius: 8px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.guidelines-leaf:hover {
+  background: var(--parchment);
+}
+
+.guidelines-leaf-selected {
+  background: var(--parchment);
+  border-left-color: var(--primary-focus);
+  font-weight: 600;
+}
+
+.guidelines-leaf-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.guidelines-leaf-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.tree-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+
+.tree-dot-watch {
+  background: var(--warn-strong);
+}
+
+.tree-dot-warning {
+  background: var(--danger-strong);
+}
+
+.tree-dot-empty {
+  background: transparent;
+  border: 1.5px solid var(--hairline);
+}
+
+.guidelines-count {
+  min-width: 30px;
+  font-family: var(--font-num);
+  font-size: 13px;
+  color: var(--ink-muted-48);
+  text-align: right;
+}
+
+.guidelines-unassigned {
+  min-width: 36px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--danger);
+  text-align: right;
+}
+
+/* ---------- 편집 패널 ---------- */
+.guidelines-editor-empty {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink-muted-48);
+}
+
+.guidelines-editor-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.guidelines-breadcrumb {
+  margin: 0 0 4px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--ink-muted-48);
+}
+
+.guidelines-editor-title-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.guidelines-editor-title-row h2 {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 21px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.guidelines-grade-switch {
+  display: flex;
+  gap: 8px;
+}
+
+.guidelines-updated-meta {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-muted-48);
+  white-space: nowrap;
+}
+
+.guidelines-section {
+  margin-bottom: 28px;
+}
+
+.guidelines-section:last-of-type {
+  margin-bottom: 0;
+}
+
+.guidelines-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.guidelines-section h3 {
+  margin: 0 0 12px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.guidelines-section-header h3 {
+  margin: 0;
+}
+
+.guidelines-section-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-muted-48);
+}
+
+.guidelines-add-link {
+  background: none;
+  border: none;
+  padding: 4px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary);
+  cursor: pointer;
+}
+
+.guidelines-section-empty {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--ink-muted-48);
+}
+
+.guidelines-bullets {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.guidelines-bullet-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--parchment);
+  border-radius: var(--radius-ctl);
+  padding: 10px 12px;
+}
+
+.guidelines-drag-handle {
+  flex-shrink: 0;
+  color: var(--ink-muted-48);
+  font-size: 14px;
+}
+
+.guidelines-bullet-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink);
+  outline: none;
+}
+
+.guidelines-bullet-input:disabled {
+  color: var(--ink-muted-80);
+  opacity: 0.85;
+}
+
+.guidelines-bullet-remove {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-muted-48);
+  cursor: pointer;
+}
+
+.guidelines-bullet-remove:hover {
+  color: var(--danger);
+}
+
+.guidelines-textarea {
+  width: 100%;
+  min-height: 120px;
+  box-sizing: border-box;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-ctl);
+  padding: 14px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink);
+  resize: vertical;
+}
+
+.guidelines-textarea:disabled {
+  background: var(--parchment);
+  color: var(--ink-muted-80);
+}
+
+.guidelines-recipients {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.guidelines-add-recipient {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 9999px;
+  border: 1px dashed var(--hairline);
+  background: none;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink-muted-80);
+  cursor: pointer;
+}
+
+.guidelines-add-recipient:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.guidelines-error {
+  margin: 0 0 12px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--danger);
+}
+
+.guidelines-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+/* ---------- 수신자 검색 모달 ---------- */
+.guidelines-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-ctl);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.guidelines-search-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.guidelines-search-result {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: none;
+  border: none;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.guidelines-search-result:hover {
+  background: var(--parchment);
+}
+
+.guidelines-search-result-email {
+  font-size: 12px;
+  color: var(--ink-muted-48);
+}
+
+.guidelines-search-empty {
+  padding: 16px;
+  text-align: center;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--ink-muted-48);
+}
