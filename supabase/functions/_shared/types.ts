@@ -10,7 +10,7 @@ export type AlertSetting = { kind: Kind; enabled: boolean;
   repeatPolicy: "once"|"hourly_until_below"|"until_daily_accum_below";
   repeatAccumThreshold: number|null; heatRepeatBasis: "temp"|"feels"|null };
 export type OpenEvent = { id: string; kind: Kind; grade: Grade; status: Status;
-  dismissedOpen?: boolean };
+  dismissedOpen?: boolean }; // DISMISSED이지만 해제조건 미충족 → 재감지 금지 대상
 
 export type Action =
   | { type: "create"; kind: Kind; grade: Grade }

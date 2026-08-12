@@ -51,3 +51,20 @@ Deno.test("결측은 판정 안 함 / enabled=false는 무시", () => {
   const off = SET.map(s => s.kind==="rain" ? { ...s, enabled:false } : s);
   assertEquals(evaluate({ ...base, rain:99, rainToday:99 }, CRIT, off, []), []);
 });
+Deno.test("PENDING 특보도 기준 미달이면 resolve (자동 종료 정책)", () => {
+  const open: OpenEvent[] = [{ id:"e1", kind:"rain", grade:"watch", status:"PENDING_APPROVAL" }];
+  assertEquals(evaluate({ ...base, rain:2, rainToday:10 }, CRIT, SET, open),
+    [{ type:"resolve", eventId:"e1", kind:"rain", grade:"watch" }]);
+});
+Deno.test("snow: snowToday 기준 감지", () => {
+  const crit = [...CRIT, { kind:"snow", grade:"watch", threshold:{ snow_cm:5 } } as Criterion];
+  const set = [...SET, { kind:"snow", enabled:true, repeatPolicy:"hourly_until_below", repeatAccumThreshold:null, heatRepeatBasis:null } as AlertSetting];
+  assertEquals(evaluate({ ...base, snowNew:2, snowToday:6 }, crit, set, []),
+    [{ type:"create", kind:"snow", grade:"watch" }]);
+});
+Deno.test("wind: wind_ms 기준 감지", () => {
+  const crit = [...CRIT, { kind:"wind", grade:"watch", threshold:{ wind_ms:14 } } as Criterion];
+  const set = [...SET, { kind:"wind", enabled:true, repeatPolicy:"hourly_until_below", repeatAccumThreshold:null, heatRepeatBasis:null } as AlertSetting];
+  assertEquals(evaluate({ ...base, wind:15 }, crit, set, []),
+    [{ type:"create", kind:"wind", grade:"watch" }]);
+});

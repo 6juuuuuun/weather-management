@@ -69,6 +69,7 @@ export function evaluate(obs: Obs, criteria: Criterion[], settings: AlertSetting
       if (escalated && ev.grade === "watch") continue;
       if (ev.status === "ACTIVE" && repeatConditionMet(s, obs, crit)) {
         actions.push({ type:"repeat", eventId: ev.id, kind, grade: ev.grade });
+      // resolve는 PENDING 포함 모든 열린 특보에 적용 (승인 대기 중 자동 종료 — 스펙 §5)
       } else if (resolveConditionMet(s, obs, crit)) {
         actions.push({ type:"resolve", eventId: ev.id, kind, grade: ev.grade });
       }
