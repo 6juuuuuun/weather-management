@@ -4,3 +4,5 @@
 .env.*
 !.env.example
 node_modules/
+supabase/.temp/
+apps/web/dist/

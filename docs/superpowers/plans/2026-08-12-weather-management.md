@@ -295,15 +295,18 @@ join (values
  ('골프','운영기획',1),('골프','경기',2),('골프','조리',3),('골프','서비스 운영',4)
 ) as c(root, name, ord) on c.root = r.name;
 
--- 예시 지침 (곤지암 목업 — 객실/조리/안전 × 폭우 주의보)
+-- 예시 지침 (곤지암 목업 — 객실/조리(리조트)/안전 × 폭우 주의보)
+-- 주의: '조리'는 리조트·골프 두 곳에 존재하므로 반드시 부모 부서로 한정해 조인한다
 insert into action_guidelines (department_id, kind, grade, staff_actions, guest_notice)
-select d.id, 'rain', 'watch', a.actions, a.notice from departments d
+select d.id, 'rain', 'watch', a.actions, a.notice
+from departments d
+join departments p on p.id = d.parent_id
 join (values
- ('객실', array['비에 젖은 고객을 위해 객실 별 추가 수건 2개 배포','고객 지연 도착에 대비하여 체크인 혼잡 예상 시간 인력 추가 투입'],
+ ('리조트','객실', array['비에 젖은 고객을 위해 객실 별 추가 수건 2개 배포','고객 지연 도착에 대비하여 체크인 혼잡 예상 시간 인력 추가 투입'],
   '안녕하세요, 곤지암리조트입니다. 오늘 호우 예보로 야외 시설 운영이 제한됩니다. 실내 편의시설은 정상 운영 중입니다.'),
- ('조리', array['외부 음식 구매가 어려워짐에 따라 내부 식사 인원 증가 예상, 전처리 식자재 점검','우천 시 배송 지연 대비 당일 필수 식자재 우선 발주'], ''),
- ('안전', array['옥외 배수로 및 맨홀 점검, 침수 취약 구역 안전선 설치','우천 시 미끄럼 주의 안내판 주요 동선 배치'], '')
-) as a(dept, actions, notice) on d.name = a.dept;
+ ('리조트','조리', array['외부 음식 구매가 어려워짐에 따라 내부 식사 인원 증가 예상, 전처리 식자재 점검','우천 시 배송 지연 대비 당일 필수 식자재 우선 발주'], ''),
+ ('사업지원','안전', array['옥외 배수로 및 맨홀 점검, 침수 취약 구역 안전선 설치','우천 시 미끄럼 주의 안내판 주요 동선 배치'], '')
+) as a(root, dept, actions, notice) on d.name = a.dept and p.name = a.root;
 ```
 
 - [ ] **Step 3: 마이그레이션 적용 및 검증**
@@ -581,11 +584,11 @@ git commit -m "feat: 기상청 초단기실황 클라이언트 (base_time 계산
 import { assertEquals, assertAlmostEquals } from "jsr:@std/assert";
 import { feelsLikeC, snowNewCm } from "./derive.ts";
 
-Deno.test("여름 체감온도: 33℃/60%/2m·s ≈ 34.9±0.5", () => {
-  assertAlmostEquals(feelsLikeC(33, 60, 2), 34.9, 0.5);
+Deno.test("여름 체감온도: 33℃/60%/2m·s ≈ 33.5±0.5", () => {
+  assertAlmostEquals(feelsLikeC(33, 60, 2), 33.5, 0.5);
 });
-Deno.test("겨울 체감온도: -10℃/풍속 5m·s ≈ -16.6±0.5", () => {
-  assertAlmostEquals(feelsLikeC(-10, 50, 5), -16.6, 0.5);
+Deno.test("겨울 체감온도: -10℃/풍속 5m·s ≈ -17.4±0.5", () => {
+  assertAlmostEquals(feelsLikeC(-10, 50, 5), -17.4, 0.5);
 });
 Deno.test("신적설 환산: 눈(PTY=3)이면 3mm→3cm, 비(PTY=1)면 0, null이면 null", () => {
   assertEquals(snowNewCm(3, 3), 3);
@@ -686,7 +689,7 @@ export type Action =
 4. warning 기준 충족: 같은 kind의 열린 watch가 있으면 `escalate`, 열린 warning이 없으면 `create(warning)`. watch만 충족 시 열린 것 없으면 `create(watch)`.
 5. 같은 kind·grade가 PENDING/ACTIVE로 열려 있으면 `create` 금지. DISMISSED이고 해제조건 미충족(`dismissedOpen`)이어도 `create` 금지.
 6. `repeat`: ACTIVE + 정책 once 아님 + 반복조건 충족. `hourly_until_below`=현재도 기준 이상(heat는 `heatRepeatBasis` 기준값만 비교), `until_daily_accum_below`=일 누적(rainToday/snowToday)이 `repeatAccumThreshold` 초과.
-7. `resolve`: 열린(ACTIVE 또는 DISMISSED-open) 특보의 해제조건 충족 — `hourly_until_below`·`once`=기준 미달, `until_daily_accum_below`=누적 임계 이하 그리고 기준 미달.
+7. `resolve`: 열린(PENDING_APPROVAL·ACTIVE·DISMISSED-open 모두) 특보의 해제조건 충족 — `hourly_until_below`·`once`=기준 미달, `until_daily_accum_below`=누적 임계 이하 그리고 기준 미달. PENDING이 resolve되는 경우의 알림 분기는 weather-tick(Task 10)이 담당: 승인된 메시지가 있으면 부서 해제 알림, 없으면(초안 대기 중 자동 종료) alert_recipients에게 자동 종료 알림.
 8. 같은 tick에서 `escalate`된 watch에는 `repeat`/`resolve`를 내지 않는다.
 
 - [ ] **Step 1: 실패하는 테스트 작성 (`engine_test.ts`) — 규칙 1~8 각 1케이스 이상**
