@@ -23,14 +23,20 @@ jobs:
             supabase/functions/_shared/kma_test.ts \
             supabase/functions/_shared/template_test.ts \
             supabase/functions/_shared/kakaowork_test.ts
-      - name: deno check (shared modules)
+      # 공유 모듈 + Edge Function 엔트리포인트 전체 타입체크
+      # (엔트리포인트를 빼면 함수 본문의 타입 오류가 CI를 통과해 런타임에서 터진다)
+      - name: deno check (shared modules + edge functions)
         run: |
           deno check \
             supabase/functions/_shared/engine.ts \
             supabase/functions/_shared/derive.ts \
             supabase/functions/_shared/kma.ts \
             supabase/functions/_shared/template.ts \
-            supabase/functions/_shared/kakaowork.ts
+            supabase/functions/_shared/kakaowork.ts \
+            supabase/functions/weather-tick/index.ts \
+            supabase/functions/send/index.ts \
+            supabase/functions/remind-tick/index.ts \
+            supabase/functions/auth-kakaowork/index.ts
 
   # 통합 테스트(RLS·Edge Functions)는 Supabase 로컬 스택이 필요해 로컬 실행 대상:
   #   supabase start && supabase db reset && supabase functions serve --env-file .env.test

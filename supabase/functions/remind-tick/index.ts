@@ -1,6 +1,10 @@
 import { serviceClient } from "../_shared/db.ts";
 import { getChannel } from "../_shared/kakaowork.ts";
 import { KIND_LABEL, GRADE_LABEL } from "../_shared/template.ts";
+import type { Kind, Grade } from "../_shared/types.ts";
+
+type PendingEvent = { id: string; kind: Kind; grade: Grade;
+  detected_at: string; last_reminded_at: string|null };
 
 const env = (k: string) => Deno.env.get(k);
 
@@ -14,7 +18,8 @@ Deno.serve(async (req) => {
   const { data: site } = await db.from("site_settings").select("remind_interval_min").single();
   const cutoff = new Date(Date.now() - (site?.remind_interval_min ?? 30) * 60_000).toISOString();
   const { data: pend } = await db.from("weather_events").select("*").eq("status","PENDING_APPROVAL");
-  const due = (pend ?? []).filter((e: any) => (e.last_reminded_at ?? e.detected_at) <= cutoff);
+  const due = ((pend ?? []) as PendingEvent[])
+    .filter((e) => (e.last_reminded_at ?? e.detected_at) <= cutoff);
   const { data: alerts } = await db.from("alert_recipients").select("employees(kakaowork_user_id)");
   let reminded = 0;
   for (const e of due) {

@@ -35,7 +35,17 @@ Deno.serve(async (req) => {
     if (!code) return new Response("missing code", { status: 400 });
 
     let profile: { email: string; user_id: string; name?: string };
-    const mock = env("MOCK_KAKAO_PROFILE");
+    // 로컬 하드 가드: MOCK_KAKAO_PROFILE은 OAuth 검증을 통째로 건너뛰는 테스트 전용 백도어라,
+    // env가 실수로/악의적으로 설정되기만 해도 임의 이메일로 admin 세션을 얻을 수 있다.
+    // 사람이 지키는 배포 체크리스트만으로는 오픈소스 포크에서 막을 수 없으므로,
+    // 환경이 로컬임을 코드로 확인했을 때만 mock을 허용하고 그 외에는 env가 있어도 무시한다.
+    // (`kong:8000`은 supabase CLI 로컬 스택이 컨테이너 안에 주입하는 SUPABASE_URL 값이다 —
+    //  CLI가 SUPABASE_* env를 --env-file에서 걸러내므로 로컬에서도 127.0.0.1이 아니다.
+    //  이 호스트명을 재사용하는 셀프호스팅 배포를 위해 APP_BASE_URL까지 로컬일 것을 함께 요구한다.)
+    const isLocalUrl = (url: string) =>
+      url.includes("127.0.0.1") || url.includes("localhost") || url.includes("kong:8000");
+    const isLocal = isLocalUrl(env("SUPABASE_URL") ?? "") && isLocalUrl(env("APP_BASE_URL") ?? "");
+    const mock = isLocal ? env("MOCK_KAKAO_PROFILE") : undefined;
     if (mock) {
       // 테스트 전용: MOCK_KAKAO_PROFILE env가 설정된 경우에만 쿼리 파라미터로 mock 프로필의 email을
       // 오버라이드할 수 있게 한다(env 없는 프로덕션에서는 이 분기 자체에 도달하지 않으므로 완전 무시됨).
@@ -85,7 +95,9 @@ Deno.serve(async (req) => {
     }, { onConflict: "email" });
 
     const { data: link } = await db.auth.admin.generateLink({ type: "magiclink", email: profile.email });
-    const tokenHash = link.properties.hashed_token;
+    // generateLink 실패 시 properties가 null이라 그대로 접근하면 로그인 전체가 500으로 떨어진다.
+    const tokenHash = link?.properties?.hashed_token;
+    if (!tokenHash) return new Response("failed to issue session link", { status: 502 });
     return Response.redirect(`${env("APP_BASE_URL")}/auth/callback#token_hash=${tokenHash}`, 302);
   }
 
