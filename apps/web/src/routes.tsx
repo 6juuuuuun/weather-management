@@ -2,13 +2,15 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { RequireRole } from "./auth/RequireRole";
 import Login from "./pages/Login";
 import AuthCallback from "./pages/AuthCallback";
+import Dashboard from "./pages/Dashboard";
+import Criteria from "./pages/Criteria";
+import Guidelines from "./pages/Guidelines";
+import EventReview from "./pages/EventReview";
+import History from "./pages/History";
+import Settings from "./pages/Settings";
+import Employees from "./pages/Employees";
 
-// 아래 플레이스홀더들은 이후 페이지 태스크에서 각각 실제 화면으로 대체된다.
 const ALL_ROLES = ["admin", "approver", "staff"];
-
-function Placeholder({ title }: { title: string }) {
-  return <div style={{ padding: 40 }}>{title}</div>;
-}
 
 export function AppRoutes() {
   return (
@@ -20,7 +22,7 @@ export function AppRoutes() {
         path="/"
         element={
           <RequireRole roles={ALL_ROLES}>
-            <Placeholder title="대시보드" />
+            <Dashboard />
           </RequireRole>
         }
       />
@@ -28,7 +30,7 @@ export function AppRoutes() {
         path="/criteria"
         element={
           <RequireRole roles={ALL_ROLES}>
-            <Placeholder title="특보 기준" />
+            <Criteria />
           </RequireRole>
         }
       />
@@ -36,7 +38,7 @@ export function AppRoutes() {
         path="/guidelines"
         element={
           <RequireRole roles={ALL_ROLES}>
-            <Placeholder title="행동 지침" />
+            <Guidelines />
           </RequireRole>
         }
       />
@@ -44,7 +46,7 @@ export function AppRoutes() {
         path="/events/:id"
         element={
           <RequireRole roles={ALL_ROLES}>
-            <Placeholder title="특보 검토" />
+            <EventReview />
           </RequireRole>
         }
       />
@@ -52,7 +54,7 @@ export function AppRoutes() {
         path="/history"
         element={
           <RequireRole roles={ALL_ROLES}>
-            <Placeholder title="발송 이력" />
+            <History />
           </RequireRole>
         }
       />
@@ -60,7 +62,7 @@ export function AppRoutes() {
         path="/settings"
         element={
           <RequireRole roles={["admin", "approver"]}>
-            <Placeholder title="시스템 설정" />
+            <Settings />
           </RequireRole>
         }
       />
@@ -68,7 +70,7 @@ export function AppRoutes() {
         path="/employees"
         element={
           <RequireRole roles={["admin", "approver"]}>
-            <Placeholder title="구성원 관리" />
+            <Employees />
           </RequireRole>
         }
       />
