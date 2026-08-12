@@ -47,6 +47,44 @@ Deno.test("send approve: approver가 승인하면 ACTIVE + dispatches 기록", a
   assertEquals(d!.length, 1);
 });
 
+Deno.test("send: dispatches.content는 발송 시점 스냅샷이며 재발송으로 messages.content가 바뀌어도 불변", async () => {
+  const db = serviceClient();
+  await resetEvents(db);
+  const { data: ev } = await db.from("weather_events").insert({ kind:"snow", grade:"watch" }).select().single();
+  const approveContent = [{ department_id:"d", department_name:"객실", staff_actions:["a"],
+    guest_notice:"승인 시점 내용", recipients:[{ employee_id:"e", name:"홍", kakaowork_user_id:"kw1" }], selected:true }];
+  await db.from("messages").insert({ event_id: ev.id, content: approveContent });
+  const token = await loginAs("approver", "ap5@t.co");
+
+  const approveRes = await fetch(FN, { method:"POST",
+    headers: { Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
+    body: JSON.stringify({ mode:"approve", event_id: ev.id, content: approveContent }) });
+  assertEquals(approveRes.status, 200);
+
+  const { data: msgAfterApprove } = await db.from("messages").select("id").eq("event_id", ev.id).single();
+  const { data: dispatchAfterApprove } = await db.from("dispatches")
+    .select("content").eq("event_id", ev.id).eq("repeat_no", 1).single();
+  assertEquals(dispatchAfterApprove!.content, approveContent);
+
+  // 재발송으로 messages.content 변경
+  const resendContent = [{ department_id:"d", department_name:"객실", staff_actions:["a"],
+    guest_notice:"재발송으로 수정된 내용", recipients:[{ employee_id:"e", name:"홍", kakaowork_user_id:"kw1" }], selected:true }];
+  const resendRes = await fetch(FN, { method:"POST",
+    headers: { Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
+    body: JSON.stringify({ mode:"resend", message_id: msgAfterApprove!.id, content: resendContent }) });
+  assertEquals(resendRes.status, 200);
+
+  // 과거(1회차) dispatch의 content는 승인 시점 그대로 불변
+  const { data: dispatchAfterResend } = await db.from("dispatches")
+    .select("content").eq("event_id", ev.id).eq("repeat_no", 1).single();
+  assertEquals(dispatchAfterResend!.content, approveContent);
+
+  // 새(2회차) dispatch의 content는 재발송 시점 내용
+  const { data: newDispatch } = await db.from("dispatches")
+    .select("content").eq("event_id", ev.id).eq("repeat_no", 2).single();
+  assertEquals(newDispatch!.content, resendContent);
+});
+
 Deno.test("send approve: staff는 403", async () => {
   const token = await loginAs("staff", "st2@t.co");
   const res = await fetch(FN, { method:"POST",

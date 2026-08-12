@@ -98,7 +98,7 @@ Deno.serve(async (req) => {
                 : { ok: false, error: "카카오워크 미연결" }) });
         const { data: ev } = await db.from("weather_events").select("repeat_count").eq("id", a.eventId).single();
         await db.from("dispatches").insert({ message_id: msg.id, event_id: a.eventId,
-          repeat_no: (ev?.repeat_count ?? 0) + 1, results });
+          repeat_no: (ev?.repeat_count ?? 0) + 1, results, content: (msg.content as DeptBlock[]) });
         await db.from("weather_events").update({ repeat_count: (ev?.repeat_count ?? 0) + 1 }).eq("id", a.eventId);
       }
     }

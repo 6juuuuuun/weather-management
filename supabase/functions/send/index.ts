@@ -29,6 +29,7 @@ async function dispatch(db: any, channel: any, msg: any, blocks: DeptBlock[],
           : { ok: false, error: "카카오워크 미연결" }) });
   const { data: d } = await db.from("dispatches").insert({
     message_id: msg.id, event_id: msg.event_id, repeat_no: repeatNo, is_test: isTest, results,
+    content: blocks,
   }).select().single();
   return { dispatch_id: d.id, fail_count: (results as any[]).filter(r => !r.ok).length };
 }
