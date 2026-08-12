@@ -1,0 +1,128 @@
+/* 날씨경영 — 부서 관리 모달 (design/previews/06a-dept-modal.png 기준) */
+
+.dept-modal-error {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-radius: var(--radius-ctl);
+  background: color-mix(in srgb, var(--danger-strong) 12%, var(--canvas));
+  color: var(--danger);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+.dept-modal-loading {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink-muted-48);
+  padding: 24px 0;
+}
+
+.dept-modal-tree {
+  display: flex;
+  flex-direction: column;
+}
+
+.dept-modal-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.dept-modal-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--divider-soft);
+}
+
+.dept-modal-tree > .dept-modal-group:first-child > .dept-modal-row:first-child {
+  border-top: none;
+}
+
+.dept-modal-row-depth1 {
+  padding-left: 28px;
+}
+
+.dept-modal-grip {
+  color: var(--ink-muted-48);
+  font-size: 12px;
+  letter-spacing: 2px;
+  cursor: grab;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.dept-modal-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.dept-modal-name-child {
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.dept-modal-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-ctl);
+  border: 1.5px solid var(--primary-focus);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.dept-modal-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.dept-modal-icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted-48);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dept-modal-icon-btn:hover {
+  background: var(--parchment);
+  color: var(--ink);
+}
+
+.dept-modal-icon-btn svg {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+}
+
+.dept-modal-add-top {
+  margin-top: 16px;
+  align-self: flex-start;
+  padding: 10px 18px;
+  border-radius: 9999px;
+  border: 1px solid var(--hairline);
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.dept-modal-add-top:hover {
+  background: var(--parchment);
+}

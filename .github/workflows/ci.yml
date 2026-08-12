@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend-unit:
+    name: 백엔드 순수 로직 테스트 (Deno)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      # 순수 함수 단위 테스트 (외부 의존 없음 — 판정 엔진·파생값·클라이언트·템플릿·채널)
+      - name: deno test (unit)
+        run: |
+          deno test \
+            supabase/functions/_shared/engine_test.ts \
+            supabase/functions/_shared/derive_test.ts \
+            supabase/functions/_shared/kma_test.ts \
+            supabase/functions/_shared/template_test.ts \
+            supabase/functions/_shared/kakaowork_test.ts
+      # 공유 모듈 + Edge Function 엔트리포인트 전체 타입체크
+      # (엔트리포인트를 빼면 함수 본문의 타입 오류가 CI를 통과해 런타임에서 터진다)
+      - name: deno check (shared modules + edge functions)
+        run: |
+          deno check \
+            supabase/functions/_shared/engine.ts \
+            supabase/functions/_shared/derive.ts \
+            supabase/functions/_shared/kma.ts \
+            supabase/functions/_shared/template.ts \
+            supabase/functions/_shared/kakaowork.ts \
+            supabase/functions/weather-tick/index.ts \
+            supabase/functions/send/index.ts \
+            supabase/functions/remind-tick/index.ts \
+            supabase/functions/auth-kakaowork/index.ts
+
+  # 통합 테스트(RLS·Edge Functions)는 Supabase 로컬 스택이 필요해 로컬 실행 대상:
+  #   supabase start && supabase db reset && supabase functions serve --env-file .env.test
+  #   deno test --allow-net --allow-env supabase/functions/**/index_test.ts
+
+  web-build:
+    name: 웹 빌드 (apps/web 존재 시)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check web exists
+        id: web
+        run: test -f apps/web/package.json && echo "exists=true" >> "$GITHUB_OUTPUT" || echo "exists=false" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        if: steps.web.outputs.exists == 'true'
+        with:
+          node-version: 22
+      - name: Build
+        if: steps.web.outputs.exists == 'true'
+        working-directory: apps/web
+        run: |
+          npm ci
+          npx vitest run --if-present || npx vitest run
+          npm run build
+        env:
+          VITE_SUPABASE_URL: http://127.0.0.1:54321
+          VITE_SUPABASE_ANON_KEY: ci-placeholder
