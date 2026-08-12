@@ -24,11 +24,10 @@ const KIND_DESC: Record<Kind, string> = {
   heat: "기온 · 체감온도 기준",
 };
 
-const ACCUM_UNIT: Record<Kind, string> = {
+// 일 누적 정책은 판정 엔진이 폭우·폭설에서만 다룬다(강풍·폭염은 누적 개념 자체가 없음).
+const ACCUM_UNIT: Partial<Record<Kind, string>> = {
   rain: "mm",
   snow: "cm",
-  wind: "",
-  heat: "",
 };
 
 function kindIcon(kind: Kind) {
@@ -82,6 +81,8 @@ type RepeatOption = {
   basis?: "temp" | "feels";
 };
 
+// "일 누적 기준 이하까지"는 폭우·폭설에만 제공한다. 엔진은 강풍·폭염의 누적을 계산하지 않으므로
+// 이 옵션을 강풍·폭염에 걸면 반복이 영영 나지 않거나(강풍 지속 중 침묵) 엉뚱하게 반복된다.
 function repeatOptions(kind: Kind): RepeatOption[] {
   const once: RepeatOption = { value: "once", label: "최초 1회만", policy: "once" };
   if (kind === "heat") {
@@ -105,9 +106,11 @@ function repeatOptions(kind: Kind): RepeatOption[] {
   ];
 }
 
+// 강풍·폭염 행에 누적 정책 값이 남아 있어도(과거 데이터) 선택지가 없어 아무것도 선택되지 않는
+// 상태가 되지 않도록 매시간 옵션으로 폴백한다.
 function currentOptionValue(kind: Kind, setting: AlertSetting): string {
   if (setting.repeat_policy === "once") return "once";
-  if (setting.repeat_policy === "until_daily_accum_below") return "accum";
+  if (setting.repeat_policy === "until_daily_accum_below" && (kind === "rain" || kind === "snow")) return "accum";
   if (kind === "heat") return setting.heat_repeat_basis === "feels" ? "hourly_feels" : "hourly_temp";
   return "hourly";
 }
