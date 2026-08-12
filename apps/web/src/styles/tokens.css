@@ -18,6 +18,9 @@
   --danger: #d70015;
   --danger-strong: #ff3b30;
   --success: #248a3d;
+  /* Task 15 추가: DESIGN-apple.md에 명시되었으나 기존 토큰에 없던 값들 (기존 값 변경 없음) */
+  --surface-black: #000000;
+  --toggle-on: #34c759;
 
   /* Radius */
   --radius-card: 18px;
