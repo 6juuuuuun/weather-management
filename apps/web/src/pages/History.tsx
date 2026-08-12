@@ -57,6 +57,7 @@ type RawDispatch = {
   repeat_no: number;
   is_test: boolean;
   results: DispatchResult[];
+  content: DeptBlock[] | null;
   messages: { content: DeptBlock[] } | null;
   weather_events: { kind: Kind; grade: Grade; detected_at: string } | null;
 };
@@ -126,7 +127,7 @@ export default function History() {
     const { data, error } = await supabase
       .from("dispatches")
       .select(
-        "id,message_id,event_id,sent_at,channel,repeat_no,is_test,results,messages(content),weather_events(kind,grade,detected_at)",
+        "id,message_id,event_id,sent_at,channel,repeat_no,is_test,results,content,messages(content),weather_events(kind,grade,detected_at)",
       )
       .eq("is_test", false)
       .order("sent_at", { ascending: false })
@@ -151,7 +152,8 @@ export default function History() {
         kind: d.weather_events!.kind,
         grade: d.weather_events!.grade,
         detected_at: d.weather_events!.detected_at,
-        content: d.messages!.content ?? [],
+        // 발송 시점 스냅샷 우선, 스냅샷 이전(0004 마이그레이션 이전) 이력은 messages.content로 폴백
+        content: d.content ?? d.messages!.content ?? [],
       }));
     setRows(mapped);
     setLoading(false);

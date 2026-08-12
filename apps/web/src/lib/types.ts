@@ -134,6 +134,7 @@ export type Dispatch = {
   repeat_no: number;
   is_test: boolean;
   results: DispatchResult[];
+  content: DeptBlock[] | null;
 };
 
 export type Heartbeat = {

@@ -26,6 +26,10 @@ const content: DeptBlock[] = [
   },
 ];
 
+// messages.content는 재발송으로 갱신된 "현재" 초안 — 발송 당시 스냅샷(content)과 달라야
+// 스냅샷 우선 폴백 로직(d.content ?? d.messages?.content)이 검증됨
+const staleMessagesContent: DeptBlock[] = content.map((b) => ({ ...b, guest_notice: "재발송으로 갱신된 최신 내용" }));
+
 const dispatchRow = {
   id: 12,
   message_id: "m1",
@@ -35,8 +39,44 @@ const dispatchRow = {
   repeat_no: 3,
   is_test: false,
   results: [{ employee_id: "e1", name: "홍수진", ok: true }],
-  messages: { content },
+  content,
+  messages: { content: staleMessagesContent },
   weather_events: { kind: "rain", grade: "watch", detected_at },
+};
+
+// content 스냅샷 컬럼이 없던(0004 이전) 과거 이력 — messages.content로 폴백되어야 함
+// (recipientSummary 텍스트 충돌을 피하기 위해 dispatchRow와 다른 부서/인원 사용)
+const legacyContent: DeptBlock[] = [
+  {
+    department_id: "d3",
+    department_name: "프론트오피스",
+    staff_actions: ["체크인 안내 문구 게시"],
+    guest_notice: "폭설로 도로 상황이 지연될 수 있습니다",
+    recipients: [{ employee_id: "e3", name: "이설아", kakaowork_user_id: "k3" }],
+    selected: true,
+  },
+];
+
+// 기본 기간 필터("최근 30일")에 걸리지 않도록 dispatchRow와 근접한 날짜 사용
+const legacySentAt = "2026-07-20T08:10:00.000Z";
+const legacyDetectedAt = "2026-07-20T08:00:00.000Z";
+
+const legacyDispatchRow = {
+  id: 7,
+  message_id: "m0",
+  event_id: "ev0",
+  sent_at: legacySentAt,
+  channel: "kakaowork",
+  repeat_no: 1,
+  is_test: false,
+  // dispatchRow와 statusSummary 텍스트("성공 1")가 겹치지 않도록 실패 1건 포함
+  results: [
+    { employee_id: "e3", name: "이설아", ok: true },
+    { employee_id: "e4", name: "박은비", ok: false, error: "미연결" },
+  ],
+  content: null,
+  messages: { content: legacyContent },
+  weather_events: { kind: "snow", grade: "warning", detected_at: legacyDetectedAt },
 };
 
 vi.mock("../auth/AuthProvider", () => ({
@@ -54,7 +94,7 @@ vi.mock("../lib/supabase", () => ({
         eq: () => ({
           single: () => Promise.resolve({ data: null, error: null }),
           order: () => ({
-            limit: () => Promise.resolve({ data: [dispatchRow], error: null }),
+            limit: () => Promise.resolve({ data: [dispatchRow, legacyDispatchRow], error: null }),
           }),
         }),
       }),
@@ -80,7 +120,7 @@ describe("History", () => {
     expect(screen.getByText("리조트 · 1명")).toBeInTheDocument();
     expect(screen.getByText("성공 1")).toBeInTheDocument();
     expect(screen.getByText("3회차")).toBeInTheDocument();
-    expect(screen.getByText("재발송")).toBeInTheDocument();
+    expect(screen.getAllByText("재발송").length).toBeGreaterThan(0);
   });
 
   it("행 클릭 시 모달에 발송 당시 내용이 표시된다", async () => {
@@ -93,6 +133,29 @@ describe("History", () => {
     screen.getByText("리조트 · 1명").closest("tr")?.click();
     expect(await screen.findByText("수건 추가 배포")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "수정 후 재발송" })).toBeInTheDocument();
+  });
+
+  it("재발송으로 messages.content가 갱신되어도 발송 당시 content 스냅샷이 우선 표시된다", async () => {
+    render(
+      <MemoryRouter>
+        <History />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("리조트 · 1명")).toBeInTheDocument());
+    screen.getByText("리조트 · 1명").closest("tr")?.click();
+    expect(await screen.findByText("야외 시설 운영이 제한됩니다")).toBeInTheDocument();
+    expect(screen.queryByText("재발송으로 갱신된 최신 내용")).not.toBeInTheDocument();
+  });
+
+  it("content 스냅샷이 없는 과거 이력은 messages.content로 폴백 표시된다", async () => {
+    render(
+      <MemoryRouter>
+        <History />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("프론트오피스 · 1명")).toBeInTheDocument());
+    screen.getByText("프론트오피스 · 1명").closest("tr")?.click();
+    expect(await screen.findByText("체크인 안내 문구 게시")).toBeInTheDocument();
   });
 
   it("선택 해제된 부서명으로 검색하면 결과에 나타나지 않는다", async () => {
