@@ -27,7 +27,7 @@ export function AppRoutes() {
       <Route
         path="/criteria"
         element={
-          <RequireRole roles={["admin"]}>
+          <RequireRole roles={ALL_ROLES}>
             <Placeholder title="특보 기준" />
           </RequireRole>
         }
@@ -59,7 +59,7 @@ export function AppRoutes() {
       <Route
         path="/settings"
         element={
-          <RequireRole roles={["admin"]}>
+          <RequireRole roles={["admin", "approver"]}>
             <Placeholder title="시스템 설정" />
           </RequireRole>
         }
@@ -67,7 +67,7 @@ export function AppRoutes() {
       <Route
         path="/employees"
         element={
-          <RequireRole roles={["admin"]}>
+          <RequireRole roles={["admin", "approver"]}>
             <Placeholder title="구성원 관리" />
           </RequireRole>
         }
