@@ -24,6 +24,7 @@ type DashboardData = {
   criteria: WeatherCriteria[];
   openEvents: WeatherEvent[];
   dispatches: DispatchRow[];
+  snowToday: number | null; // 판정 엔진과 동일: 당일(KST) snow_new_cm 합산, 관측 없으면 null
 };
 
 function formatDate(d: Date): string {
@@ -45,6 +46,13 @@ function formatTime(iso: string): string {
 
 function num(v: number | null | undefined, digits = 1): string {
   return v == null ? "–" : v.toFixed(digits);
+}
+
+// KST 자정(UTC 전날 15:00) — supabase/functions/_shared/db.ts의 todayAccums와 동일 로직
+function kstMidnightISO(now: Date): string {
+  const kst = new Date(now.getTime() + 9 * 3600_000);
+  const midnightKst = new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - 9 * 3600_000);
+  return midnightKst.toISOString();
 }
 
 function criteriaFor(criteria: WeatherCriteria[], kind: Kind) {
@@ -86,7 +94,7 @@ export default function Dashboard() {
   const load = useCallback(async () => {
     const isAdmin = employee?.role === "admin";
 
-    const [obsRes, eventsRes, dispatchesRes, criteriaRes, siteRes] = await Promise.all([
+    const [obsRes, eventsRes, dispatchesRes, criteriaRes, siteRes, snowTodayRes] = await Promise.all([
       supabase
         .from("weather_observations")
         .select("*")
@@ -105,13 +113,26 @@ export default function Dashboard() {
         .limit(5),
       supabase.from("weather_criteria").select("*"),
       supabase.from("site_settings").select("*").eq("id", 1).maybeSingle(),
+      // 판정 엔진(todayAccums)과 동일 기준: KST 자정 이후 시간 신적설 합산
+      supabase
+        .from("weather_observations")
+        .select("snow_new_cm")
+        .gte("observed_at", kstMidnightISO(new Date()))
+        .eq("missing", false),
     ]);
+
+    const snowRows = snowTodayRes.data ?? [];
+    const snowToday =
+      snowRows.length === 0
+        ? null
+        : snowRows.reduce((acc, r) => acc + Number(r.snow_new_cm ?? 0), 0);
 
     setData({
       observation: (obsRes.data as WeatherObservation | null) ?? null,
       criteria: (criteriaRes.data as WeatherCriteria[] | null) ?? [],
       openEvents: (eventsRes.data as WeatherEvent[] | null) ?? [],
       dispatches: (dispatchesRes.data as unknown as DispatchRow[] | null) ?? [],
+      snowToday,
     });
 
     if (isAdmin) {
@@ -247,8 +268,9 @@ export default function Dashboard() {
               wind.watch?.threshold.wind_ms,
               wind.warning?.threshold.wind_ms,
             );
+            // 판정 엔진과 동일하게 시간 신적설이 아닌 당일 누적(snowToday)을 기준으로 비교
             const snowGrade = gradeBySingleValue(
-              obs?.snow_new_cm,
+              data?.snowToday,
               snow.watch?.threshold.snow_cm,
               snow.warning?.threshold.snow_cm,
             );
@@ -361,11 +383,11 @@ export default function Dashboard() {
                     {snowGrade && <Badge grade={snowGrade} />}
                   </div>
                   <div className="obs-card-value">
-                    <span className="obs-card-num">{num(obs?.snow_new_cm)}</span>
+                    <span className="obs-card-num">{num(data?.snowToday)}</span>
                     <span className="obs-card-unit">cm</span>
                   </div>
                   <p className="obs-card-caption">
-                    주의보 {num(snow.watch?.threshold.snow_cm, 0)} · 경보 {num(snow.warning?.threshold.snow_cm, 0)}
+                    오늘 누적 · 이번 시간 +{num(obs?.snow_new_cm)}cm
                   </p>
                 </div>
               </>
