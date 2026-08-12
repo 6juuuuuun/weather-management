@@ -175,7 +175,10 @@ export default function History() {
       if (cutoff != null && new Date(r.sent_at).getTime() < cutoff) return false;
       if (term) {
         const kindLabel = KIND_LABEL[r.kind].toLowerCase();
-        const deptNames = r.content.map((b) => b.department_name.toLowerCase()).join(" ");
+        const deptNames = r.content
+          .filter((b) => b.selected)
+          .map((b) => b.department_name.toLowerCase())
+          .join(" ");
         if (!kindLabel.includes(term) && !deptNames.includes(term)) return false;
       }
       return true;

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { DeptBlock } from "../lib/types";
 
@@ -14,6 +14,15 @@ const content: DeptBlock[] = [
     guest_notice: "야외 시설 운영이 제한됩니다",
     recipients: [{ employee_id: "e1", name: "홍수진", kakaowork_user_id: "k1" }],
     selected: true,
+  },
+  {
+    // 선택 해제된 블록 — 실제 발송 수신처가 아니므로 이 부서명으로 검색해도 매치되면 안 됨
+    department_id: "d2",
+    department_name: "조리",
+    staff_actions: ["식자재 점검"],
+    guest_notice: "",
+    recipients: [{ employee_id: "e2", name: "박세준", kakaowork_user_id: "k2" }],
+    selected: false,
   },
 ];
 
@@ -84,5 +93,19 @@ describe("History", () => {
     screen.getByText("리조트 · 1명").closest("tr")?.click();
     expect(await screen.findByText("수건 추가 배포")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "수정 후 재발송" })).toBeInTheDocument();
+  });
+
+  it("선택 해제된 부서명으로 검색하면 결과에 나타나지 않는다", async () => {
+    render(
+      <MemoryRouter>
+        <History />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("폭우")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText("특보 · 수신처 검색"), { target: { value: "조리" } });
+
+    await waitFor(() => expect(screen.queryByText("폭우")).not.toBeInTheDocument());
+    expect(screen.getByText("발송 이력이 없습니다")).toBeInTheDocument();
   });
 });
