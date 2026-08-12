@@ -31,9 +31,12 @@
 
 .global-nav-inner {
   height: 100%;
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 32px;
+  padding: 0 48px;
+  box-sizing: border-box;
 }
 
 .global-nav-brand {
@@ -100,6 +103,10 @@
 }
 
 @media (max-width: 767px) {
+  .global-nav-inner {
+    padding: 0 24px;
+  }
+
   .global-nav-links {
     justify-content: flex-start;
   }

@@ -55,7 +55,7 @@ export function GlobalNav() {
 
   return (
     <nav className="global-nav">
-      <div className="global-nav-inner center-1120">
+      <div className="global-nav-inner">
         <Link to="/" className="global-nav-brand">
           <svg
             className="global-nav-brand-icon"
