@@ -2,7 +2,7 @@ import { serviceClient, loadEngineInputs, todayAccums } from "../_shared/db.ts";
 import { fetchObservation, parseKmaResponse } from "../_shared/kma.ts";
 import { feelsLikeC, snowNewCm } from "../_shared/derive.ts";
 import { evaluate } from "../_shared/engine.ts";
-import { composeDraft, renderMessage, KIND_LABEL, GRADE_LABEL, type DeptBlock } from "../_shared/template.ts";
+import { composeDraft, renderMessage, formatObsLine, KIND_LABEL, GRADE_LABEL, type DeptBlock } from "../_shared/template.ts";
 import { getChannel } from "../_shared/kakaowork.ts";
 import type { Kind, Grade, Obs } from "../_shared/types.ts";
 
@@ -56,7 +56,7 @@ Deno.serve(async (req) => {
     temp: saved.temp_c, feels: saved.feels_c, wind: saved.wind_ms };
   const actions = evaluate(obs, criteria, settings, open);
 
-  const obsLine = `시간당 ${saved.rain_mm_per_hr ?? "-"}mm · ${saved.temp_c ?? "-"}℃(체감 ${saved.feels_c ?? "-"}) · 풍속 ${saved.wind_ms ?? "-"}m/s`;
+  const obsLine = formatObsLine(saved);
 
   async function createEvent(kind: Kind, grade: Grade) {
     const { data: ev } = await db.from("weather_events")
@@ -96,10 +96,12 @@ Deno.serve(async (req) => {
                 ? await channel.send(r.kakaowork_user_id, renderMessage(b, { kindLabel: KIND_LABEL[a.kind],
                     gradeLabel: GRADE_LABEL[a.grade], siteName: site.site_name, obsLine }))
                 : { ok: false, error: "카카오워크 미연결" }) });
+        // 회차 채번은 weather_events.repeat_count 단일 소스 (승인 발송이 1회차 → 이후 +1씩).
         const { data: ev } = await db.from("weather_events").select("repeat_count").eq("id", a.eventId).single();
+        const repeatNo = (ev?.repeat_count ?? 0) + 1;
         await db.from("dispatches").insert({ message_id: msg.id, event_id: a.eventId,
-          repeat_no: (ev?.repeat_count ?? 0) + 1, results, content: (msg.content as DeptBlock[]) });
-        await db.from("weather_events").update({ repeat_count: (ev?.repeat_count ?? 0) + 1 }).eq("id", a.eventId);
+          repeat_no: repeatNo, results, content: (msg.content as DeptBlock[]) });
+        await db.from("weather_events").update({ repeat_count: repeatNo }).eq("id", a.eventId);
       }
     }
     if (a.type === "resolve") {

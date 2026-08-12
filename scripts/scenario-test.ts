@@ -149,11 +149,14 @@ Deno.test("시나리오 2: send approve(승인자 JWT) → 주의보 ACTIVE + di
   });
   assertEquals(res.status, 200);
 
-  const { data: ev } = await db.from("weather_events").select("status").eq("id", watchEventId).single();
+  const { data: ev } = await db.from("weather_events").select("status, repeat_count").eq("id", watchEventId).single();
   assertEquals(ev!.status, "ACTIVE");
+  // 승인 발송이 1회차 — 회차는 weather_events.repeat_count 단일 소스로 채번된다
+  assertEquals(ev!.repeat_count, 1);
 
-  const { data: d } = await db.from("dispatches").select("*").eq("event_id", watchEventId);
+  const { data: d } = await db.from("dispatches").select("repeat_no").eq("event_id", watchEventId);
   assertEquals(d!.length, 1);
+  assertEquals(d![0].repeat_no, 1);
 });
 
 // --- 3. 반복발송 -----------------------------------------------------------
@@ -168,10 +171,11 @@ Deno.test("시나리오 3: 당일 누적 시드 + weather-tick(약한 비 5mm) �
 
   const { data: ev } = await db.from("weather_events").select("status, repeat_count").eq("id", watchEventId).single();
   assertEquals(ev!.status, "ACTIVE");
-  assertEquals(ev!.repeat_count, 1);
+  assertEquals(ev!.repeat_count, 2);
 
-  const { data: d } = await db.from("dispatches").select("*").eq("event_id", watchEventId);
-  assertEquals(d!.length, 2);
+  const { data: d } = await db.from("dispatches")
+    .select("repeat_no").eq("event_id", watchEventId).order("repeat_no");
+  assertEquals(d!.map((x: { repeat_no: number }) => x.repeat_no), [1, 2]);
 });
 
 // --- 4. 격상 ---------------------------------------------------------------

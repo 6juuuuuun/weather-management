@@ -23,6 +23,18 @@ export function composeDraft(kind: Kind, grade: Grade,
   }));
 }
 
+// 발송 본문의 "현재 관측" 한 줄. weather-tick의 자동 반복 발송과 사람이 승인한 최초 발송이
+// 같은 포맷을 쓰도록 여기 한 곳에서만 만든다 (스펙 결정 11).
+export type ObsRow = { rain_mm_per_hr?: number|null; temp_c?: number|null;
+  feels_c?: number|null; wind_ms?: number|null };
+export const OBS_LINE_FALLBACK = "발송 시점 상세는 대시보드 참조";
+
+export function formatObsLine(obs: ObsRow|null|undefined): string {
+  if (!obs) return OBS_LINE_FALLBACK;   // 트리거 관측 조회 실패 시에만 폴백
+  return `시간당 ${obs.rain_mm_per_hr ?? "-"}mm · ${obs.temp_c ?? "-"}℃`
+    + `(체감 ${obs.feels_c ?? "-"}) · 풍속 ${obs.wind_ms ?? "-"}m/s`;
+}
+
 export function renderMessage(b: DeptBlock,
     ctx: { kindLabel: string; gradeLabel: string; siteName: string; obsLine: string }): string {
   const lines = [

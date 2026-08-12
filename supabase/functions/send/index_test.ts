@@ -85,6 +85,42 @@ Deno.test("send: dispatches.content는 발송 시점 스냅샷이며 재발송�
   assertEquals(newDispatch!.content, resendContent);
 });
 
+Deno.test("send approve: 발송 본문에 트리거 관측 수치가 들어가고 회차는 repeat_count 기준으로 1", async () => {
+  const db = serviceClient();
+  await resetEvents(db);
+  // 특보를 발생시킨 관측 — weather-tick의 자동 반복 발송과 같은 포맷으로 본문에 실려야 한다.
+  // 다른 테스트의 "최근 관측" 정렬을 흔들지 않도록 과거 시각에 심고 끝나면 지운다.
+  const observedAt = "2026-01-01T00:00:00.000Z";
+  await db.from("weather_observations").delete().eq("observed_at", observedAt);
+  const { data: obs } = await db.from("weather_observations").insert({
+    observed_at: observedAt, rain_mm_per_hr: 32.5, temp_c: 21,
+    feels_c: 24.3, wind_ms: 3, humidity_pct: 75, snow_new_cm: 0, missing: false,
+  }).select().single();
+  const { data: ev } = await db.from("weather_events")
+    .insert({ kind:"rain", grade:"watch", trigger_observation_id: obs!.id }).select().single();
+  const content = [{ department_id:"d", department_name:"객실", staff_actions:["a"],
+    guest_notice:"", recipients:[{ employee_id:"e", name:"홍", kakaowork_user_id:"kw1" }], selected:true }];
+  await db.from("messages").insert({ event_id: ev.id, content });
+  const token = await loginAs("approver", "ap6@t.co");
+
+  const res = await fetch(FN, { method:"POST",
+    headers: { Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
+    body: JSON.stringify({ mode:"approve", event_id: ev.id, content }) });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.obs_line, "시간당 32.5mm · 21℃(체감 24.3) · 풍속 3m/s");
+  assertEquals(body.repeat_no, 1);
+
+  // 회차 채번의 단일 소스가 갱신되었는지 (승인 = 1회차)
+  const { data: after } = await db.from("weather_events").select("repeat_count").eq("id", ev.id).single();
+  assertEquals(after!.repeat_count, 1);
+  const { data: d } = await db.from("dispatches").select("repeat_no").eq("event_id", ev.id).single();
+  assertEquals(d!.repeat_no, 1);
+
+  await resetEvents(db);   // 관측 행 삭제 전에 FK(weather_events.trigger_observation_id) 해제
+  await db.from("weather_observations").delete().eq("observed_at", observedAt);
+});
+
 Deno.test("send approve: staff는 403", async () => {
   const token = await loginAs("staff", "st2@t.co");
   const res = await fetch(FN, { method:"POST",
