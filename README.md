@@ -112,9 +112,10 @@ supabase secrets set --env-file .env.production
 
 ### 배포 체크리스트 (반드시 확인)
 
-- [ ] **`MOCK_KAKAO_PROFILE`을 프로덕션 Supabase secrets에 절대 설정하지 않는다.** 이 값이 설정되면
-  `auth-kakaowork`가 실제 OAuth 검증을 건너뛰고 아무나 지정된 프로필로 로그인할 수 있는
-  테스트 전용 백도어이므로, 로컬/CI 환경(`.env.test`)에서만 사용해야 합니다.
+- [ ] **`MOCK_KAKAO_PROFILE`을 프로덕션 Supabase secrets에 절대 설정하지 않는다.** 실제 OAuth 검증을
+  건너뛰는 테스트 전용 백도어입니다. `auth-kakaowork`는 `SUPABASE_URL`이 `127.0.0.1`/`localhost`를
+  가리킬 때만 이 값을 인정하도록 하드 가드가 걸려 있어 프로덕션에서는 설정돼도 무시되지만,
+  방어선을 하나만 두지 않도록 secrets에도 넣지 마세요.
 - [ ] **카카오워크 실 OAuth 왕복 스파이크를 배포 착수 조건으로 삼는다.** 로그인 → 콜백 → 세션 발급까지
   실제 워크스페이스에서 성공하는지 먼저 검증하세요. 실패한다면(무료 플랜 제약 등) 카카오워크 봇의
   DM으로 매직링크를 발송해 로그인시키는 대안으로 전환할지 검토해야 합니다.
@@ -141,15 +142,18 @@ supabase secrets set --env-file .env.production
 ## 5. 로컬 개발
 
 ```bash
+cp .env.test.example .env.test                        # 로컬 테스트용 env 생성 (gitignore 대상)
 supabase start                                       # 로컬 Supabase 스택 기동
 supabase db reset                                     # 스키마 + RLS + 시드 적용
 supabase functions serve --env-file .env.test          # Edge Functions 로컬 서빙 (터미널 1)
 cd apps/web && npm run dev                              # React 개발 서버 (터미널 2)
 ```
 
-`.env.test`는 로컬 전용 값(콘솔 알림 채널, mock 카카오 프로필 등)을 담고 있습니다.
-`supabase start`가 출력하는 `anon key`를 `apps/web/.env`(`.env.example` 복사)의
-`VITE_SUPABASE_ANON_KEY`에 채워 넣으세요.
+`.env.test`는 로컬 전용 값(콘솔 알림 채널, mock 카카오 프로필 등)을 담고 있으며 저장소에는
+템플릿인 [`.env.test.example`](.env.test.example)만 커밋됩니다. 템플릿의 Supabase 키는
+`supabase start`가 출력하는 로컬 데모 값이라 그대로 써도 되지만, 값이 다르면 `supabase status`
+출력으로 맞춰 주세요. 웹 앱은 별도로 `apps/web/.env`(`apps/web/.env.example` 복사)의
+`VITE_SUPABASE_ANON_KEY`에 같은 anon key를 채워 넣습니다.
 
 ### 테스트 명령
 
