@@ -1,0 +1,61 @@
+/* 날씨경영 — 디자인 토큰 (DESIGN-apple.md 기준, 값 변경 금지) */
+:root {
+  /* Colors */
+  --primary: #0066cc;
+  --primary-focus: #0071e3;
+  --primary-on-dark: #2997ff;
+  --ink: #1d1d1f;
+  --ink-muted-80: #333333;
+  --ink-muted-48: #7a7a7a;
+  --hairline: #e0e0e0;
+  --divider-soft: #f0f0f0;
+  --canvas: #ffffff;
+  --parchment: #f5f5f7;
+  --pearl: #fafafc;
+  --tile-dark: #272729;
+  --warn: #a65a00;
+  --warn-strong: #ff9500;
+  --danger: #d70015;
+  --danger-strong: #ff3b30;
+  --success: #248a3d;
+
+  /* Radius */
+  --radius-card: 18px;
+  --radius-ctl: 8px;
+
+  /* Type */
+  --font-ui: "Noto Sans KR", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-num: "Inter", "Noto Sans KR", -apple-system, sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--parchment);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}

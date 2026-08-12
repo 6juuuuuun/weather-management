@@ -1,0 +1,102 @@
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--canvas);
+  padding: 24px;
+}
+
+.login-hero {
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.login-logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  background: var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.login-logo svg {
+  width: 32px;
+  height: 32px;
+  stroke: var(--canvas);
+}
+
+.login-title {
+  margin: 24px 0 0;
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 48px;
+  letter-spacing: -0.5px;
+  color: var(--ink);
+}
+
+.login-lead {
+  margin: 16px 0 0;
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-size: 21px;
+  line-height: 1.45;
+  color: var(--ink-muted-80);
+}
+
+.login-cta {
+  margin-top: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 28px;
+  border: none;
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--canvas);
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 17px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.login-cta:hover {
+  background: var(--primary-focus);
+}
+
+.login-cta svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  stroke: var(--canvas);
+}
+
+.login-fineprint {
+  margin-top: 24px;
+  font-family: var(--font-ui);
+  font-weight: 300;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-muted-48);
+}
+
+@media (max-width: 420px) {
+  .login-title {
+    font-size: 36px;
+  }
+  .login-lead {
+    font-size: 17px;
+  }
+  .login-cta {
+    width: 100%;
+  }
+}
