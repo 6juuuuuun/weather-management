@@ -153,6 +153,15 @@ cd apps/web && npm run dev                              # React 개발 서버 (�
 
 ### 테스트 명령
 
+`--env-file`은 `functions serve` 컨테이너에만 적용되므로, 테스트를 실행하는 셸에는 `SUPABASE_URL`
+등의 env가 없습니다. Deno 통합/시나리오 테스트(`serviceClient()`로 DB에 직접 접속)를 실행하기 전에
+아래처럼 셸에 로컬 env를 별도로 주입해야 합니다.
+
+```bash
+# 통합/시나리오 테스트 전 셸에 로컬 env 주입 (1회)
+set -a && source .env.test && set +a
+```
+
 ```bash
 # Deno 단위/통합 테스트 (supabase start + db reset + functions serve 필요)
 deno test --allow-net --allow-env supabase/functions/
@@ -171,6 +180,7 @@ cd apps/web && npm run build
 
 ```bash
 supabase db reset
+set -a && source .env.test && set +a
 deno test --allow-net --allow-env supabase/functions/ scripts/scenario-test.ts \
   && (cd apps/web && npx vitest run) \
   && (cd apps/web && npm run build)

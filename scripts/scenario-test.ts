@@ -2,6 +2,7 @@
 //
 // 전제: `supabase start` + `supabase db reset` + `supabase functions serve --env-file .env.test` 실행 중
 // 실행: deno test --allow-net --allow-env scripts/scenario-test.ts
+// 순서 의존 테스트 — --parallel 실행 금지 (Deno.test들이 같은 특보/누적 상태를 이어받아 진행함)
 //
 // 시각 조작 없이 x-mock-kma 헤더로 관측값을 주입해 로컬 스택 그대로 전 구간을 검증한다.
 // 흐름:
