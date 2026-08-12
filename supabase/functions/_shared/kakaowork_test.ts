@@ -25,3 +25,8 @@ Deno.test("KakaoWorkChannel: API 실패 시 ok=false + error", async () => {
 Deno.test("getChannel: NOTIFY_CHANNEL=console이면 ConsoleChannel", () => {
   assertEquals(getChannel({ NOTIFY_CHANNEL: "console" }) instanceof ConsoleChannel, true);
 });
+Deno.test("KakaoWorkChannel: 네트워크 오류 시 throw 없이 ok=false", async () => {
+  const ch = new KakaoWorkChannel("key", (() => Promise.reject(new Error("ECONNRESET"))) as typeof fetch);
+  const r = await ch.send("kw1", "hello");
+  assertEquals(r.ok, false);
+});

@@ -14,10 +14,16 @@ export class KakaoWorkChannel implements NotificationChannel {
     return res.json();
   }
   async send(userId: string, text: string) {
-    const open = await this.call("conversations.open", { user_id: userId });
-    if (!open.success) return { ok: false, error: open.error?.message ?? "conversations.open failed" };
-    const sent = await this.call("messages.send", { conversation_id: open.conversation.id, text });
-    return sent.success ? { ok: true } : { ok: false, error: sent.error?.message ?? "messages.send failed" };
+    try {
+      const open = await this.call("conversations.open", { user_id: userId });
+      if (!open?.success || !open?.conversation?.id) {
+        return { ok: false, error: open?.error?.message ?? "conversations.open failed" };
+      }
+      const sent = await this.call("messages.send", { conversation_id: open.conversation.id, text });
+      return sent?.success ? { ok: true } : { ok: false, error: sent?.error?.message ?? "messages.send failed" };
+    } catch (e) {
+      return { ok: false, error: `network/parse error: ${String(e)}` };
+    }
   }
 }
 
