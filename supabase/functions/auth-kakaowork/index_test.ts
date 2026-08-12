@@ -49,6 +49,12 @@ Deno.test("callback: ADMIN_KAKAOWORK_ID와 일치하면 admin", async () => {
   await cleanup(db, "boss@t.co");
 });
 
+Deno.test("callback: code 파라미터가 없으면 400", async () => {
+  const res = await fetch(`${FN}?action=callback`, { redirect: "manual" });
+  await res.body?.cancel();
+  assertEquals(res.status, 400);
+});
+
 Deno.test("callback: 기존에 staff로 가입된 ADMIN_KAKAOWORK_ID 사용자는 재로그인 시 admin으로 승격", async () => {
   const db = serviceClient();
   await cleanup(db, "boss@t.co");

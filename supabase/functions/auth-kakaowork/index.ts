@@ -3,6 +3,16 @@ import { serviceClient } from "../_shared/db.ts";
 const env = (k: string) => Deno.env.get(k);
 const AUTH_URL = "https://auth.kakaowork.com/oauth2/authorize";
 const TOKEN_URL = "https://auth.kakaowork.com/oauth2/token";
+const STATE_COOKIE = "kw_oauth_state";
+
+function cookieValue(req: Request, name: string): string | undefined {
+  const header = req.headers.get("Cookie") ?? "";
+  for (const part of header.split(";")) {
+    const [k, ...rest] = part.trim().split("=");
+    if (k === name) return rest.join("=");
+  }
+  return undefined;
+}
 
 Deno.serve(async (req) => {
   const u = new URL(req.url);
@@ -10,25 +20,39 @@ Deno.serve(async (req) => {
   const selfUrl = `${env("SUPABASE_URL")}/functions/v1/auth-kakaowork?action=callback`;
 
   if (action === "login") {
+    // 로그인 CSRF 방지: state를 HttpOnly 쿠키로 심어두고 callback에서 쿼리 state와 대조한다.
+    const state = crypto.randomUUID();
     const q = new URLSearchParams({ client_id: env("KAKAOWORK_CLIENT_ID")!,
-      redirect_uri: selfUrl, response_type: "code", state: crypto.randomUUID() });
-    return Response.redirect(`${AUTH_URL}?${q}`, 302);
+      redirect_uri: selfUrl, response_type: "code", state });
+    return new Response(null, { status: 302, headers: {
+      Location: `${AUTH_URL}?${q}`,
+      "Set-Cookie": `${STATE_COOKIE}=${state}; HttpOnly; Secure; SameSite=Lax; Max-Age=600; Path=/`,
+    } });
   }
 
   if (action === "callback") {
+    const code = u.searchParams.get("code");
+    if (!code) return new Response("missing code", { status: 400 });
+
     let profile: { email: string; user_id: string; name?: string };
     const mock = env("MOCK_KAKAO_PROFILE");
     if (mock) {
       // 테스트 전용: MOCK_KAKAO_PROFILE env가 설정된 경우에만 쿼리 파라미터로 mock 프로필의 email을
       // 오버라이드할 수 있게 한다(env 없는 프로덕션에서는 이 분기 자체에 도달하지 않으므로 완전 무시됨).
       // user_id도 email에 종속해 함께 바꿔 kakaowork_user_id unique 제약과 충돌하지 않게 한다.
+      // state 검증도 이 경로에서는 생략한다(테스트 편의 — env 게이트 뒤라 안전).
       profile = JSON.parse(mock);
       const mockEmail = u.searchParams.get("mock_email");
       if (mockEmail) {
         profile = { ...profile, email: mockEmail, user_id: `kw-${mockEmail}` };
       }
     } else {
-      const code = u.searchParams.get("code")!;
+      // 실 OAuth 경로에서만 state를 검증한다: login에서 심어둔 쿠키와 쿼리 state가 일치해야 진행.
+      const stateParam = u.searchParams.get("state");
+      const cookieState = cookieValue(req, STATE_COOKIE);
+      if (!stateParam || !cookieState || stateParam !== cookieState) {
+        return new Response("invalid oauth state", { status: 403 });
+      }
       const tokenRes = await fetch(TOKEN_URL, { method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ grant_type: "authorization_code", code,
