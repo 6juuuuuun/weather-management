@@ -51,8 +51,42 @@
   color: var(--ink-muted-80);
 }
 
-.login-cta {
+.login-form {
   margin-top: 32px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.login-label {
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--ink-muted-48);
+  text-align: left;
+}
+
+.login-input {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-ctl);
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-size: 17px;
+}
+
+.login-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.login-cta {
+  margin-top: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -73,11 +107,27 @@
   background: var(--primary-focus);
 }
 
+.login-cta:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .login-cta svg {
   width: 18px;
   height: 18px;
   flex-shrink: 0;
   stroke: var(--canvas);
+}
+
+.login-cta-ghost {
+  margin-top: 32px;
+  background: var(--canvas);
+  color: var(--primary);
+  border: 1px solid var(--primary);
+}
+
+.login-cta-ghost:hover {
+  background: var(--parchment);
 }
 
 .login-fineprint {

@@ -177,6 +177,12 @@ export default function Dashboard() {
       <p className="dash-desc">실시간 날씨 모니터링과 특보 현황</p>
 
       <div className="dash-stack">
+        {employee?.role === "staff" && employee.department_id === null && (
+          <div className="dept-banner">
+            부서가 아직 지정되지 않았습니다. 관리자에게 부서 지정을 요청해 주세요.
+          </div>
+        )}
+
         {employee?.role === "admin" && setup && setup.done < setup.total && (
           <div className="setup-strip">
             <div className="setup-strip-main">

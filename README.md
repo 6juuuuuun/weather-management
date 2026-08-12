@@ -33,7 +33,10 @@ React SPA (Vite, Vercel) ── supabase-js ──► Supabase
 - **remind-tick** (매 10분): `PENDING_APPROVAL` 상태로 재알림 간격이 지나면 사업부장에게 다시 알립니다.
 - **send**: 사업부장의 승인/무시/재발송 요청을 처리합니다. 승인 시 메시지 스냅샷을 확정해
   부서별 수신자에게 발송하고 `dispatches`에 기록합니다.
-- **auth-kakaowork**: 카카오워크 OAuth 콜백 → 직원 매칭/자동 가입 → Supabase 세션 발급.
+- **auth-kakaowork**: 로그인 이메일을 받아 카카오워크 워크스페이스 멤버십을 확인하고, 멤버면
+  직원 매칭/자동 가입 후 카카오워크 봇 DM으로 Supabase 매직링크를 발송합니다(카카오워크 서드파티
+  OAuth는 제공되지 않아 사용하지 않습니다). 비멤버 요청도 동일한 응답을 돌려줘 계정 존재 여부를
+  노출하지 않습니다.
 - **NotificationChannel 어댑터**: 카카오워크 구현체 + 콘솔/로그 구현체. 다른 채널(알림톡 등)을
   붙이고 싶은 오픈소스 사용자를 위한 확장 지점입니다 (§6 참고).
 
@@ -41,7 +44,7 @@ React SPA (Vite, Vercel) ── supabase-js ──► Supabase
 
 | ![대시보드](design/previews/00-dashboard.png) | ![초안 검토·발송](design/previews/03-event-review.png) | ![로그인](design/previews/07-login.png) |
 |:---:|:---:|:---:|
-| 대시보드 — 셋업 체크리스트·승인 대기·관측값 | 초안 검토·발송 — 부서 블록 편집·승인 | 로그인 — 카카오워크 OAuth 단일 버튼 |
+| 대시보드 — 셋업 체크리스트·승인 대기·관측값 | 초안 검토·발송 — 부서 블록 편집·승인 | 로그인 — 이메일 입력 → 카카오워크 DM 매직링크 |
 
 그 외 화면 미리보기는 `design/previews/`에 모두 있습니다 (기준 정의·지침 등록·발송 이력·알림 설정·직원 관리 등).
 
@@ -52,17 +55,19 @@ React SPA (Vite, Vercel) ── supabase-js ──► Supabase
 1. [공공데이터포털](https://www.data.go.kr)에 가입 후 **기상청_단기예보 조회서비스**(서비스 ID `15084084`)를
    활용신청합니다. 자동승인이라 신청 즉시 사용할 수 있습니다.
 2. 마이페이지 → 개발계정 상세보기에서 **일반 인증키(Decoding)**를 복사합니다. 이 값이 `KMA_API_KEY`입니다.
+   Encoding·Decoding 어느 쪽을 넣어도 동작합니다(코드가 자동으로 정규화합니다).
 3. 관측 지점의 기상청 격자좌표(nx, ny)도 함께 확인해 두세요 — 설치 후 `site_settings`(설정 화면)에서 입력합니다.
 
-### 카카오워크 봇·OAuth 앱 등록
+### 카카오워크 봇 등록
 
 1. 카카오워크 관리자 콘솔 → 앱 관리에서 **커스텀 봇을 생성**합니다. 발급된 **App Key**가 `KAKAOWORK_BOT_KEY`입니다.
-2. 같은 관리자 콘솔에서 **OAuth 앱**을 등록해 `KAKAOWORK_CLIENT_ID` / `KAKAOWORK_CLIENT_SECRET`을 발급받고,
-   리다이렉트 URI를 배포한 `auth-kakaowork` Edge Function의 콜백 주소(`.../functions/v1/auth-kakaowork?action=callback`)로
-   등록합니다.
-3. **중요**: 카카오워크 무료 플랜에서의 워크봇 API 가용 여부와 OAuth 연동 가능 여부는 조직마다 다를 수 있습니다.
-   실 배포 전에 반드시 실제 워크스페이스로 OAuth 왕복(로그인 → 콜백 → 세션 발급)까지 스파이크로 검증하세요
-   (§3 배포 체크리스트 참고).
+   이 봇 키는 로그인 시 워크스페이스 멤버십 조회(`users.find_by_email`)와 매직링크 DM 발송
+   (`conversations.open` + `messages.send`), 특보 발송에 모두 사용됩니다.
+2. 카카오워크는 서드파티 OAuth를 제공하지 않으므로(`auth.kakaowork.com`이 존재하지 않음) 별도의
+   OAuth 앱 등록은 필요하지 않습니다. 로그인은 이메일 입력 → 봇 DM 매직링크 클릭 방식입니다.
+3. **중요**: 카카오워크 무료 플랜에서의 워크봇 API 가용 여부는 조직마다 다를 수 있습니다. 실 배포 전에
+   반드시 실제 워크스페이스로 로그인 요청 → DM 수신 → 매직링크 클릭 → 세션 발급까지 왕복을
+   스파이크로 검증하세요 (§3 배포 체크리스트 참고).
 
 ### Supabase 프로젝트 생성
 
@@ -100,11 +105,10 @@ supabase secrets set --env-file .env.production
 | `VITE_SUPABASE_ANON_KEY` | `apps/web` 빌드 | Supabase anon key |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Edge Functions (Supabase가 자동 주입) | DB 접근용 |
 | `KMA_API_KEY` | Edge Functions secrets | 기상청 공공데이터 일반 인증키(Decoding) |
-| `KAKAOWORK_BOT_KEY` | Edge Functions secrets | 카카오워크 커스텀 봇 App Key |
-| `KAKAOWORK_CLIENT_ID` / `KAKAOWORK_CLIENT_SECRET` | Edge Functions secrets | 카카오워크 OAuth 앱 자격증명 |
+| `KAKAOWORK_BOT_KEY` | Edge Functions secrets | 카카오워크 커스텀 봇 App Key (멤버십 조회·로그인 DM·특보 발송) |
 | `ADMIN_KAKAOWORK_ID` | Edge Functions secrets | 최초 시스템관리자로 지정할 카카오워크 로그인 이메일 |
 | `CRON_SECRET` | Edge Functions secrets + DB `app.cron_secret` | pg_cron → Edge Function 호출 인증용 임의 문자열 |
-| `APP_BASE_URL` | Edge Functions secrets | 웹 콘솔 URL (OAuth 리다이렉트·딥링크 생성용) |
+| `APP_BASE_URL` | Edge Functions secrets | 웹 콘솔 URL (매직링크 딥링크 생성용) |
 | `NOTIFY_CHANNEL` | Edge Functions secrets (선택) | `console`로 설정하면 카카오워크 대신 로그 채널 사용 (개발/시연용) |
 
 전체 목록과 형식은 저장소 루트의 [`.env.example`](.env.example), 웹 앱용은
@@ -112,13 +116,8 @@ supabase secrets set --env-file .env.production
 
 ### 배포 체크리스트 (반드시 확인)
 
-- [ ] **`MOCK_KAKAO_PROFILE`을 프로덕션 Supabase secrets에 절대 설정하지 않는다.** 실제 OAuth 검증을
-  건너뛰는 테스트 전용 백도어입니다. `auth-kakaowork`는 `SUPABASE_URL`이 `127.0.0.1`/`localhost`를
-  가리킬 때만 이 값을 인정하도록 하드 가드가 걸려 있어 프로덕션에서는 설정돼도 무시되지만,
-  방어선을 하나만 두지 않도록 secrets에도 넣지 마세요.
-- [ ] **카카오워크 실 OAuth 왕복 스파이크를 배포 착수 조건으로 삼는다.** 로그인 → 콜백 → 세션 발급까지
-  실제 워크스페이스에서 성공하는지 먼저 검증하세요. 실패한다면(무료 플랜 제약 등) 카카오워크 봇의
-  DM으로 매직링크를 발송해 로그인시키는 대안으로 전환할지 검토해야 합니다.
+- [ ] **카카오워크 봇 DM 왕복 스파이크를 배포 착수 조건으로 삼는다.** 로그인 화면에서 이메일 입력 →
+  DM 수신 → 매직링크 클릭 → 세션 발급까지 실제 워크스페이스에서 성공하는지 먼저 검증하세요.
 - [ ] **`ADMIN_KAKAOWORK_ID`를 설정한 뒤, 그 이메일 계정으로 첫 로그인**해 시스템관리자 권한을 확보한다
   (§4 참고). 설정을 빠뜨리면 관리자가 0명인 채로 시작하게 됩니다.
 - [ ] `app.edge_base_url` / `app.cron_secret` DB 설정을 마쳐 pg_cron이 정상 동작하는지 확인한다

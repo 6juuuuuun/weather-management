@@ -379,7 +379,8 @@ verify_jwt = false
 [functions.remind-tick]
 verify_jwt = false
 
-# auth-kakaowork는 브라우저가 직접 여는 OAuth 리다이렉트 엔드포인트(JWT 없이 열림) → 게이트웨이 JWT 검증 비활성화
+# auth-kakaowork는 로그인 전(세션 없음) 브라우저가 직접 POST하는 매직링크 요청 엔드포인트
+# → 게이트웨이 JWT 검증 비활성화
 [functions.auth-kakaowork]
 verify_jwt = false
 
