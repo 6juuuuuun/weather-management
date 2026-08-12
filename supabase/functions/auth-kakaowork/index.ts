@@ -8,10 +8,26 @@
 // (예: email을 쿼리로 받아 magiclink를 발급) 인증 없이 임의 이메일로 로그인 링크를 발급하는 경로가
 // 하나 더 생기는 셈이라 보안상 두지 않는다.
 import { serviceClient } from "../_shared/db.ts";
-import { getChannel } from "../_shared/kakaowork.ts";
-import { resolveKakaoworkUserIdByEmail } from "../_shared/kakaowork.ts";
+import { getChannel, isLocalUrl, resolveKakaoworkUserIdByEmail } from "../_shared/kakaowork.ts";
 
 const env = (k: string) => Deno.env.get(k);
+
+// Supabase Edge Runtime(edge-runtime)은 요청 핸들러가 응답을 반환한 뒤에도 계속 실행할 백그라운드
+// 작업을 등록할 수 있는 EdgeRuntime.waitUntil()을 전역으로 제공한다. 로컬 `deno test` 등 이 전역이
+// 없는 환경에서는 그냥 fire-and-forget으로 처리한다(둘 다 실패는 콘솔 로그로만 남긴다).
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void } | undefined;
+
+function runBackground(p: Promise<void>) {
+  const guarded = p.catch((e) => console.error(`auth-kakaowork: 백그라운드 작업 실패: ${e}`));
+  if (typeof EdgeRuntime !== "undefined" && EdgeRuntime?.waitUntil) {
+    EdgeRuntime.waitUntil(guarded);
+  } else {
+    void guarded;
+  }
+}
+
+const ok = () =>
+  new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
 
 Deno.serve(async (req) => {
   const u = new URL(req.url);
@@ -33,23 +49,41 @@ async function handleRequest(req: Request): Promise<Response> {
     // 잘못된 body도 열거 공격 방지를 위해 동일하게 ok:true로 응답한다.
   }
 
-  const ok = new Response(JSON.stringify({ ok: true }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-
-  if (!email) return ok;
+  if (!email) return ok();
 
   const botKey = env("KAKAOWORK_BOT_KEY");
-  // 봇 키가 있으면 실제 워크스페이스 멤버인지 조회해 존재 여부를 절대 노출하지 않는다(비멤버는 조용히 ok만 반환).
-  // 봇 키가 없는 로컬 개발(ConsoleChannel 경로)에서는 멤버십을 조회할 수 없으므로 모든 이메일을 허용해
-  // 링크가 콘솔에 출력되도록 한다.
-  let kakaoworkUserId: string | null = null;
-  if (botKey) {
-    kakaoworkUserId = await resolveKakaoworkUserIdByEmail(botKey, email);
-    if (!kakaoworkUserId) return ok;
+  // 봇 키가 없으면 워크스페이스 멤버십을 조회할 방법이 없다 — fail-closed가 기본이라, 시크릿이
+  // 누락된 프로덕션에서는 인증 경계가 조용히 사라지는 대신 요청을 그냥 무시한다(응답은 여전히
+  // ok:true로 열거 공격을 막는다). 로컬 개발(둘 다 로컬 URL)에서만 예외적으로 허용해
+  // ConsoleChannel 경로로 봇 키 없이도 전 구간을 테스트할 수 있게 한다.
+  const allowNoBotKey = isLocalUrl(env("SUPABASE_URL")) && isLocalUrl(env("APP_BASE_URL"));
+  if (!botKey && !allowNoBotKey) {
+    console.error(`auth-kakaowork: 봇 키 미설정 — 요청 무시 email=${email}`);
+    return ok();
   }
 
+  // 멤버십 확인은 응답 전에 수행한다(비멤버라면 계정을 만들 근거 자체가 없음). 다만 확인 *이후*의
+  // 모든 작업(계정 생성·매직링크 발급·DM 발송, 특히 카카오워크 API 왕복 2회가 드는 DM 발송)은
+  // 응답 이후 백그라운드로 미뤄, 멤버/비멤버 두 경로가 정확히 동일한 await 1회(멤버십 조회)만 거치고
+  // 응답하도록 만든다 — 그래야 응답 시간 차이로 멤버 여부가 새어나가는 타이밍 사이드채널이 없어진다.
+  let kakaoworkUserId: string | null = null;
+  if (botKey) {
+    try {
+      kakaoworkUserId = await resolveKakaoworkUserIdByEmail(botKey, email);
+    } catch (e) {
+      console.error(`auth-kakaowork: 멤버십 조회 실패 email=${email} error=${e}`);
+      return ok();
+    }
+    if (!kakaoworkUserId) return ok();
+  }
+
+  runBackground(provisionAndNotify(email, kakaoworkUserId, botKey));
+  return ok();
+}
+
+async function provisionAndNotify(
+  email: string, kakaoworkUserId: string | null, botKey: string | undefined,
+): Promise<void> {
   const db = serviceClient();
   const { data: existing } = await db.from("employees").select("*").eq("email", email).maybeSingle();
   // ADMIN_KAKAOWORK_ID와 일치하면 기존 사용자 여부와 무관하게 항상 admin을 보장한다(강등은 하지 않음).
@@ -61,7 +95,7 @@ async function handleRequest(req: Request): Promise<Response> {
     });
     if (createErr || !created?.user) {
       console.error(`auth-kakaowork: createUser 실패 email=${email} error=${createErr?.message}`);
-      return ok;
+      return;
     }
     authUserId = created.user.id;
   }
@@ -78,7 +112,7 @@ async function handleRequest(req: Request): Promise<Response> {
   const tokenHash = link?.properties?.hashed_token;
   if (!tokenHash) {
     console.error(`auth-kakaowork: 매직링크 발급 실패 email=${email} error=${linkErr?.message}`);
-    return ok;
+    return;
   }
 
   const loginUrl = `${env("APP_BASE_URL")}/auth/callback#token_hash=${tokenHash}`;
@@ -92,6 +126,4 @@ async function handleRequest(req: Request): Promise<Response> {
   if (!sendResult.ok) {
     console.error(`auth-kakaowork: DM 발송 실패 email=${email} error=${sendResult.error}`);
   }
-
-  return ok;
 }

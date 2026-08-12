@@ -57,16 +57,46 @@
 ## 검증 결과 (전부 통과)
 
 ```
-supabase db reset                                                  → OK (마이그레이션 5건 + 시드)
+supabase db reset                                                  → OK (마이그레이션 6건 + 시드)
 supabase functions serve --env-file .env.test (백그라운드)          → 기동 성공
 deno check <_shared 5개 + weather-tick/remind-tick/send/auth-kakaowork> → 통과 (에러 0)
-deno test --allow-net --allow-env supabase/functions/              → 49 passed, 0 failed
-deno test --allow-net --allow-env scripts/scenario-test.ts         → 8 passed, 0 failed
+deno test --allow-net --allow-env supabase/functions/ scripts/scenario-test.ts → 59 passed, 0 failed
 cd apps/web && npx vitest run                                      → 7 files / 35 tests passed
 cd apps/web && npm run build                                       → tsc -b && vite build 성공
 ```
 
 `.env.test`에서 `MOCK_KAKAO_PROFILE` 제거 완료, `.env.test.example`도 갱신.
+
+## 리뷰 반영 (보안 소견 2건 + 1건, 2026-08-13)
+
+1. **[Critical] 타이밍 사이드채널로 멤버십 열거 가능 → 수정 완료**
+   `handleRequest`가 응답 전에 수행하는 작업을 멤버/비멤버 양쪽 모두 "멤버십 조회 1회"로 통일했다.
+   조회 이후의 모든 작업(employees upsert·createUser·generateLink·DM 발송, 특히 카카오워크 API
+   왕복 2회가 드는 DM 발송)은 `provisionAndNotify()`로 분리해 응답 이후 백그라운드로 넘긴다.
+   `runBackground()`가 `EdgeRuntime.waitUntil`이 있으면 그걸 쓰고, 없으면(로컬 `deno test` 등)
+   fire-and-forget으로 처리하며 실패는 콘솔 로그로만 남긴다.
+2. **[Important] 봇 키 부재 시 fail-open → fail-closed로 수정**
+   `_shared/kakaowork.ts`에 `isLocalUrl` 추가(기존 OAuth 코드의 하드 가드 패턴 재사용).
+   `KAKAOWORK_BOT_KEY`가 없고 `SUPABASE_URL`·`APP_BASE_URL` 둘 다 로컬이 아니면 계정 생성/링크
+   발급 없이 `{ok:true}` + 콘솔 에러 로그("봇 키 미설정 — 요청 무시")만 남기고 종료. 로컬(둘 다
+   로컬 URL)일 때만 예외적으로 허용해 ConsoleChannel 경로로 로컬 개발이 가능하게 유지.
+3. **[Minor] 멤버십 조회 예외 미처리 → try/catch 추가**
+   `resolveKakaoworkUserIdByEmail` 호출을 try/catch로 감싸 카카오워크 API 장애 시에도 `{ok:true}`
+   불변식이 깨지지 않게 함.
+
+**테스트 보강**:
+- `_shared/kakaowork_test.ts`에 `isLocalUrl` 단위 테스트 2건(로컬 URL 3종 판정 / 프로덕션·undefined
+  는 로컬 아님). "봇 키 없음 + 비로컬 URL이면 계정 미생성"은 이 순수 함수 단위 테스트로 결정론적으로
+  검증했다 — 로컬 통합 테스트 하네스(`supabase functions serve --env-file .env.test`)는 항상 로컬
+  URL로만 뜨기 때문에 그 조합을 통합 테스트로 직접 재현할 수 없어, 분기 로직 자체를 단위 테스트하는
+  쪽을 택했다(기존 저장소 컨벤션 — 순수 로직은 `_shared/*_test.ts`, 엔트리포인트는 HTTP 통합 테스트).
+- `auth-kakaowork/index_test.ts`: 계정 생성이 백그라운드로 넘어가면서 응답 직후 employees를 조회하면
+  아직 반영 전일 수 있어, `waitForEmployee`/`pollUntil` 폴링 헬퍼를 추가해 기존 4개 테스트를 여기에
+  맞춰 조정. 새로 깨진 테스트 없이 전부 통과.
+
+재검증 결과: `deno check` 9개 파일 통과, `deno test --allow-net --allow-env supabase/functions/
+scripts/scenario-test.ts` → **59 passed, 0 failed**, `cd apps/web && npx vitest run && npm run build`
+→ 35 tests passed + build 성공.
 
 ## 우려 사항 / 후속 검토 필요
 

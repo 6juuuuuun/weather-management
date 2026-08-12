@@ -3,8 +3,15 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { serviceClient } from "../_shared/db.ts";
 
 // 전제: supabase start + db reset + 아래 env로 `supabase functions serve --env-file .env.test` 실행 중
-//   NOTIFY_CHANNEL=console (KAKAOWORK_BOT_KEY 없음 → 멤버십 조회 없이 모든 이메일 허용)
+//   NOTIFY_CHANNEL=console, KAKAOWORK_BOT_KEY 없음, SUPABASE_URL/APP_BASE_URL 둘 다 로컬
+//   → 멤버십 조회 없이(fail-closed 예외 경로) 모든 이메일 허용
 //   ADMIN_KAKAOWORK_ID=boss@t.co
+//
+// 계정 생성·매직링크 발급·DM 발송은 응답 이후 백그라운드(EdgeRuntime.waitUntil)로 넘어가므로,
+// 요청 직후 employees를 조회하면 아직 반영 전일 수 있다 → waitForEmployee로 폴링한다.
+// "봇 키 없음 + 비로컬 URL이면 계정이 생성되지 않는다"(fail-closed)는 이 로컬 통합 테스트 하네스가
+// 항상 로컬 URL로만 뜨기 때문에 여기서 직접 재현할 수 없다 — 그 분기 로직(isLocalUrl)은
+// `_shared/kakaowork_test.ts`에서 결정적으로 단위 테스트한다.
 const FN = "http://127.0.0.1:54321/functions/v1/auth-kakaowork";
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -16,6 +23,27 @@ async function requestLink(email: string): Promise<{ ok: boolean }> {
     body: JSON.stringify({ email }),
   });
   return res.json();
+}
+
+async function pollUntil<T>(
+  fn: () => Promise<T | null | undefined>,
+  opts: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<T> {
+  const { timeoutMs = 5000, intervalMs = 50 } = opts;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const v = await fn();
+    if (v) return v;
+    if (Date.now() > deadline) throw new Error("pollUntil: 타임아웃 — 백그라운드 작업이 끝나지 않음");
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
+async function waitForEmployee(db: ReturnType<typeof serviceClient>, email: string) {
+  return pollUntil(async () => {
+    const { data } = await db.from("employees").select("*").eq("email", email).maybeSingle();
+    return data;
+  });
 }
 
 async function cleanup(db: ReturnType<typeof serviceClient>, email: string) {
@@ -31,7 +59,7 @@ Deno.test("request: 신규 워크스페이스 멤버는 staff·부서 미지정�
   const res = await requestLink("new@t.co");
   assertEquals(res, { ok: true });
 
-  const { data: emp } = await db.from("employees").select("*").eq("email", "new@t.co").single();
+  const emp = await waitForEmployee(db, "new@t.co");
   assertEquals(emp.role, "staff");
   assertEquals(emp.department_id, null);
   assertExists(emp.auth_user_id);
@@ -46,7 +74,7 @@ Deno.test("request: ADMIN_KAKAOWORK_ID와 일치하면 admin으로 가입", asyn
   const res = await requestLink("boss@t.co");
   assertEquals(res, { ok: true });
 
-  const { data: emp } = await db.from("employees").select("*").eq("email", "boss@t.co").single();
+  const emp = await waitForEmployee(db, "boss@t.co");
   assertEquals(emp.role, "admin");
   assertEquals(emp.department_id, null);
 
@@ -64,7 +92,10 @@ Deno.test("request: 기존에 staff로 가입된 ADMIN_KAKAOWORK_ID 사용자는
   const res = await requestLink("boss@t.co");
   assertEquals(res, { ok: true });
 
-  const { data: emp } = await db.from("employees").select("*").eq("email", "boss@t.co").single();
+  const emp = await pollUntil(async () => {
+    const { data } = await db.from("employees").select("*").eq("email", "boss@t.co").maybeSingle();
+    return data?.role === "admin" ? data : null;
+  });
   assertEquals(emp.role, "admin");
 
   await cleanup(db, "boss@t.co");
@@ -85,6 +116,7 @@ Deno.test("callback 세션 확립: 발급된 magiclink token_hash로 verifyOtp�
 
   const res = await requestLink("linktest@t.co");
   assertEquals(res, { ok: true });
+  await waitForEmployee(db, "linktest@t.co"); // 백그라운드 프로비저닝 완료를 기다림
 
   // 발송 채널(console)이 실제로 보내는 것과 동일한 링크를 서버에서 재발급해 token_hash를 얻는다
   // (DM 본문 자체는 이 테스트 프로세스에서 캡처할 수 없으므로, 웹의 AuthCallback.tsx가 수행하는
