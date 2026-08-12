@@ -688,8 +688,8 @@ export type Action =
 3. 초과 판정: rain→`obs.rain ≥ threshold.rain_mm_per_hr`, snow→`obs.snowToday ≥ threshold.snow_cm`, wind→`obs.wind ≥ threshold.wind_ms`, heat→`obs.temp ≥ threshold.temp_c` OR `obs.feels ≥ threshold.feels_c`.
 4. warning 기준 충족: 같은 kind의 열린 watch가 있으면 `escalate`, 열린 warning이 없으면 `create(warning)`. watch만 충족 시 열린 것 없으면 `create(watch)`.
 5. 같은 kind·grade가 PENDING/ACTIVE로 열려 있으면 `create` 금지. DISMISSED이고 해제조건 미충족(`dismissedOpen`)이어도 `create` 금지.
-6. `repeat`: ACTIVE + 정책 once 아님 + 반복조건 충족. `hourly_until_below`=현재도 기준 이상(heat는 `heatRepeatBasis` 기준값만 비교), `until_daily_accum_below`=일 누적(rainToday/snowToday)이 `repeatAccumThreshold` 초과.
-7. `resolve`: 열린(PENDING_APPROVAL·ACTIVE·DISMISSED-open 모두) 특보의 해제조건 충족 — `hourly_until_below`·`once`=기준 미달, `until_daily_accum_below`=누적 임계 이하 그리고 기준 미달. PENDING이 resolve되는 경우의 알림 분기는 weather-tick(Task 10)이 담당: 승인된 메시지가 있으면 부서 해제 알림, 없으면(초안 대기 중 자동 종료) alert_recipients에게 자동 종료 알림.
+6. `repeat`: ACTIVE + 정책 once 아님 + 반복조건 충족. `hourly_until_below`=현재도 기준 이상(heat는 `heatRepeatBasis` 기준값만 비교), `until_daily_accum_below`=**아직 내리는 중**(rain>0 / snowNew>0)이면서 (기준 이상 또는 일 누적 > `repeatAccumThreshold`).
+7. `resolve`: 열린(PENDING_APPROVAL·ACTIVE·DISMISSED-open 모두) 특보의 해제조건 충족 — `hourly_until_below`·`once`=기준 미달, `until_daily_accum_below`=**강수·강설 중단**(시간당 값 0). 일 누적은 자정까지 단조 증가하므로 해제 기준이 될 수 없다 (2026-08-12 재정의). PENDING이 resolve되는 경우의 알림 분기는 weather-tick(Task 10)이 담당: 승인된 메시지가 있으면 부서 해제 알림, 없으면(초안 대기 중 자동 종료) alert_recipients에게 자동 종료 알림.
 8. 같은 tick에서 `escalate`된 watch에는 `repeat`/`resolve`를 내지 않는다.
 
 - [ ] **Step 1: 실패하는 테스트 작성 (`engine_test.ts`) — 규칙 1~8 각 1케이스 이상**
