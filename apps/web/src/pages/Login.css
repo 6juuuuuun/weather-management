@@ -130,6 +130,15 @@
   background: var(--parchment);
 }
 
+.login-error {
+  margin-top: 16px;
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--danger);
+}
+
 .login-fineprint {
   margin-top: 24px;
   font-family: var(--font-ui);

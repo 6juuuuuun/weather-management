@@ -3,6 +3,7 @@ import { serviceClient } from "../_shared/db.ts";
 import { getChannel } from "../_shared/kakaowork.ts";
 import { renderMessage, formatObsLine, OBS_LINE_FALLBACK, KIND_LABEL, GRADE_LABEL,
   type DeptBlock } from "../_shared/template.ts";
+import { withCors } from "../_shared/cors.ts";
 
 const env = (k: string) => Deno.env.get(k);
 
@@ -47,7 +48,7 @@ async function dispatch(db: any, channel: any, msg: any, blocks: DeptBlock[],
     fail_count: (results as any[]).filter(r => !r.ok).length };
 }
 
-Deno.serve(async (req) => {
+Deno.serve(withCors(async (req) => {
   const emp = await currentEmployee(req);
   if (!emp) return new Response("unauthorized", { status: 401 });
   const body = await req.json();
@@ -101,4 +102,4 @@ Deno.serve(async (req) => {
   }
 
   return new Response("bad request", { status: 400 });
-});
+}));

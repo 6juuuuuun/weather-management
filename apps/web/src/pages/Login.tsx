@@ -7,15 +7,23 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [failed, setFailed] = useState(false);
 
+  // 서버는 가입 여부와 무관하게 항상 ok를 돌려준다(이메일 열거 방지). 그러니 여기서 감출
+  // 정보는 없고, 요청 자체가 실패한 경우는 반드시 드러내야 한다 — 아니면 오지 않을 DM을
+  // 계속 기다리게 된다(운영 배포 직후 CORS 차단으로 실제 발생).
   async function send() {
     if (!email || sending) return;
     setSending(true);
+    setFailed(false);
     try {
       await requestMagicLink(email);
+      setSubmitted(true);
+    } catch (e) {
+      console.error("매직링크 요청 실패", e);
+      setFailed(true);
     } finally {
       setSending(false);
-      setSubmitted(true);
     }
   }
 
@@ -55,6 +63,11 @@ export default function Login() {
             <button type="button" className="login-cta login-cta-ghost" onClick={send} disabled={sending}>
               {sending ? "전송 중…" : "다시 보내기"}
             </button>
+            {failed && (
+              <p className="login-error" role="alert">
+                다시 보내지 못했습니다. 네트워크 상태를 확인한 뒤 시도해 주세요.
+              </p>
+            )}
           </>
         ) : (
           <>
@@ -83,6 +96,14 @@ export default function Login() {
                 {sending ? "전송 중…" : "로그인 링크 받기"}
               </button>
             </form>
+
+            {failed && (
+              <p className="login-error" role="alert">
+                링크를 보내지 못했습니다. 네트워크 상태를 확인한 뒤 다시 시도해 주세요.
+                <br />
+                계속 실패하면 시스템 관리자에게 알려 주세요.
+              </p>
+            )}
 
             <p className="login-fineprint">
               입력한 이메일로 카카오워크 DM에 로그인 링크가 도착합니다.

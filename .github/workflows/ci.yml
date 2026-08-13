@@ -22,7 +22,8 @@ jobs:
             supabase/functions/_shared/derive_test.ts \
             supabase/functions/_shared/kma_test.ts \
             supabase/functions/_shared/template_test.ts \
-            supabase/functions/_shared/kakaowork_test.ts
+            supabase/functions/_shared/kakaowork_test.ts \
+            supabase/functions/_shared/cors_test.ts
       # 공유 모듈 + Edge Function 엔트리포인트 전체 타입체크
       # (엔트리포인트를 빼면 함수 본문의 타입 오류가 CI를 통과해 런타임에서 터진다)
       - name: deno check (shared modules + edge functions)
@@ -33,6 +34,7 @@ jobs:
             supabase/functions/_shared/kma.ts \
             supabase/functions/_shared/template.ts \
             supabase/functions/_shared/kakaowork.ts \
+            supabase/functions/_shared/cors.ts \
             supabase/functions/weather-tick/index.ts \
             supabase/functions/send/index.ts \
             supabase/functions/remind-tick/index.ts \

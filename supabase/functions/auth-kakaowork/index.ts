@@ -9,6 +9,7 @@
 // 하나 더 생기는 셈이라 보안상 두지 않는다.
 import { serviceClient } from "../_shared/db.ts";
 import { getChannel, isLocalUrl, resolveKakaoworkUserIdByEmail } from "../_shared/kakaowork.ts";
+import { withCors } from "../_shared/cors.ts";
 
 const env = (k: string) => Deno.env.get(k);
 
@@ -29,16 +30,16 @@ function runBackground(p: Promise<void>) {
 const ok = () =>
   new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
 
-Deno.serve(async (req) => {
+Deno.serve(withCors(async (req) => {
   const u = new URL(req.url);
   const action = u.searchParams.get("action");
 
   if (action === "request" && req.method === "POST") {
-    return handleRequest(req);
+    return await handleRequest(req);
   }
 
   return new Response("bad request", { status: 400 });
-});
+}));
 
 async function handleRequest(req: Request): Promise<Response> {
   let email: string | undefined;
