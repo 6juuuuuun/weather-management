@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert";
-import { KakaoWorkChannel, ConsoleChannel, getChannel } from "./kakaowork.ts";
+import { KakaoWorkChannel, ConsoleChannel, getChannel, isLocalUrl } from "./kakaowork.ts";
 
 function mockFetch(routes: Record<string, unknown>): typeof fetch {
   return ((url: string) => {
@@ -29,4 +29,15 @@ Deno.test("KakaoWorkChannel: 네트워크 오류 시 throw 없이 ok=false", asy
   const ch = new KakaoWorkChannel("key", (() => Promise.reject(new Error("ECONNRESET"))) as typeof fetch);
   const r = await ch.send("kw1", "hello");
   assertEquals(r.ok, false);
+});
+
+Deno.test("isLocalUrl: 127.0.0.1/localhost/kong:8000은 로컬로 판정", () => {
+  assertEquals(isLocalUrl("http://127.0.0.1:54321"), true);
+  assertEquals(isLocalUrl("http://localhost:5173"), true);
+  assertEquals(isLocalUrl("http://kong:8000"), true);
+});
+Deno.test("isLocalUrl: 프로덕션 도메인/undefined는 로컬 아님", () => {
+  assertEquals(isLocalUrl("https://weather.example.com"), false);
+  assertEquals(isLocalUrl("https://xyzcompany.supabase.co"), false);
+  assertEquals(isLocalUrl(undefined), false);
 });

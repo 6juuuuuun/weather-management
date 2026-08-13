@@ -48,3 +48,10 @@ export async function resolveKakaoworkUserIdByEmail(
   const json = await res.json();
   return json.success ? String(json.user.id) : null;
 }
+
+// `kong:8000`은 supabase CLI 로컬 스택이 컨테이너 안에 주입하는 SUPABASE_URL 값이다 — CLI가
+// SUPABASE_* env를 --env-file에서 걸러내므로 로컬에서도 127.0.0.1이 아니다. 이 호스트명을 재사용하는
+// 셀프호스팅 배포를 위해 호출부에서 APP_BASE_URL까지 로컬일 것을 함께 요구한다.
+export function isLocalUrl(u?: string): boolean {
+  return !!u && (u.includes("127.0.0.1") || u.includes("localhost") || u.includes("kong:8000"));
+}

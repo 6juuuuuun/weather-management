@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "weather",
+  "compatibility_date": "2026-08-01",
+  // 정적 SPA 배포: dist를 그대로 서빙하고, 알 수 없는 경로는 index.html로 폴백한다.
+  // (react-router가 /criteria 같은 경로를 클라이언트에서 처리하므로 이 폴백이 없으면 새로고침 시 404)
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}

@@ -22,6 +22,18 @@
   gap: 20px;
 }
 
+/* ---------- 부서 미지정 안내 배너 ---------- */
+.dept-banner {
+  padding: 16px 28px;
+  background: var(--pearl);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--ink-muted-80);
+}
+
 /* ---------- 셋업 체크리스트 스트립 ---------- */
 .setup-strip {
   display: flex;

@@ -19,3 +19,11 @@ export async function callSend(body: SendBody): Promise<SendResult> {
   if (error) throw error;
   return data as SendResult;
 }
+
+export async function requestMagicLink(email: string): Promise<{ ok: boolean }> {
+  const { data, error } = await supabase.functions.invoke("auth-kakaowork?action=request", {
+    body: { email },
+  });
+  if (error) throw error;
+  return (data as { ok: boolean } | null) ?? { ok: true };
+}

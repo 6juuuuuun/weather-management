@@ -29,7 +29,7 @@ export function AppRoutes() {
       <Route
         path="/criteria"
         element={
-          <RequireRole roles={ALL_ROLES}>
+          <RequireRole roles={ALL_ROLES} requireDepartment>
             <Criteria />
           </RequireRole>
         }
@@ -37,7 +37,7 @@ export function AppRoutes() {
       <Route
         path="/guidelines"
         element={
-          <RequireRole roles={ALL_ROLES}>
+          <RequireRole roles={ALL_ROLES} requireDepartment>
             <Guidelines />
           </RequireRole>
         }
@@ -45,7 +45,7 @@ export function AppRoutes() {
       <Route
         path="/events/:id"
         element={
-          <RequireRole roles={ALL_ROLES}>
+          <RequireRole roles={ALL_ROLES} requireDepartment>
             <EventReview />
           </RequireRole>
         }

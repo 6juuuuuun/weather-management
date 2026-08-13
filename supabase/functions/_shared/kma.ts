@@ -33,11 +33,25 @@ export function parseKmaResponse(json: any): KmaObservation {
 
 const BASE = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtNcst";
 
+// 공공데이터포털은 Encoding 키(%2B 등 URL 인코딩 포함)와 Decoding 키(원문) 두 형태를 모두 발급한다.
+// Encoding 키를 그대로 encodeURIComponent()에 넣으면 이중 인코딩되어 403이 나므로,
+// 키에 %가 포함돼 있으면(Encoding 키로 판단) 한 번 디코딩한 뒤 다시 인코딩해 정규화한다.
+export function normalizeKmaKey(apiKey: string): string {
+  const decoded = apiKey.includes("%") ? decodeURIComponent(apiKey) : apiKey;
+  return encodeURIComponent(decoded);
+}
+
+export function buildKmaUrl(
+  apiKey: string, nx: number, ny: number, baseDate: string, baseTime: string,
+): string {
+  return `${BASE}?serviceKey=${normalizeKmaKey(apiKey)}&dataType=JSON&numOfRows=10&pageNo=1&base_date=${baseDate}&base_time=${baseTime}&nx=${nx}&ny=${ny}`;
+}
+
 export async function fetchObservation(
   apiKey: string, nx: number, ny: number, now: Date, fetchFn: typeof fetch = fetch,
 ): Promise<KmaObservation> {
   const { baseDate, baseTime } = baseDateTime(now);
-  const url = `${BASE}?serviceKey=${encodeURIComponent(apiKey)}&dataType=JSON&numOfRows=10&pageNo=1&base_date=${baseDate}&base_time=${baseTime}&nx=${nx}&ny=${ny}`;
+  const url = buildKmaUrl(apiKey, nx, ny, baseDate, baseTime);
   let lastErr: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {

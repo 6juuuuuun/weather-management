@@ -1,10 +1,29 @@
+import { useState } from "react";
+import type { FormEvent } from "react";
 import "./Login.css";
-
-function goToKakaowork() {
-  location.href = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/auth-kakaowork?action=login`;
-}
+import { requestMagicLink } from "../lib/api";
 
 export default function Login() {
+  const [email, setEmail] = useState("");
+  const [sending, setSending] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+
+  async function send() {
+    if (!email || sending) return;
+    setSending(true);
+    try {
+      await requestMagicLink(email);
+    } finally {
+      setSending(false);
+      setSubmitted(true);
+    }
+  }
+
+  function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    send();
+  }
+
   return (
     <div className="login-page">
       <div className="login-hero">
@@ -26,28 +45,52 @@ export default function Login() {
 
         <h1 className="login-title">날씨경영</h1>
 
-        <p className="login-lead">
-          날씨 특보 감지부터 행동 지침 발송까지.
-          <br />
-          한 번의 승인으로 전 부서가 움직입니다.
-        </p>
+        {submitted ? (
+          <>
+            <p className="login-lead">
+              카카오워크 앱을 확인해 주세요.
+              <br />
+              5분 내 도착하지 않으면 카카오워크에 등록된 이메일 주소가 맞는지 확인해 주세요.
+            </p>
+            <button type="button" className="login-cta login-cta-ghost" onClick={send} disabled={sending}>
+              {sending ? "전송 중…" : "다시 보내기"}
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="login-lead">
+              날씨 특보 감지부터 행동 지침 발송까지.
+              <br />
+              한 번의 승인으로 전 부서가 움직입니다.
+            </p>
 
-        <button type="button" className="login-cta" onClick={goToKakaowork}>
-          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M12 4c-5 0-9 3.2-9 7.1 0 2.5 1.6 4.7 4.1 6-.2.7-.6 2.4-.7 2.8 0 0-.1.3.2.5.2.1.5 0 .5 0 .3-.1 2.9-1.9 3.4-2.3.5.1.9.1 1.5.1 5 0 9-3.2 9-7.1S17 4 12 4Z"
-              strokeWidth="1.5"
-              strokeLinejoin="round"
-            />
-          </svg>
-          카카오워크로 계속하기
-        </button>
+            <form className="login-form" onSubmit={onSubmit}>
+              <label className="login-label" htmlFor="login-email">
+                카카오워크에 등록된 회사 이메일
+              </label>
+              <input
+                id="login-email"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                required
+                className="login-input"
+                placeholder="카카오워크에 등록된 회사 이메일"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+              <button type="submit" className="login-cta" disabled={sending}>
+                {sending ? "전송 중…" : "로그인 링크 받기"}
+              </button>
+            </form>
 
-        <p className="login-fineprint">
-          회사 카카오워크 계정으로 로그인하면 계정이 자동으로 만들어집니다.
-          <br />
-          화면 접근 권한은 시스템 관리자가 지정합니다.
-        </p>
+            <p className="login-fineprint">
+              입력한 이메일로 카카오워크 DM에 로그인 링크가 도착합니다.
+              <br />
+              계정은 최초 로그인 시 자동으로 생성되며, 화면 접근 권한은 시스템 관리자가 지정합니다.
+            </p>
+          </>
+        )}
       </div>
     </div>
   );
