@@ -18,6 +18,14 @@ async function currentEmployee(req: Request) {
   return data;
 }
 
+// 승인 권한은 역할이 아니라 alert_recipients 등록 여부가 결정한다(스펙 2026-08-13).
+// send는 service role로 동작해 RLS를 우회하므로 current_emp_is_approver()를 쓰지 않고 직접 조회한다.
+async function isAlertRecipient(db: any, employeeId: string): Promise<boolean> {
+  const { data } = await db.from("alert_recipients")
+    .select("employee_id").eq("employee_id", employeeId).maybeSingle();
+  return data !== null;
+}
+
 // 특보를 발생시킨 관측 행을 읽어 weather-tick의 반복 발송과 동일한 포맷의 "현재 관측" 줄을 만든다
 // (스펙 결정 11 — 사람이 승인한 최초 발송이 자동 반복 발송보다 빈약해서는 안 됨).
 // 관측 조회에 실패한 경우에만 폴백 문구를 쓴다.
@@ -65,7 +73,7 @@ Deno.serve(withCors(async (req) => {
     return Response.json({ ok: r.ok, error: r.error });
   }
 
-  if (emp.role !== "approver") return new Response("forbidden", { status: 403 }); // 승인은 approver 전용
+  if (!(await isAlertRecipient(db, emp.id))) return new Response("forbidden", { status: 403 }); // 승인은 Alert 수신자 전용
 
   if (body.mode === "approve") {
     const { data: ev } = await db.from("weather_events").select("*").eq("id", body.event_id).single();
