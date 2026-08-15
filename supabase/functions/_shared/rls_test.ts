@@ -70,9 +70,12 @@ Deno.test("RLS: Alert 수신자는 messages를 수정할 수 있다 (역할과 �
       .insert({ kind: "rain", grade: "watch" }).select().single();
     eventId = ev?.id;
     await admin.from("messages").insert({ event_id: ev!.id, content: [] });
-    const { error } = await c.from("messages")
-      .update({ content: [{ note: "edited" }] }).eq("event_id", ev!.id);
+    // error만 보면 0행 매칭도 "에러 없음"으로 통과해버려 승인 거부와 구분이 안 된다.
+    // .select()로 실제 영향 행수를 확인해야 승인 허용을 증명할 수 있다.
+    const { data, error } = await c.from("messages")
+      .update({ content: [{ note: "edited" }] }).eq("event_id", ev!.id).select();
     assertEquals(error, null);
+    assertEquals(data?.length ?? 0, 1, "Alert 수신자의 수정은 1행에 적용돼야 한다");
   } finally {
     if (eventId) await admin.from("weather_events").delete().eq("id", eventId);
     await cleanupUser(email);
