@@ -1,0 +1,189 @@
+/* 월보드. 조작 요소가 없는 관망용 표시면 — 3미터 밖에서 읽히는 크기.
+   DESIGN-apple.md 준수: 장식 띠 없음, 그림자 없음, 반경은 rounded.lg(18px)만. */
+
+.bd {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--parchment);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.bd-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 38px 56px 26px;
+  flex-shrink: 0;
+}
+
+.bd-head-left {
+  display: flex;
+  align-items: baseline;
+  gap: 22px;
+  min-width: 0;
+}
+
+.bd-status {
+  font-size: 64px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.bd-status-alert { color: var(--danger); }
+
+.bd-site {
+  font-size: 26px;
+  font-weight: 300;
+  color: var(--ink-muted-48);
+}
+
+.bd-head-right { text-align: right; flex-shrink: 0; }
+
+.bd-clock {
+  display: block;
+  font-family: var(--font-num);
+  font-size: 44px;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+}
+
+.bd-collected {
+  font-size: 17px;
+  font-weight: 300;
+  color: var(--ink-muted-48);
+}
+
+.bd-events {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 56px 22px;
+  flex-shrink: 0;
+}
+
+/* 2건 이상은 가로로 — 세로로 쌓으면 카드 영역이 줄어 차트가 잘린다 */
+.bd-events-row {
+  flex-direction: row;
+  align-items: stretch;
+  gap: 16px;
+}
+
+.bd-event {
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  padding: 20px 30px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.bd-events-row .bd-event {
+  flex: 1;
+  padding: 16px 22px;
+  gap: 10px;
+}
+
+.bd-tag {
+  padding: 7px 16px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--warn-strong) 18%, var(--canvas));
+  color: #8a4b00;
+  font-size: 18px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bd-tag-severe {
+  background: color-mix(in srgb, var(--danger) 14%, var(--canvas));
+  color: var(--danger);
+}
+
+.bd-event-title {
+  font-size: 36px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--warn-strong);
+}
+
+.bd-events-row .bd-event-title { font-size: 30px; }
+
+.bd-event-severe { color: var(--danger); }
+
+.bd-event-detail {
+  font-size: 19px;
+  font-weight: 300;
+  color: var(--ink-muted-48);
+}
+
+.bd-events-row .bd-event-detail {
+  font-size: 16px;
+  flex-basis: 100%;
+}
+
+.bd-more {
+  align-self: center;
+  font-size: 19px;
+  font-weight: 300;
+  color: var(--ink-muted-48);
+  white-space: nowrap;
+}
+
+.bd-cards {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  gap: 24px;
+  padding: 0 56px 26px;
+}
+
+/* 16:9에서 4열 1행은 카드가 세로로 과하게 길어져 숫자와 차트 사이가 빈다.
+   2×2가 카드 비율에 맞다(시안에서 실측). */
+.bd-card {
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  padding: 26px 30px 22px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.bd-card-label {
+  font-size: 22px;
+  font-weight: 400;
+  color: var(--ink-muted-80);
+}
+
+.bd-card-value {
+  font-family: var(--font-num);
+  font-size: 68px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -2px;
+  margin: 8px 0 0;
+  color: var(--ink);
+}
+
+.bd-value-near { color: var(--warn-strong); }
+.bd-value-over { color: var(--danger); }
+
+.bd-card-unit {
+  font-size: 26px;
+  font-weight: 400;
+  color: var(--ink-muted-48);
+  margin-left: 6px;
+  letter-spacing: 0;
+}
+
+.bd-card .mc { margin-top: 10px; }
