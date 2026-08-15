@@ -1,0 +1,68 @@
+/* 월보드 지표 차트. DESIGN-apple.md 준수 — 장식 그라데이션을 쓰지 않고
+   평면 반투명으로 채운다. 그림자 없음. */
+
+.mc {
+  width: 100%;
+  /* height:auto였을 때는 viewBox 종횡비(840:196)로 렌더 높이가 정해져
+     카드 높이와 무관했다 — 100%로 부모(.bd-card .mc의 height:18vh)를
+     그대로 채운다. preserveAspectRatio 기본값(xMidYMid meet)이 내부에서
+     비율을 유지하며 레터박싱하므로 축 라벨이 늘어나지 않는다. */
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+
+.mc-empty {
+  min-height: 40px;
+}
+
+.mc-line {
+  fill: none;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mc-dot {
+  stroke: var(--canvas);
+  stroke-width: 2.5;
+}
+
+/* 월보드는 --warn이 아니라 --warn-strong을 쓴다.
+   --warn(#a65a00)은 --danger와 색각이상에서 ΔE 1.6으로 구분되지 않는다. */
+.mc-tone-calm { stroke: var(--ink-muted-48); }
+.mc-tone-near { stroke: var(--warn-strong); }
+.mc-tone-over { stroke: var(--danger); }
+
+circle.mc-tone-calm { fill: var(--ink-muted-48); stroke: var(--canvas); }
+circle.mc-tone-near { fill: var(--warn-strong); stroke: var(--canvas); }
+circle.mc-tone-over { fill: var(--danger); stroke: var(--canvas); }
+
+.mc-area-below { fill: var(--ink-muted-48); opacity: 0.1; }
+.mc-fill-calm { fill: var(--ink-muted-48); opacity: 0.1; }
+.mc-fill-near { fill: var(--warn-strong); opacity: 0.26; }
+.mc-fill-over { fill: var(--danger); opacity: 0.26; }
+
+.mc-threshold {
+  stroke: var(--ink-muted-48);
+  stroke-width: 1;
+  stroke-dasharray: 4 5;
+}
+
+.mc-chip { fill: var(--canvas); opacity: 0.88; }
+
+.mc-thrlabel {
+  font-size: 14px;
+  font-weight: 600;
+  fill: var(--ink-muted-48);
+}
+
+.mc-axis {
+  font-size: 14px;
+  fill: var(--ink-muted-48);
+}
+
+.mc-flat {
+  font-size: 16px;
+  fill: var(--ink-muted-48);
+}

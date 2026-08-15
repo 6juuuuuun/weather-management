@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 // 대시보드는 한 번에 여러 테이블을 Promise.all로 조회한다. 체인 모양이 테이블마다 달라
@@ -46,7 +46,7 @@ vi.mock("../lib/supabase", () => ({
   },
 }));
 
-import Dashboard from "./Dashboard";
+import Dashboard, { toBoardProps } from "./Dashboard";
 
 const validObs = {
   observed_at: "2026-08-15T02:00:00.000Z",
@@ -61,6 +61,14 @@ const validObs = {
 function renderDashboard() {
   return render(
     <MemoryRouter>
+      <Dashboard />
+    </MemoryRouter>,
+  );
+}
+
+function renderAt(search: string) {
+  return render(
+    <MemoryRouter initialEntries={[`/${search}`]}>
       <Dashboard />
     </MemoryRouter>,
   );
@@ -126,5 +134,74 @@ describe("Dashboard 관측 카드", () => {
     renderDashboard();
     await screen.findByText(/관측 기준/);
     expect(screen.queryByText(/값이 갱신되지 않았습니다/)).not.toBeInTheDocument();
+  });
+});
+
+describe("Dashboard 보드 모드", () => {
+  it("최근 24시간 관측 이력을 조회한다", async () => {
+    renderAt("?board=1");
+    await waitFor(() => expect(mocks.calls.length).toBeGreaterThan(0));
+    const history = mocks.calls.find(
+      (c) => c.table === "weather_observations" && c.chain.includes("gte") && c.chain.includes("order"),
+    );
+    expect(history, "이력 조회가 있어야 한다").toBeDefined();
+    const eqArgs = history!.chain
+      .map((m, i) => (m === "eq" ? history!.args[i] : null))
+      .filter(Boolean) as unknown[][];
+    expect(eqArgs).toContainEqual(["missing", false]);
+  });
+
+  it("board=1이면 조작 요소를 렌더링하지 않는다", async () => {
+    const { container } = renderAt("?board=1");
+    await waitFor(() => expect(container.querySelector(".bd")).toBeTruthy());
+    expect(container.querySelector(".setup-strip")).toBeNull();
+    expect(container.querySelector("nav")).toBeNull();
+  });
+
+  it("board 파라미터가 없으면 기존 대시보드를 렌더링한다", async () => {
+    const { container } = renderAt("");
+    await waitFor(() => expect(container.querySelector(".obs-grid")).toBeTruthy());
+    expect(container.querySelector(".bd")).toBeNull();
+  });
+
+  // F1: 이력 쿼리는 월보드 전용이다. 일반 대시보드가 쓰지도 않는 요청을
+  // 30초 폴링에 얹지 않기 위해 boardMode일 때만 조회해야 한다.
+  it("보드 모드가 아니면 이력을 조회하지 않는다", async () => {
+    renderAt("");
+    await waitFor(() => expect(mocks.calls.length).toBeGreaterThan(0));
+    const history = mocks.calls.find(
+      (c) => c.table === "weather_observations" && c.chain.includes("gte") && c.chain.includes("order"),
+    );
+    expect(history).toBeUndefined();
+  });
+
+  // F2: clock은 렌더 시점(new Date())이 아니라 컴포넌트가 별도 타이머로 넘긴
+  // now를 그대로 반영해야 한다. new Date()로 되돌아가면 이 테스트는 실행 시각과
+  // fixed가 우연히 같은 분일 확률이 아니고서는 반드시 실패한다.
+  it("clock은 호출 시점이 아니라 전달된 now를 반영한다", () => {
+    const fixed = new Date("2026-08-15T05:07:00.000Z");
+    const props = toBoardProps(null, "곤지암", fixed);
+    expect(props.clock).toBe(
+      fixed.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }),
+    );
+  });
+
+  it("일반 모드에 전체화면 버튼이 있다", async () => {
+    const { findByRole } = renderAt("");
+    expect(await findByRole("button", { name: "전체화면" })).toBeTruthy();
+  });
+
+  it("보드 모드에는 전체화면 버튼이 없다", async () => {
+    const { container, queryByRole } = renderAt("?board=1");
+    await waitFor(() => expect(container.querySelector(".bd")).toBeTruthy());
+    expect(queryByRole("button", { name: "전체화면" })).toBeNull();
+  });
+
+  it("전체화면 버튼을 누르면 board=1이 URL에 붙는다", async () => {
+    const { findByRole, container } = renderAt("");
+    fireEvent.click(await findByRole("button", { name: "전체화면" }));
+    // URL이 진실의 출처다 — 벽걸이 기기는 이 주소를 북마크해 부팅 직후 바로 들어온다.
+    // 전체화면 API는 그 위의 장식이라, 브라우저가 거부해도 레이아웃은 전환돼야 한다.
+    await waitFor(() => expect(container.querySelector(".bd")).toBeTruthy());
   });
 });

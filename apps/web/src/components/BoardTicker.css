@@ -1,0 +1,59 @@
+/* 하단 티커. 순수 검정은 이 시스템에서 글로벌 네비에만 쓰이므로,
+   화면 최하단 띠로서 같은 문법을 따른다(DESIGN-apple.md). */
+
+.bt {
+  /* 세로 리듬을 다른 구간과 동일하게 vh로 맞춘다(86px/1080*100). */
+  height: 7.96vh;
+  background: var(--surface-black);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  flex-shrink: 0;
+  /* 좌측 인셋은 애니메이션되지 않는 부모가 가진다. 트랙에 두면 폭 계산(W=2C')이
+     깨져 -50% 이동이 이음매와 어긋난다 — 그게 직전 라운드의 결함이었다. */
+  padding-left: 56px;
+}
+
+.bt-track {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  /* gap과 padding-left를 쓰지 않는다. 두 벌이 모두 형제라 벌 사이에도 gap이 들어가고
+     padding은 앞쪽에 한 번만 있어, -50% 이동이 이음매와 어긋난다(계산상 11px).
+     항목마다 자기 오른쪽 여백을 지니면 트랙 폭이 정확히 한 벌의 2배가 되어 딱 맞는다. */
+  animation: bt-roll 46s linear infinite;
+}
+
+@keyframes bt-roll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+/* 화면 낭독기·모션 민감 사용자를 위해 움직임을 끈다 */
+@media (prefers-reduced-motion: reduce) {
+  .bt-track { animation: none; }
+}
+
+.bt-item {
+  margin-right: 34px;
+  font-size: 26px;
+  font-weight: 300;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px; /* 항목 내부 라벨/값/문구 사이 간격 — 트랙 레벨 gap과 무관 */
+}
+
+.bt-label {
+  font-weight: 400;
+  color: #c9c9ce;
+}
+
+.bt-value { font-weight: 400; }
+
+.bt-gap { color: #9a9aa0; }
+
+.bt-over {
+  color: var(--warn-strong);
+  font-weight: 600;
+}

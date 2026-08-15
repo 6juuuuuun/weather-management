@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { AppLayout } from "../components/AppLayout";
 import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
@@ -8,6 +8,8 @@ import { supabase } from "../lib/supabase";
 import { computeSetupChecklist } from "../lib/setup";
 import type { SetupChecklist } from "../lib/setup";
 import type { Dispatch, Kind, WeatherCriteria, WeatherEvent, WeatherObservation } from "../lib/types";
+import { DashboardBoard } from "./DashboardBoard";
+import type { BoardEvent, BoardMetric } from "./DashboardBoard";
 import "./Dashboard.css";
 
 const POLL_MS = 30_000;
@@ -19,12 +21,19 @@ type DispatchRow = Dispatch & {
   messages: { content: { department_name: string; selected: boolean }[] } | null;
 };
 
+type ObservationPoint = Pick<
+  WeatherObservation,
+  "observed_at" | "rain_mm_per_hr" | "temp_c" | "feels_c" | "wind_ms"
+>;
+
 type DashboardData = {
   observation: WeatherObservation | null;
   criteria: WeatherCriteria[];
   openEvents: WeatherEvent[];
   dispatches: DispatchRow[];
   snowToday: number | null; // 판정 엔진과 동일: 당일(KST) snow_new_cm 합산, 관측 없으면 null
+  /** 월보드 차트용 최근 24시간 유효 관측 (오래된 것부터) */
+  history: ObservationPoint[];
 };
 
 function formatDate(d: Date): string {
@@ -98,11 +107,15 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [setup, setSetup] = useState<SetupChecklist | null>(null);
   const [setupDetail, setSetupDetail] = useState<{ missingDeptCount: number }>({ missingDeptCount: 0 });
+  const [siteName, setSiteName] = useState("곤지암");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const boardMode = searchParams.get("board") === "1";
+  const [now, setNow] = useState(() => new Date());
 
   const load = useCallback(async () => {
     const isAdmin = employee?.role === "admin";
 
-    const [obsRes, eventsRes, dispatchesRes, criteriaRes, siteRes, snowTodayRes] = await Promise.all([
+    const [obsRes, eventsRes, dispatchesRes, criteriaRes, siteRes, snowTodayRes, historyRes] = await Promise.all([
       // 결측 행(기상청 조회 실패로 기록되는 빈 행)을 제외하고 마지막 '유효' 관측을 읽는다.
       // 제외하지 않으면 기상청이 한 번만 삐끗해도 전 카드가 빈 값이 되는데, 상단의
       // "마지막 수집 N분 전"은 heartbeat(함수 실행 여부) 기준이라 그대로 최신으로 표시돼
@@ -132,6 +145,16 @@ export default function Dashboard() {
         .select("snow_new_cm")
         .gte("observed_at", kstMidnightISO(new Date()))
         .eq("missing", false),
+      // 이력은 월보드 차트 전용이다. 일반 대시보드는 쓰지 않으므로 조회하지 않는다 —
+      // 운영 화면의 30초 폴링에 쓰지도 않는 요청을 얹지 않기 위해서다.
+      boardMode
+        ? supabase
+            .from("weather_observations")
+            .select("observed_at, rain_mm_per_hr, temp_c, feels_c, wind_ms")
+            .eq("missing", false)
+            .gte("observed_at", new Date(Date.now() - 24 * 3600_000).toISOString())
+            .order("observed_at", { ascending: true })
+        : Promise.resolve({ data: [] as ObservationPoint[], error: null }),
     ]);
 
     const snowRows = snowTodayRes.data ?? [];
@@ -140,12 +163,14 @@ export default function Dashboard() {
         ? null
         : snowRows.reduce((acc, r) => acc + Number(r.snow_new_cm ?? 0), 0);
 
+    setSiteName(siteRes.data?.site_name ?? "곤지암");
     setData({
       observation: (obsRes.data as WeatherObservation | null) ?? null,
       criteria: (criteriaRes.data as WeatherCriteria[] | null) ?? [],
       openEvents: (eventsRes.data as WeatherEvent[] | null) ?? [],
       dispatches: (dispatchesRes.data as unknown as DispatchRow[] | null) ?? [],
       snowToday,
+      history: (historyRes.data as ObservationPoint[] | null) ?? [],
     });
 
     if (isAdmin) {
@@ -173,7 +198,7 @@ export default function Dashboard() {
     } else {
       setSetup(null);
     }
-  }, [employee?.role]);
+  }, [employee?.role, boardMode]);
 
   useEffect(() => {
     load();
@@ -181,12 +206,68 @@ export default function Dashboard() {
     return () => clearInterval(t);
   }, [load]);
 
+  useEffect(() => {
+    if (!boardMode) return;
+    // 시계는 데이터 폴링(30초)과 분리해서 돌린다. 같이 묶으면 폴링 위상에 따라
+    // 분 표시가 최대 1분 가까이 뒤처진 채 벽에 걸린다.
+    const t = setInterval(() => setNow(new Date()), 10_000);
+    return () => clearInterval(t);
+  }, [boardMode]);
+
+  // 보드 모드에서 ESC로 전체화면을 빠져나오면 파라미터도 함께 정리해서
+  // 다음 새로고침에서 다시 월보드로 들어가지 않게 한다. 이 훅은 boardMode가
+  // false에서 true로 바뀔 때도 항상 호출돼야 하므로(훅 개수 불변) 이른 반환보다 위에 둔다.
+  useEffect(() => {
+    if (!boardMode) return;
+    function onFsChange() {
+      // fullscreenchange는 진입/종료 모두에서 발생한다. fullscreenElement가 비어있을
+      // 때만 "빠져나왔다"고 볼 수 있으므로, 이 조건으로 두 경우를 가른다.
+      if (!document.fullscreenElement) {
+        const next = new URLSearchParams(searchParams);
+        next.delete("board");
+        setSearchParams(next, { replace: true });
+      }
+    }
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, [boardMode, searchParams, setSearchParams]);
+
+  // 벽걸이 기기가 이 주소를 북마크하면 부팅 후 바로 월보드로 들어간다.
+  // 그래서 전체화면 API와 별개로 URL에 상태를 남긴다 — API가 거부돼도 레이아웃은 바뀐다.
+  function enterBoard() {
+    const next = new URLSearchParams(searchParams);
+    next.set("board", "1");
+    setSearchParams(next);
+    // requestFullscreen이 없는 환경(구형 브라우저·jsdom)에서는 optional chaining이
+    // .catch()까지 포함한 나머지 체인 전체를 건너뛰므로 별도 존재 확인이 필요 없다.
+    void document.documentElement.requestFullscreen?.().catch(() => {
+      /* 브라우저 정책으로 거부될 수 있다. 레이아웃 전환만으로도 쓸 수 있으므로 무시한다. */
+    });
+  }
+
   const today = formatDate(new Date());
 
   const pendingEvent = data?.openEvents.find((e) => e.status === "PENDING_APPROVAL") ?? null;
 
+  // 월보드는 운영 화면(AppLayout: 네비게이션 + 조작 버튼)을 감싸지 않는다.
+  // .bd는 자체적으로 position:fixed 전체화면 레이아웃이라 GlobalNav/SubNav를
+  // 씌우면 운영자가 아닌 관망 화면에 조작 요소가 그대로 노출된다.
+  if (boardMode) {
+    return <DashboardBoard {...toBoardProps(data, siteName, now)} />;
+  }
+
   return (
-    <AppLayout title="대시보드" actions={<span className="dash-date">{today}</span>}>
+    <AppLayout
+      title="대시보드"
+      actions={
+        <>
+          <button type="button" className="dash-fullscreen" onClick={enterBoard}>
+            전체화면
+          </button>
+          <span className="dash-date">{today}</span>
+        </>
+      }
+    >
       <p className="dash-desc">실시간 날씨 모니터링과 특보 현황</p>
 
       <div className="dash-stack">
@@ -507,4 +588,79 @@ export default function Dashboard() {
       </div>
     </AppLayout>
   );
+}
+
+// 월보드 표시용 변환. 컴포넌트 밖 순수 함수로 둬야 테스트하기 쉽고,
+// (렌더 시 호출되긴 하지만) 이 컴포넌트 상태 변화 없이는 재계산될 일이 없다.
+const KIND_OF_METRIC: Record<BoardMetric["key"], Kind> = {
+  rain: "rain",
+  temp: "heat",
+  wind: "wind",
+  feels: "heat",
+};
+
+const METRIC_DEFS: Omit<BoardMetric, "value" | "threshold" | "history">[] = [
+  { key: "rain", label: "시간당 강수량", unit: "mm", gradeLabel: "폭우 주의보", allowNegative: false },
+  { key: "temp", label: "기온", unit: "℃", gradeLabel: "폭염 주의보", allowNegative: true },
+  { key: "wind", label: "풍속", unit: "m/s", gradeLabel: "강풍 주의보", allowNegative: false },
+  { key: "feels", label: "체감온도", unit: "℃", gradeLabel: "폭염 주의보", allowNegative: true },
+];
+
+const THRESHOLD_KEY: Record<BoardMetric["key"], string> = {
+  rain: "rain_mm_per_hr",
+  temp: "temp_c",
+  wind: "wind_ms",
+  feels: "feels_c",
+};
+
+const OBS_FIELD: Record<BoardMetric["key"], keyof ObservationPoint> = {
+  rain: "rain_mm_per_hr",
+  temp: "temp_c",
+  wind: "wind_ms",
+  feels: "feels_c",
+};
+
+export function toBoardProps(data: DashboardData | null, siteName: string, now: Date) {
+  const obs = data?.observation ?? null;
+  const history = data?.history ?? [];
+
+  const metrics: BoardMetric[] = METRIC_DEFS.map((def) => {
+    const watch = (data?.criteria ?? []).find(
+      (c) => c.kind === KIND_OF_METRIC[def.key] && c.grade === "watch",
+    );
+    // threshold 0은 "기준 미설정"이다(DashboardBoard가 그렇게 해석한다) — 폴백을
+    // 지우면 기준 없는 지표가 0으로 취급돼 항상 초과로 오판된다.
+    const threshold = watch?.threshold?.[THRESHOLD_KEY[def.key]] ?? 0;
+    const field = OBS_FIELD[def.key];
+    const raw = obs ? (obs[field] as number | null) : null;
+    return {
+      ...def,
+      threshold,
+      value: raw ?? null,
+      history: history
+        .map((h) => h[field] as number | null | undefined)
+        // 실제 Supabase 응답은 선택된 컬럼을 항상 null로 채우지만, 테스트 하네스는
+        // 필드 자체가 없는 행을 돌려줄 수 있어 undefined도 걸러야 한다.
+        .filter((v): v is number => v !== null && v !== undefined),
+    };
+  });
+
+  const events: BoardEvent[] = (data?.openEvents ?? []).map((e) => ({
+    id: e.id,
+    title: `${KIND_LABEL[e.kind]} ${e.grade === "warning" ? "경보" : "주의보"}`,
+    tag: e.status === "PENDING_APPROVAL" ? "승인 대기" : "발송 완료",
+    detail:
+      e.status === "PENDING_APPROVAL"
+        ? `${formatTime(e.detected_at)} 감지 · 재알림 ${e.repeat_count}회`
+        : `${formatTime(e.detected_at)} 발생 · 반복 ${e.repeat_count}회차`,
+    severe: e.grade === "warning",
+  }));
+
+  return {
+    siteName,
+    clock: now.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }),
+    collectedAgo: obs ? `${formatTime(obs.observed_at)} 관측 기준` : "관측 없음",
+    metrics,
+    events,
+  };
 }
