@@ -39,7 +39,15 @@ export function computeScale(values: number[], threshold: number, allowNegative:
   }
 
   const span = hi - lo;
-  if (threshold <= hi + span * THRESHOLD_REACH) {
+  const reach = span * THRESHOLD_REACH;
+  // 사정권 판정은 양방향이어야 한다. `threshold <= hi + reach` 하나로만 쓰면
+  // 임계가 lo 아래에 있을 때 우변이 언제나 임계보다 커서 거리와 무관하게 포함된다
+  // (하루 종일 임계를 웃돈 날 축이 불필요하게 넓어져 추이가 눌린다).
+  const nearEnough =
+    threshold > hi ? threshold - hi <= reach
+    : threshold < lo ? lo - threshold <= reach
+    : true; // 이미 데이터 범위 안
+  if (nearEnough) {
     hi = Math.max(hi, threshold);
     lo = Math.min(lo, threshold);
   }
@@ -47,7 +55,11 @@ export function computeScale(values: number[], threshold: number, allowNegative:
   const pad = (hi - lo) * PADDING_RATIO;
   lo -= pad;
   hi += pad;
-  if (!allowNegative) lo = Math.max(0, lo);
+  if (!allowNegative) {
+    lo = Math.max(0, lo);
+    // 입력이 전부 음수인 채로 들어오면(결측 센티널 등) lo만 0으로 잡혀 범위가 뒤집힌다
+    if (hi <= lo) hi = lo + 1;
+  }
 
   return { lo, hi, flat: false, thresholdVisible: lo <= threshold && threshold <= hi };
 }

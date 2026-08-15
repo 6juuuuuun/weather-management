@@ -47,6 +47,25 @@ describe("computeScale", () => {
     expect(r.hi).toBeGreaterThan(r.lo);
     expect(r.lo).toBe(0);
   });
+
+  // 회귀: 예전 조건은 임계가 lo보다 아래면 거리와 무관하게 포함해, 축이 폭증했다.
+  it("임계가 데이터보다 한참 아래면 스케일에 넣지 않는다", () => {
+    const r = computeScale([100, 110], 5, true);
+    expect(r.thresholdVisible).toBe(false);
+    expect(r.lo).toBeGreaterThan(50);
+  });
+
+  it("음수 입력이 들어와도 lo <= hi 를 지킨다", () => {
+    const r = computeScale([-5, -3], 20, false);
+    expect(r.lo).toBe(0);
+    expect(r.hi).toBeGreaterThan(r.lo);
+  });
+
+  it("패딩이 0 아래로 내려가는 경우 하한을 0으로 자른다", () => {
+    // 패딩 없이는 lo가 0.05 - (4.95*0.15) = -0.69 가 된다
+    const r = computeScale([0.05, 0.1, 5], 50, false);
+    expect(r.lo).toBe(0);
+  });
 });
 
 describe("yOf", () => {
