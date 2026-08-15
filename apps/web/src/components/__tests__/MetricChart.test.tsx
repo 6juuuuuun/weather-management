@@ -8,6 +8,22 @@ function svgOf(container: HTMLElement) {
   return el;
 }
 
+/** `clipPath="url(#id)"`에서 참조하는 id만 떼어낸다. */
+function clipIdOf(svg: SVGElement, cls: string): string {
+  const el = svg.querySelector(`path.${cls}`);
+  if (!el) throw new Error(`path.${cls}가 없다`);
+  const ref = el.getAttribute("clip-path") ?? "";
+  const id = /url\(#(.+)\)/.exec(ref)?.[1];
+  if (!id) throw new Error(`path.${cls}에 clip 참조가 없다: ${ref}`);
+  return id;
+}
+
+function rectOf(svg: SVGElement, clipId: string): Element {
+  const rect = [...svg.querySelectorAll("clipPath")].find((c) => c.id === clipId)?.querySelector("rect");
+  if (!rect) throw new Error(`clipPath#${clipId}에 rect가 없다`);
+  return rect;
+}
+
 describe("MetricChart", () => {
   it("데이터가 있으면 선 경로를 그린다", () => {
     const { container } = render(
@@ -44,6 +60,41 @@ describe("MetricChart", () => {
     // 현재는 안전(calm)해도 오늘 넘긴 이력은 경고색으로 남아야 한다.
     // mc-fill-calm이면 뮤트색이라 이력이 사라진다.
     expect(above!.getAttribute("class")).toContain("mc-fill-near");
+  });
+
+  // 분할 채색은 클래스가 아니라 clip 기하가 만든다. 클래스만 보면 두 area가
+  // 같은 clip을 참조하거나 경계 y가 상수로 굳어도 초록이 되어, 스펙 §4.4가
+  // "이 차트의 핵심"이라 부른 동작이 무방비가 된다.
+  it("두 area가 서로 다른 clip을 임계 y에서 맞물려 참조한다", () => {
+    const { container } = render(
+      <MetricChart values={[5, 25, 8]} threshold={20} unit="mm" gradeLabel="주의보" allowNegative={false} tone="calm" />,
+    );
+    const svg = svgOf(container);
+    const belowId = clipIdOf(svg, "mc-area-below");
+    const aboveId = clipIdOf(svg, "mc-area-above");
+    // 같은 id를 참조하면 두 겹이 똑같이 잘려 분할이 사라진다.
+    expect(belowId).not.toBe(aboveId);
+
+    const belowY = Number(rectOf(svg, belowId).getAttribute("y"));
+    const aboveH = Number(rectOf(svg, aboveId).getAttribute("height"));
+    // 아래 clip은 임계 y부터 아래로, 위 clip은 0부터 임계 y까지 — 둘이 같은
+    // 경계에서 맞물려야 틈도 겹침도 없다. y가 0이면 아래 clip이 전면을 덮는다.
+    expect(belowY).toBeGreaterThan(0);
+    expect(belowY).toBeLessThan(196); // 뷰박스 높이 안
+    expect(aboveH).toBe(belowY);
+  });
+
+  // 경계 y가 상수로 굳어도 위 단언은 통과한다. 임계만 바꾼 두 렌더의 경계가
+  // 실제로 움직이는지까지 봐야 상수화 변이가 잡힌다.
+  it("clip 경계 y가 임계에 따라 움직인다", () => {
+    const boundary = (threshold: number) => {
+      const { container } = render(
+        <MetricChart values={[5, 25, 8]} threshold={threshold} unit="mm" gradeLabel="주의보" allowNegative={false} tone="calm" />,
+      );
+      const svg = svgOf(container);
+      return Number(rectOf(svg, clipIdOf(svg, "mc-area-below")).getAttribute("y"));
+    };
+    expect(boundary(20)).not.toBe(boundary(10));
   });
 
   // 회귀: 예전에는 id를 tone/length/lo로 만들어, 월보드에 동시에 뜨는 4장 중

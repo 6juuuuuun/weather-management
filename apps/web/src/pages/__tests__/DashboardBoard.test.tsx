@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
 import { DashboardBoard, statusHeadline } from "../DashboardBoard";
 import type { BoardEvent, BoardMetric } from "../DashboardBoard";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const metrics: BoardMetric[] = [
   { key: "rain", label: "시간당 강수량", unit: "mm", value: 0, threshold: 20,
@@ -103,7 +105,11 @@ describe("DashboardBoard", () => {
   it("threshold가 0인 지표는 티커에 나타나지 않고 기준선도 그리지 않으며 카드가 빨갛지 않다", () => {
     const zeroThresholdMetric: BoardMetric = {
       key: "rain", label: "시간당 강수량", unit: "mm", value: 5, threshold: 0,
-      gradeLabel: "폭우 주의보", allowNegative: false, history: [3, 4, 5],
+      // history는 임계 0이 computeScale의 사정권(데이터 폭의 0.7배) 안에 들어오는
+      // 값이어야 한다. [3,4,5]처럼 0에서 먼 값이면 기준선이 어차피 안 그려져
+      // 가드가 우연히 통과한다 — 결함을 되살려도 초록이 되는 픽스처는 가드가 아니다.
+      // [0.2,1.0,0.5] → computeScale(..., 0, false) = {lo:0, hi:1.15, thresholdVisible:true}.
+      gradeLabel: "폭우 주의보", allowNegative: false, history: [0.2, 1.0, 0.5],
     };
     const { container } = render(
       <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo="마지막 수집 2분 전"
@@ -115,5 +121,48 @@ describe("DashboardBoard", () => {
     expect(container.querySelector("line.mc-threshold")).toBeNull();
     // 카드: 값이 임계(0) 이상이어도 danger 색 클래스가 붙지 않는다.
     expect(container.querySelector(".bd-value-over")).toBeNull();
+  });
+});
+
+// `?raw`는 못 쓴다 — vitest는 CSS 모듈을 빈 문자열로 스텁해서 `?raw`도 ""가 된다.
+// `new URL(..., import.meta.url)`도 못 쓴다 — vite가 정적 에셋 URL로 바꿔버린다.
+// 주석은 걷어낸다(규칙 경계를 `}`로 잡으므로 주석이 끼면 어긋난다).
+const css = readFileSync(join(import.meta.dirname, "../DashboardBoard.css"), "utf8")
+  .replace(/\/\*[\s\S]*?\*\//g, "");
+
+/** 선택자 하나의 선언 블록만 떼어낸다. 앞을 `}`로 묶어 `.bd-events-row .bd-event`
+ *  같은 하위 오버라이드가 기본 규칙으로 잘못 잡히지 않게 한다. */
+function ruleOf(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(css);
+  if (!m) throw new Error(`${selector} 규칙이 없다`);
+  return m[1];
+}
+
+// jsdom은 레이아웃을 계산하지 않아 "차트가 카드를 넘쳤다"를 렌더로 잡을 수 없다.
+// 그래서 넘침을 막는 CSS 계약 자체를 원문으로 고정한다.
+describe("DashboardBoard.css 레이아웃 계약", () => {
+  // height:auto(MetricChart.css의 종횡비 유래 기본값)는 카드 높이와 무관해서,
+  // 특보 배너가 카드 영역을 줄이면 차트가 카드 밖으로 넘치고 overflow:hidden이
+  // 하단을 잘라낸다. 뷰포트에 같이 줄어드는 vh여야 어떤 창 크기에서도 안전하다.
+  it(".bd-card .mc의 height가 vh 단위다", () => {
+    const height = /height:\s*([^;]+);/.exec(ruleOf(".bd-card .mc"))?.[1].trim();
+    expect(height).toBeTruthy();
+    expect(height).not.toBe("auto");
+    expect(height).toMatch(/vh$/);
+  });
+
+  // 배너 세로 크기가 px로 고정되면 뷰포트가 낮아져도 줄지 않아, 특보 1건이
+  // 3건보다 더 높은 최악 케이스가 된다(1512×650에서 −3.5px로 차트가 잘렸다).
+  // 세로에 관여하는 값만 vh다 — 좌우 padding·column-gap은 px 그대로가 맞다.
+  it("배너 기본(세로 배치) 규칙의 세로 값이 vh 단위다", () => {
+    const event = ruleOf(".bd-event");
+    expect(event).toMatch(/padding:\s*[\d.]+vh/);
+    expect(event).toMatch(/row-gap:\s*[\d.]+vh/);
+    // shorthand gap이 남아 있으면 row-gap을 덮어써 세로만 vh로 만든 의도가 깨진다.
+    expect(event).not.toMatch(/[^-]gap:\s*\d/);
+    for (const sel of [".bd-event-title", ".bd-event-detail", ".bd-more"]) {
+      expect(ruleOf(sel)).toMatch(/font-size:\s*[\d.]+vh/);
+    }
   });
 });

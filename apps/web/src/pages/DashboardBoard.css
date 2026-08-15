@@ -80,14 +80,19 @@
   gap: 16px;
 }
 
+/* 세로 배치(특보 1건) 경로. 여기가 px로 남아 있으면 배너 높이가 뷰포트와
+   무관하게 고정돼, 창이 낮을수록 1건이 3건보다 더 높은 최악 케이스가 된다
+   (1512×650에서 카드 하단 −3.5px로 차트가 잘렸다). 가로 배치와 같은 원칙으로
+   세로 값만 vh로 옮긴다 — 좌우 padding과 column-gap은 px 그대로. */
 .bd-event {
   background: var(--canvas);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-card);
-  padding: 20px 30px;
+  padding: 1.85vh 30px;
   display: flex;
   align-items: center;
-  gap: 16px;
+  row-gap: 0.74vh;
+  column-gap: 16px;
   flex-wrap: wrap;
   min-width: 0;
 }
@@ -116,8 +121,9 @@
   white-space: nowrap;
 }
 
+/* 배너 높이를 지배하는 값이라 vh 전환 효과가 여기서 가장 크다(36px/1080*100). */
 .bd-event-title {
-  font-size: 36px;
+  font-size: 3.33vh;
   font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.1;
@@ -129,7 +135,7 @@
 .bd-event-severe { color: var(--danger); }
 
 .bd-event-detail {
-  font-size: 19px;
+  font-size: 1.76vh;
   font-weight: 300;
   line-height: 1.1;
   color: var(--ink-muted-48);
@@ -142,7 +148,7 @@
 
 .bd-more {
   align-self: center;
-  font-size: 19px;
+  font-size: 1.76vh;
   font-weight: 300;
   color: var(--ink-muted-48);
   white-space: nowrap;

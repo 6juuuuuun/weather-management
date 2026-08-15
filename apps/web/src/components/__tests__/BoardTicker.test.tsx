@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
 import { BoardTicker, gapPhrase } from "../BoardTicker";
 import type { TickerItem } from "../BoardTicker";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+// `?raw`는 못 쓴다 — vitest는 CSS 모듈을 빈 문자열로 스텁해서 `?raw`도 ""가 된다.
+// `new URL(..., import.meta.url)`도 못 쓴다 — vite가 정적 에셋 URL로 바꿔버린다.
+const tickerCss = readFileSync(join(import.meta.dirname, "../BoardTicker.css"), "utf8")
+  .replace(/\/\*[\s\S]*?\*\//g, "");
 
 const rain: TickerItem = {
   label: "시간당 강수량", value: 0, unit: "mm", threshold: 20, gradeLabel: "폭우 주의보",
@@ -62,5 +69,17 @@ describe("BoardTicker", () => {
     const { container } = render(<BoardTicker items={items} />);
     const track = container.querySelector(".bt-track")!;
     expect(track.children.length).toBe(items.length * 2);
+  });
+
+  // 위 테스트는 개수만 본다 — 트랙에 gap/padding이 돌아와도 초록이라, 지금까지
+  // 유일한 가드가 주석뿐이었다. jsdom은 레이아웃을 계산하지 않으므로 원문으로 잰다.
+  // 두 벌 사이에도 gap이 끼고 padding은 앞쪽에만 있어, 트랙 폭이 한 벌의 정확히
+  // 2배가 아니게 되면 -50% 이동이 이음매에서 빗나간다(계산상 11px 튐).
+  // 간격은 항목의 margin-right로만 표현돼야 한다.
+  it(".bt-track에 gap도 padding도 없다", () => {
+    const rule = /\.bt-track\s*\{([^}]*)\}/.exec(tickerCss)?.[1];
+    expect(rule).toBeTruthy();
+    expect(rule).not.toMatch(/(^|;)\s*(row-|column-)?gap\s*:/);
+    expect(rule).not.toMatch(/(^|;)\s*padding(-\w+)?\s*:/);
   });
 });

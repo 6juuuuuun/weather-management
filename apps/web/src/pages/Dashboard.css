@@ -10,7 +10,8 @@
 
 /* 월보드 진입. 이 시스템의 상호작용 색은 Action Blue 하나뿐이다. */
 .dash-fullscreen {
-  margin-right: 16px;
+  /* 여백은 부모 .sub-nav-actions의 gap:12px가 이미 준다. 여기 margin을 더하면
+     28px가 되어 서브내비 항목 간격이 혼자 어긋난다. */
   padding: 8px 18px;
   border: 1px solid var(--hairline);
   border-radius: 9999px;
