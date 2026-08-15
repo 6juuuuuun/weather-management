@@ -71,9 +71,9 @@ $$ select exists (select 1 from alert_recipients where employee_id = current_emp
 
 ### 3.3 부서 미지정 승인자 접근
 
-`routes.tsx`에서 `/events/:id`는 `requireDepartment`를 요구한다. 승인자가 부서 미지정이면 승인 화면에 진입조차 못 한다.
+`routes.tsx`에서 `/events/:id`는 `requireDepartment`를 요구한다. 다만 `RequireRole`의 실제 조건은 `role === 'staff' && department_id === null`이므로 **막히는 것은 부서 미지정 `staff`뿐이다** — `admin`/`approver`는 부서가 없어도 통과한다.
 
-승인은 부서 단위 업무가 아니라 전사 판단이므로, **Alert 수신자는 부서 미지정이어도 `/events/:id`에 접근할 수 있어야 한다.** `RequireRole`의 부서 게이트에 "Alert 수신자면 통과" 예외를 추가한다.
+승인은 부서 단위 업무가 아니라 전사 판단이므로, **Alert 수신자는 부서 미지정 `staff`여도 `/events/:id`에 접근할 수 있어야 한다.** `RequireRole`의 부서 게이트에 "Alert 수신자면 통과" 예외를 추가한다.
 
 ## 4. 부수 효과
 
