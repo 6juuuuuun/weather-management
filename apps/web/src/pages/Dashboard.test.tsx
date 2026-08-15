@@ -66,6 +66,14 @@ function renderDashboard() {
   );
 }
 
+function renderAt(search: string) {
+  return render(
+    <MemoryRouter initialEntries={[`/${search}`]}>
+      <Dashboard />
+    </MemoryRouter>,
+  );
+}
+
 beforeEach(() => {
   mocks.calls = [];
   vi.useRealTimers();
@@ -126,5 +134,33 @@ describe("Dashboard 관측 카드", () => {
     renderDashboard();
     await screen.findByText(/관측 기준/);
     expect(screen.queryByText(/값이 갱신되지 않았습니다/)).not.toBeInTheDocument();
+  });
+});
+
+describe("Dashboard 보드 모드", () => {
+  it("최근 24시간 관측 이력을 조회한다", async () => {
+    renderAt("?board=1");
+    await waitFor(() => expect(mocks.calls.length).toBeGreaterThan(0));
+    const history = mocks.calls.find(
+      (c) => c.table === "weather_observations" && c.chain.includes("gte") && c.chain.includes("order"),
+    );
+    expect(history, "이력 조회가 있어야 한다").toBeDefined();
+    const eqArgs = history!.chain
+      .map((m, i) => (m === "eq" ? history!.args[i] : null))
+      .filter(Boolean) as unknown[][];
+    expect(eqArgs).toContainEqual(["missing", false]);
+  });
+
+  it("board=1이면 조작 요소를 렌더링하지 않는다", async () => {
+    const { container } = renderAt("?board=1");
+    await waitFor(() => expect(container.querySelector(".bd")).toBeTruthy());
+    expect(container.querySelector(".setup-strip")).toBeNull();
+    expect(container.querySelector("nav")).toBeNull();
+  });
+
+  it("board 파라미터가 없으면 기존 대시보드를 렌더링한다", async () => {
+    const { container } = renderAt("");
+    await waitFor(() => expect(container.querySelector(".obs-grid")).toBeTruthy());
+    expect(container.querySelector(".bd")).toBeNull();
   });
 });

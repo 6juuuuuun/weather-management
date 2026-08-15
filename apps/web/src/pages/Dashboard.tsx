@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { AppLayout } from "../components/AppLayout";
 import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
@@ -8,6 +8,8 @@ import { supabase } from "../lib/supabase";
 import { computeSetupChecklist } from "../lib/setup";
 import type { SetupChecklist } from "../lib/setup";
 import type { Dispatch, Kind, WeatherCriteria, WeatherEvent, WeatherObservation } from "../lib/types";
+import { DashboardBoard } from "./DashboardBoard";
+import type { BoardEvent, BoardMetric } from "./DashboardBoard";
 import "./Dashboard.css";
 
 const POLL_MS = 30_000;
@@ -19,12 +21,19 @@ type DispatchRow = Dispatch & {
   messages: { content: { department_name: string; selected: boolean }[] } | null;
 };
 
+type ObservationPoint = Pick<
+  WeatherObservation,
+  "observed_at" | "rain_mm_per_hr" | "temp_c" | "feels_c" | "wind_ms"
+>;
+
 type DashboardData = {
   observation: WeatherObservation | null;
   criteria: WeatherCriteria[];
   openEvents: WeatherEvent[];
   dispatches: DispatchRow[];
   snowToday: number | null; // 판정 엔진과 동일: 당일(KST) snow_new_cm 합산, 관측 없으면 null
+  /** 월보드 차트용 최근 24시간 유효 관측 (오래된 것부터) */
+  history: ObservationPoint[];
 };
 
 function formatDate(d: Date): string {
@@ -98,11 +107,14 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [setup, setSetup] = useState<SetupChecklist | null>(null);
   const [setupDetail, setSetupDetail] = useState<{ missingDeptCount: number }>({ missingDeptCount: 0 });
+  const [siteName, setSiteName] = useState("곤지암");
+  const [searchParams] = useSearchParams();
+  const boardMode = searchParams.get("board") === "1";
 
   const load = useCallback(async () => {
     const isAdmin = employee?.role === "admin";
 
-    const [obsRes, eventsRes, dispatchesRes, criteriaRes, siteRes, snowTodayRes] = await Promise.all([
+    const [obsRes, eventsRes, dispatchesRes, criteriaRes, siteRes, snowTodayRes, historyRes] = await Promise.all([
       // 결측 행(기상청 조회 실패로 기록되는 빈 행)을 제외하고 마지막 '유효' 관측을 읽는다.
       // 제외하지 않으면 기상청이 한 번만 삐끗해도 전 카드가 빈 값이 되는데, 상단의
       // "마지막 수집 N분 전"은 heartbeat(함수 실행 여부) 기준이라 그대로 최신으로 표시돼
@@ -132,6 +144,13 @@ export default function Dashboard() {
         .select("snow_new_cm")
         .gte("observed_at", kstMidnightISO(new Date()))
         .eq("missing", false),
+      // 월보드 차트용. 최신 관측 쿼리와 같은 기준(결측 제외)으로 읽는다.
+      supabase
+        .from("weather_observations")
+        .select("observed_at, rain_mm_per_hr, temp_c, feels_c, wind_ms")
+        .eq("missing", false)
+        .gte("observed_at", new Date(Date.now() - 24 * 3600_000).toISOString())
+        .order("observed_at", { ascending: true }),
     ]);
 
     const snowRows = snowTodayRes.data ?? [];
@@ -140,12 +159,14 @@ export default function Dashboard() {
         ? null
         : snowRows.reduce((acc, r) => acc + Number(r.snow_new_cm ?? 0), 0);
 
+    setSiteName(siteRes.data?.site_name ?? "곤지암");
     setData({
       observation: (obsRes.data as WeatherObservation | null) ?? null,
       criteria: (criteriaRes.data as WeatherCriteria[] | null) ?? [],
       openEvents: (eventsRes.data as WeatherEvent[] | null) ?? [],
       dispatches: (dispatchesRes.data as unknown as DispatchRow[] | null) ?? [],
       snowToday,
+      history: (historyRes.data as ObservationPoint[] | null) ?? [],
     });
 
     if (isAdmin) {
@@ -184,6 +205,13 @@ export default function Dashboard() {
   const today = formatDate(new Date());
 
   const pendingEvent = data?.openEvents.find((e) => e.status === "PENDING_APPROVAL") ?? null;
+
+  // 월보드는 운영 화면(AppLayout: 네비게이션 + 조작 버튼)을 감싸지 않는다.
+  // .bd는 자체적으로 position:fixed 전체화면 레이아웃이라 GlobalNav/SubNav를
+  // 씌우면 운영자가 아닌 관망 화면에 조작 요소가 그대로 노출된다.
+  if (boardMode) {
+    return <DashboardBoard {...toBoardProps(data, siteName)} />;
+  }
 
   return (
     <AppLayout title="대시보드" actions={<span className="dash-date">{today}</span>}>
@@ -507,4 +535,77 @@ export default function Dashboard() {
       </div>
     </AppLayout>
   );
+}
+
+// 월보드 표시용 변환. 컴포넌트 밖 순수 함수로 둬야 테스트하기 쉽고,
+// (렌더 시 호출되긴 하지만) 이 컴포넌트 상태 변화 없이는 재계산될 일이 없다.
+const KIND_OF_METRIC: Record<BoardMetric["key"], Kind> = {
+  rain: "rain",
+  temp: "heat",
+  wind: "wind",
+  feels: "heat",
+};
+
+const METRIC_DEFS: Omit<BoardMetric, "value" | "threshold" | "history">[] = [
+  { key: "rain", label: "시간당 강수량", unit: "mm", gradeLabel: "폭우 주의보", allowNegative: false },
+  { key: "temp", label: "기온", unit: "℃", gradeLabel: "폭염 주의보", allowNegative: true },
+  { key: "wind", label: "풍속", unit: "m/s", gradeLabel: "강풍 주의보", allowNegative: false },
+  { key: "feels", label: "체감온도", unit: "℃", gradeLabel: "폭염 주의보", allowNegative: true },
+];
+
+const THRESHOLD_KEY: Record<BoardMetric["key"], string> = {
+  rain: "rain_mm_per_hr",
+  temp: "temp_c",
+  wind: "wind_ms",
+  feels: "feels_c",
+};
+
+const OBS_FIELD: Record<BoardMetric["key"], keyof ObservationPoint> = {
+  rain: "rain_mm_per_hr",
+  temp: "temp_c",
+  wind: "wind_ms",
+  feels: "feels_c",
+};
+
+function toBoardProps(data: DashboardData | null, siteName: string) {
+  const obs = data?.observation ?? null;
+  const history = data?.history ?? [];
+
+  const metrics: BoardMetric[] = METRIC_DEFS.map((def) => {
+    const watch = (data?.criteria ?? []).find(
+      (c) => c.kind === KIND_OF_METRIC[def.key] && c.grade === "watch",
+    );
+    // threshold 0은 "기준 미설정"이다(DashboardBoard가 그렇게 해석한다) — 폴백을
+    // 지우면 기준 없는 지표가 0으로 취급돼 항상 초과로 오판된다.
+    const threshold = watch?.threshold?.[THRESHOLD_KEY[def.key]] ?? 0;
+    const field = OBS_FIELD[def.key];
+    const raw = obs ? (obs[field] as number | null) : null;
+    return {
+      ...def,
+      threshold,
+      value: raw ?? null,
+      history: history
+        .map((h) => h[field] as number | null)
+        .filter((v): v is number => v !== null),
+    };
+  });
+
+  const events: BoardEvent[] = (data?.openEvents ?? []).map((e) => ({
+    id: e.id,
+    title: `${KIND_LABEL[e.kind]} ${e.grade === "warning" ? "경보" : "주의보"}`,
+    tag: e.status === "PENDING_APPROVAL" ? "승인 대기" : "발송 완료",
+    detail:
+      e.status === "PENDING_APPROVAL"
+        ? `${formatTime(e.detected_at)} 감지 · 재알림 ${e.repeat_count}회`
+        : `${formatTime(e.detected_at)} 발생 · 반복 ${e.repeat_count}회차`,
+    severe: e.grade === "warning",
+  }));
+
+  return {
+    siteName,
+    clock: new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }),
+    collectedAgo: obs ? `${formatTime(obs.observed_at)} 관측 기준` : "관측 없음",
+    metrics,
+    events,
+  };
 }
