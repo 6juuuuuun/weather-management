@@ -146,7 +146,9 @@ describe("DashboardBoard.css 레이아웃 계약", () => {
   // 특보 배너가 카드 영역을 줄이면 차트가 카드 밖으로 넘치고 overflow:hidden이
   // 하단을 잘라낸다. 뷰포트에 같이 줄어드는 vh여야 어떤 창 크기에서도 안전하다.
   it(".bd-card .mc의 height가 vh 단위다", () => {
-    const height = /height:\s*([^;]+);/.exec(ruleOf(".bd-card .mc"))?.[1].trim();
+    // 앞을 `^|;`로 묶는다 — 앵커가 없으면 `line-height`·`min-height`의 뒷부분에
+    // 물려서, height:auto가 살아 있어도 초록이 되거나 멀쩡한데 빨개진다.
+    const height = /(?:^|;)\s*height:\s*([^;]+);/.exec(ruleOf(".bd-card .mc"))?.[1].trim();
     expect(height).toBeTruthy();
     expect(height).not.toBe("auto");
     expect(height).toMatch(/vh$/);

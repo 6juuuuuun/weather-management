@@ -77,7 +77,9 @@ describe("BoardTicker", () => {
   // 2배가 아니게 되면 -50% 이동이 이음매에서 빗나간다(계산상 11px 튐).
   // 간격은 항목의 margin-right로만 표현돼야 한다.
   it(".bt-track에 gap도 padding도 없다", () => {
-    const rule = /\.bt-track\s*\{([^}]*)\}/.exec(tickerCss)?.[1];
+    // 블록 경계도 `^|}`로 앵커한다 — 없으면 `.bt-paused .bt-track` 같은 파생
+    // 선택자 블록을 대신 읽고, 정작 기본 규칙에 gap이 돌아와도 조용히 통과한다.
+    const rule = /(?:^|\})\s*\.bt-track\s*\{([^}]*)\}/.exec(tickerCss)?.[1];
     expect(rule).toBeTruthy();
     expect(rule).not.toMatch(/(^|;)\s*(row-|column-)?gap\s*:/);
     expect(rule).not.toMatch(/(^|;)\s*padding(-\w+)?\s*:/);
