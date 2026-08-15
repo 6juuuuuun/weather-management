@@ -35,7 +35,9 @@ function DeptIcon() {
 }
 
 function formatDate(iso: string): string {
-  return new Intl.DateTimeFormat("ko-KR", { month: "numeric", day: "numeric" }).format(new Date(iso));
+  // ko-KR의 numeric 포맷은 "8. 15."처럼 마침표가 붙어 문장 끝처럼 읽힌다. "8월 15일"로 쓴다.
+  const d = new Date(iso);
+  return `${d.getMonth() + 1}월 ${d.getDate()}일`;
 }
 
 function editBufferFor(

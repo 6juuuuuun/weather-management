@@ -50,6 +50,14 @@ body {
   font-weight: 400;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+
+  /* 한글은 기본값(word-break: normal)에서 음절 단위로 끊긴다. 그래서 "현재 기온 또는
+     체감온도"가 "…체감온" / "도"처럼 마지막 한 글자만 다음 줄로 넘어간다.
+     keep-all은 어절(띄어쓰기) 단위로만 끊어 이걸 없앤다.
+     다만 keep-all은 긴 영문·URL·이메일도 안 끊으므로 컨테이너를 넘칠 수 있어,
+     overflow-wrap: break-word로 그 경우에만 강제 줄바꿈을 허용한다. */
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 #root {

@@ -146,6 +146,18 @@
 }
 
 /* ---------- 관측값 카드 ---------- */
+.obs-stamp {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 300;
+  color: var(--ink-muted-48);
+}
+
+.obs-stamp-warn {
+  color: var(--warn);
+  font-weight: 400;
+}
+
 .obs-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

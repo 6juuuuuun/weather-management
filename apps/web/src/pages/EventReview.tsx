@@ -275,7 +275,10 @@ function DeptBlockCard({
       )}
 
       <p className="dept-block-recipients">
-        수신 {block.recipients.length > 0 ? block.recipients.map((r) => r.name).join(", ") : "지정된 수신자 없음"}
+        {/* 빈 경우에 "수신 지정된 수신자 없음"으로 읽히던 것을 접두사 없이 한 문장으로 바꾼다. */}
+        {block.recipients.length > 0
+          ? `수신 ${block.recipients.map((r) => r.name).join(", ")}`
+          : "수신자가 지정되지 않았습니다"}
       </p>
     </div>
   );

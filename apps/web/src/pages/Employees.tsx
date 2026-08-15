@@ -313,6 +313,7 @@ export default function Employees() {
                       <StatusDot ok={!!e.kakaowork_user_id} label={e.kakaowork_user_id ? "연결됨" : "미연결"} />
                     </td>
                     <td className="employees-actions">
+                      <div className="employees-actions-inner">
                       {!isAdmin ? null : unassigned ? (
                         assigningId === e.id ? (
                           <select
@@ -374,6 +375,7 @@ export default function Employees() {
                           </button>
                         </>
                       )}
+                      </div>
                     </td>
                   </tr>
                 );

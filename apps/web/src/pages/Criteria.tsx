@@ -85,7 +85,9 @@ const ROW_DEFS: RowDef[] = [
   {
     kind: "heat",
     label: "폭염",
-    desc: "현재 기온 또는 체감온도",
+    // 폭염만 입력칸이 2개라 라벨 폭이 좁다. "현재"는 다른 지표 설명에도 없는 수식어이고
+    // 어차피 현재 관측값을 뜻하므로 빼서 한 줄에 맞춘다(행 높이가 다른 행과 어긋나지 않게).
+    desc: "기온 또는 체감온도",
     icon: <HeatIcon />,
     fields: [
       { key: "temp_c", unit: "℃ 또는 체감" },
@@ -267,9 +269,13 @@ export default function Criteria() {
                     <div className="criteria-row-fields">
                       {row.fields.map((field) => (
                         <div className="criteria-field" key={field.key}>
+                          {/* 시각적으로는 왼쪽 라벨("폭우 / 시간당 강수량")이 어느 기준인지 알려주지만
+                              프로그램적으로는 연결돼 있지 않아, 스크린리더에는 값만 읽혔다.
+                              등급·항목·단위를 합쳐 접근명을 만든다. */}
                           <input
                             type="number"
                             className="criteria-input"
+                            aria-label={`${grade === "watch" ? "주의보" : "경보"} ${row.label} 기준 · ${row.desc} (${field.unit})`}
                             value={criteria[row.kind][grade][field.key] ?? ""}
                             disabled={!isAdmin}
                             onChange={(e) => setField(row.kind, grade, field.key, e.target.value)}
