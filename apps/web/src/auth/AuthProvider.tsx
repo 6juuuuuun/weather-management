@@ -3,11 +3,12 @@ import type { ReactNode } from "react";
 import { supabase } from "../lib/supabase";
 import type { Employee } from "../lib/types";
 
-type AuthState = { employee: Employee | null; loading: boolean; signOut(): void };
+type AuthState = { employee: Employee | null; loading: boolean; isApprover: boolean; signOut(): void };
 
 const Ctx = createContext<AuthState>({
   employee: null,
   loading: true,
+  isApprover: false,
   signOut: () => {},
 });
 
@@ -15,6 +16,7 @@ export const useAuth = () => useContext(Ctx);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [employee, setEmployee] = useState<Employee | null>(null);
+  const [isApprover, setIsApprover] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -24,6 +26,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } = await supabase.auth.getUser();
       if (!user) {
         setEmployee(null);
+        setIsApprover(false);
         setLoading(false);
         return;
       }
@@ -33,6 +36,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .eq("auth_user_id", user.id)
         .single();
       setEmployee(data);
+      // 승인 권한은 역할이 아니라 Alert 수신자 등록 여부가 결정한다(스펙 2026-08-13).
+      // 서버가 최종 게이트이므로 이 값은 화면 노출 제어용이다.
+      if (data) {
+        const { data: recip } = await supabase
+          .from("alert_recipients")
+          .select("employee_id")
+          .eq("employee_id", data.id)
+          .maybeSingle();
+        setIsApprover(recip !== null);
+      } else {
+        setIsApprover(false);
+      }
       setLoading(false);
     };
     load();
@@ -41,7 +56,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <Ctx.Provider value={{ employee, loading, signOut: () => void supabase.auth.signOut() }}>
+    <Ctx.Provider
+      value={{ employee, loading, isApprover, signOut: () => void supabase.auth.signOut() }}
+    >
       {children}
     </Ctx.Provider>
   );

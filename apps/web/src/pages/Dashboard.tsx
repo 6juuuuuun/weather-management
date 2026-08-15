@@ -86,7 +86,7 @@ function dispatchScope(row: DispatchRow): { label: string; failCount: number; to
 }
 
 export default function Dashboard() {
-  const { employee } = useAuth();
+  const { employee, isApprover } = useAuth();
   const [data, setData] = useState<DashboardData | null>(null);
   const [setup, setSetup] = useState<SetupChecklist | null>(null);
   const [setupDetail, setSetupDetail] = useState<{ missingDeptCount: number }>({ missingDeptCount: 0 });
@@ -248,7 +248,7 @@ export default function Dashboard() {
                 </p>
               </div>
             </div>
-            {employee?.role === "approver" && (
+            {isApprover && (
               <Link to={`/events/${pendingEvent.id}`}>
                 <Button variant="primary">초안 검토하기</Button>
               </Link>

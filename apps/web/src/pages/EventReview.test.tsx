@@ -7,7 +7,7 @@ import type { AlertSetting, DeptBlock, Employee, Message, WeatherCriteria, Weath
 const mocks = vi.hoisted(() => ({
   fromImpl: (_table: string): any => ({ then: (resolve: any) => resolve({ data: null, error: null }) }),
   callSend: vi.fn(),
-  authState: { employee: null as Employee | null, loading: false },
+  authState: { employee: null as Employee | null, loading: false, isApprover: false },
 }));
 
 vi.mock("../lib/supabase", () => ({
@@ -182,7 +182,7 @@ function renderPage() {
 
 beforeEach(() => {
   mocks.callSend.mockReset();
-  mocks.authState = { employee: approver, loading: false };
+  mocks.authState = { employee: approver, loading: false, isApprover: true };
   setupSupabase();
 });
 
@@ -255,7 +255,7 @@ describe("EventReview", () => {
   });
 
   it("staff는 체크박스·발송 버튼이 없고 자기 부서가 강조된다", async () => {
-    mocks.authState = { employee: staff, loading: false };
+    mocks.authState = { employee: staff, loading: false, isApprover: false };
     renderPage();
     expect(await screen.findByText("객실")).toBeInTheDocument();
     expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
@@ -267,7 +267,7 @@ describe("EventReview", () => {
   });
 
   it("admin은 체크박스·발송 버튼이 보이지 않는다", async () => {
-    mocks.authState = { employee: admin, loading: false };
+    mocks.authState = { employee: admin, loading: false, isApprover: false };
     renderPage();
     expect(await screen.findByText("객실")).toBeInTheDocument();
     expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
@@ -305,5 +305,20 @@ describe("EventReview", () => {
     setupSupabase({ weather_events: { data: null, error: { message: "not found" } } });
     renderPage();
     expect(await screen.findByText("이벤트를 찾을 수 없습니다")).toBeInTheDocument();
+  });
+
+  it("Alert 수신자가 아니면 승인 및 발송 버튼이 보이지 않는다", async () => {
+    mocks.authState = { employee: { ...approver, role: "approver" }, loading: false, isApprover: false };
+    setupSupabase();
+    renderPage();
+    expect(await screen.findByText("현재 화면은 읽기 전용입니다.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /승인 및 발송/ })).not.toBeInTheDocument();
+  });
+
+  it("역할이 admin이어도 Alert 수신자면 승인 및 발송 버튼이 보인다", async () => {
+    mocks.authState = { employee: { ...approver, role: "admin" }, loading: false, isApprover: true };
+    setupSupabase();
+    renderPage();
+    expect(await screen.findByRole("button", { name: /승인 및 발송/ })).toBeInTheDocument();
   });
 });
