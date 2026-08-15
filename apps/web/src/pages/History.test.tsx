@@ -3,8 +3,17 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { DeptBlock } from "../lib/types";
 
-const detected_at = "2026-07-16T08:00:00.000Z";
-const sent_at = "2026-07-16T08:10:00.000Z";
+// 절대 날짜(예: "2026-07-16")는 History.tsx의 기본 기간 필터("최근 30일") 경계를
+// 시간이 지나며 넘어서게 되어 테스트가 저절로 실패하는 시한폭탄이 된다.
+// 따라서 테스트 실행 시각(now) 기준 상대 날짜로 계산해 항상 필터 창 안에 들어오도록 한다.
+const now = Date.now();
+const daysAgo = (n: number) => new Date(now - n * 24 * 60 * 60 * 1000);
+
+const sentAtDate = daysAgo(5);
+// 감지(detected_at)는 발송(sent_at)보다 항상 먼저 있어야 하므로 10분 앞선 시각으로 고정
+const detectedAtDate = new Date(sentAtDate.getTime() - 10 * 60 * 1000);
+const detected_at = detectedAtDate.toISOString();
+const sent_at = sentAtDate.toISOString();
 
 const content: DeptBlock[] = [
   {
@@ -57,9 +66,14 @@ const legacyContent: DeptBlock[] = [
   },
 ];
 
-// 기본 기간 필터("최근 30일")에 걸리지 않도록 dispatchRow와 근접한 날짜 사용
-const legacySentAt = "2026-07-20T08:10:00.000Z";
-const legacyDetectedAt = "2026-07-20T08:00:00.000Z";
+// 기본 기간 필터("최근 30일")에 걸리지 않도록 dispatchRow와 근접한 날짜를 사용하되,
+// 절대 날짜 상수는 시간이 지나면 필터 경계를 넘어 만료되므로 dispatchRow와 마찬가지로
+// 테스트 실행 시각(now) 기준 상대 날짜로 계산한다. dispatchRow와는 다른 날(4일 차이)로 두어
+// 두 이력이 같은 시각으로 우연히 겹치지 않게 한다.
+const legacySentAtDate = daysAgo(9);
+const legacyDetectedAtDate = new Date(legacySentAtDate.getTime() - 10 * 60 * 1000);
+const legacySentAt = legacySentAtDate.toISOString();
+const legacyDetectedAt = legacyDetectedAtDate.toISOString();
 
 const legacyDispatchRow = {
   id: 7,
