@@ -196,4 +196,7 @@ Deno.test("send approve: admin이 Alert 수신자면 승인할 수 있다", asyn
   assertEquals(res.status, 200);
   const { data: after } = await db.from("weather_events").select("status").eq("id", ev.id).single();
   assertEquals(after!.status, "ACTIVE");
+  // ACTIVE 상태로 남기면 one_open_event 부분 유니크 인덱스에 걸려 다음에 실행되는
+  // rls_test.ts의 rain/watch 삽입이 null을 돌려받고 죽는다 — 열어둔 이벤트를 반드시 정리한다.
+  await resetEvents(db);
 });
