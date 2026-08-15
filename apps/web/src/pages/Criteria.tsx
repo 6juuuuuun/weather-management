@@ -235,7 +235,7 @@ export default function Criteria() {
       )}
 
       <p className="criteria-intro">
-        날씨 요소별 임계값을 설정합니다. 기준 초과 시 특보가 감지되고 사업부장에게 알림이 발송됩니다
+        날씨 요소별 임계값을 설정합니다. 기준 초과 시 특보가 감지되고 Alert 수신자에게 알림이 발송됩니다
       </p>
 
       {loading ? (

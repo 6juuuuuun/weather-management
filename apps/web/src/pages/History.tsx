@@ -432,7 +432,7 @@ export default function History() {
       )}
 
       <p className="history-footnote">
-        ⓘ 행 클릭 시 발송 당시 원본 메시지가 열립니다 · 재발송과 수정 발송은 사업부장 권한입니다
+        ⓘ 행 클릭 시 발송 당시 원본 메시지가 열립니다 · 재발송과 수정 발송은 Alert 수신자 권한입니다
       </p>
 
       {selected && (

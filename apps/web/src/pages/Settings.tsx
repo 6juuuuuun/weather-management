@@ -302,7 +302,7 @@ export default function Settings() {
           <section className="settings-card">
             <h2 className="settings-card-title">반복 알림 정책</h2>
             <p className="settings-card-desc">
-              최초 발송은 사업부장 승인이 필요하며, 반복 발송은 승인 없이 자동으로 이뤄집니다
+              최초 발송은 Alert 수신자 승인이 필요하며, 반복 발송은 승인 없이 자동으로 이뤄집니다
             </p>
             <div className="settings-repeat-list">
               {KIND_ORDER.map((kind) => {
@@ -405,7 +405,7 @@ export default function Settings() {
 
           <section className="settings-card">
             <h2 className="settings-card-title">재알림 · 해제 알림</h2>
-            <p className="settings-card-desc">초안이 승인되지 않으면 사업부장에게 다시 알립니다</p>
+            <p className="settings-card-desc">초안이 승인되지 않으면 Alert 수신자에게 다시 알립니다</p>
             <div className="settings-inline-row">
               <span className="settings-field-label">재알림 간격</span>
               <span className="settings-accum-input">
