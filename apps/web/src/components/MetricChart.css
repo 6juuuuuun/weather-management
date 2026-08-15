@@ -3,7 +3,11 @@
 
 .mc {
   width: 100%;
-  height: auto;
+  /* height:auto였을 때는 viewBox 종횡비(840:196)로 렌더 높이가 정해져
+     카드 높이와 무관했다 — 100%로 부모(.bd-card .mc의 height:18vh)를
+     그대로 채운다. preserveAspectRatio 기본값(xMidYMid meet)이 내부에서
+     비율을 유지하며 레터박싱하므로 축 라벨이 늘어나지 않는다. */
+  height: 100%;
   display: block;
   overflow: visible;
 }

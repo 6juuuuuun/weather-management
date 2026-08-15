@@ -11,11 +11,14 @@
   overflow: hidden;
 }
 
+/* 세로 리듬은 vh로 잰다 — 보드는 항상 뷰포트 높이를 꽉 채우므로(position:fixed;
+   inset:0) vh가 자연스러운 단위다. 값은 1080px 기준 시안에서 value/1080*100으로
+   환산했다. 좌우 여백처럼 세로 스택 높이에 관여하지 않는 값은 px로 남긴다. */
 .bd-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 38px 56px 26px;
+  padding: 3.52vh 56px 1.85vh;
   flex-shrink: 0;
 }
 
@@ -27,7 +30,7 @@
 }
 
 .bd-status {
-  font-size: 64px;
+  font-size: 5.9vh;
   font-weight: 600;
   letter-spacing: -0.03em;
   line-height: 1;
@@ -47,22 +50,26 @@
 .bd-clock {
   display: block;
   font-family: var(--font-num);
-  font-size: 44px;
+  font-size: 4.1vh;
   font-weight: 300;
   letter-spacing: -0.02em;
+  /* bd-status처럼 line-height:1로 고정해야 헤더 높이가 폰트 크기만으로
+     결정된다 — 브라우저 기본값(불특정)에 맡기면 vh 산수가 어긋난다. */
+  line-height: 1;
 }
 
 .bd-collected {
-  font-size: 17px;
+  font-size: 1.57vh;
   font-weight: 300;
   color: var(--ink-muted-48);
+  line-height: 1;
 }
 
 .bd-events {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  margin: 0 56px 22px;
+  margin: 0 56px 1.48vh;
   flex-shrink: 0;
 }
 
@@ -85,10 +92,13 @@
   min-width: 0;
 }
 
+/* 배너 3건(가로)일 때가 카드 영역을 가장 많이 잡아먹는 경우다 — 세로 패딩과
+   줄바꿈 사이 간격(row-gap)만 vh로, 가로 간격(column-gap)은 px 그대로 둔다. */
 .bd-events-row .bd-event {
   flex: 1;
-  padding: 16px 22px;
-  gap: 10px;
+  padding: 1.48vh 22px;
+  row-gap: 0.56vh;
+  column-gap: 10px;
 }
 
 /* 배지는 진행 상태(승인 대기/발송 완료)만 말한다. 심각도는 제목 색과 "주의보/경보"
@@ -96,12 +106,13 @@
    배지까지 심각도를 색으로 나누면 #8a4b00↔--danger가 ΔE 1.5로 뭉개져,
    금지한 --warn과 같은 실패를 반복하게 된다. */
 .bd-tag {
-  padding: 7px 16px;
+  padding: 0.65vh 16px;
   border-radius: 9999px;
   background: var(--parchment);
   color: var(--ink-muted-80);
-  font-size: 18px;
+  font-size: 1.67vh;
   font-weight: 600;
+  line-height: 1.1;
   white-space: nowrap;
 }
 
@@ -109,21 +120,23 @@
   font-size: 36px;
   font-weight: 600;
   letter-spacing: -0.02em;
+  line-height: 1.1;
   color: var(--warn-strong);
 }
 
-.bd-events-row .bd-event-title { font-size: 30px; }
+.bd-events-row .bd-event-title { font-size: 2.78vh; }
 
 .bd-event-severe { color: var(--danger); }
 
 .bd-event-detail {
   font-size: 19px;
   font-weight: 300;
+  line-height: 1.1;
   color: var(--ink-muted-48);
 }
 
 .bd-events-row .bd-event-detail {
-  font-size: 16px;
+  font-size: 1.48vh;
   flex-basis: 100%;
 }
 
@@ -141,8 +154,9 @@
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   grid-template-rows: repeat(2, 1fr);
-  gap: 24px;
-  padding: 0 56px 26px;
+  row-gap: 1.48vh;
+  column-gap: 24px;
+  padding: 0 56px 1.48vh;
 }
 
 /* 16:9에서 4열 1행은 카드가 세로로 과하게 길어져 숫자와 차트 사이가 빈다.
@@ -151,7 +165,7 @@
   background: var(--canvas);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-card);
-  padding: 26px 30px 22px;
+  padding: 1.85vh 30px 1.48vh;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -159,18 +173,19 @@
 }
 
 .bd-card-label {
-  font-size: 22px;
+  font-size: 2.05vh;
   font-weight: 400;
+  line-height: 1.1;
   color: var(--ink-muted-80);
 }
 
 .bd-card-value {
   font-family: var(--font-num);
-  font-size: 68px;
+  font-size: 6.3vh;
   font-weight: 600;
   line-height: 1;
   letter-spacing: -2px;
-  margin: 8px 0 0;
+  margin: 0.74vh 0 0;
   color: var(--ink);
 }
 
@@ -185,4 +200,11 @@
   letter-spacing: 0;
 }
 
-.bd-card .mc { margin-top: 10px; }
+.bd-card .mc {
+  margin-top: 0.56vh;
+  /* 차트 세로 크기를 카드 남은 공간에서 떼어낸 고정 vh로 준다 —
+     MetricChart.css의 height:auto(종횡비 유래)는 카드 높이와 무관해서
+     배너로 카드가 줄면 차트가 카드를 넘친다. vh는 뷰포트 높이에 맞춰
+     같이 줄어들므로 어떤 창 크기에서도 넘치지 않는다. */
+  height: 18vh;
+}
