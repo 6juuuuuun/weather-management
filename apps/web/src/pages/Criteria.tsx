@@ -7,6 +7,7 @@ import { Chip } from "../components/Chip";
 import { useAuth } from "../auth/AuthProvider";
 import { supabase } from "../lib/supabase";
 import type { EmpRole, Grade, Kind } from "../lib/types";
+import { ROLE_LABEL } from "../lib/roles";
 import "./Criteria.css";
 
 // Task 2 시드(supabase/seed.sql)와 동일한 값 — 프리셋 불러오기 시 이 값으로 로컬 state를 리셋한다.
@@ -22,12 +23,6 @@ const PRESET: Record<Kind, Record<Grade, Record<string, number>>> = {
 
 const KIND_ORDER: Kind[] = ["rain", "snow", "wind", "heat"];
 const GRADE_ORDER: Grade[] = ["watch", "warning"];
-
-const ROLE_LABEL: Record<EmpRole, string> = {
-  admin: "시스템 관리자",
-  approver: "사업부장",
-  staff: "실무자",
-};
 
 type ThresholdField = { key: string; unit: string };
 type RowDef = { kind: Kind; label: string; desc: string; icon: ReactNode; fields: ThresholdField[] };

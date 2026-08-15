@@ -3,13 +3,8 @@ import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import { supabase } from "../lib/supabase";
 import type { EmpRole } from "../lib/types";
+import { ROLE_LABEL } from "../lib/roles";
 import "./components.css";
-
-const ROLE_LABEL: Record<EmpRole, string> = {
-  admin: "시스템 관리자",
-  approver: "사업부장",
-  staff: "실무자",
-};
 
 type NavLink = { to: string; label: string; roles: EmpRole[] | null };
 

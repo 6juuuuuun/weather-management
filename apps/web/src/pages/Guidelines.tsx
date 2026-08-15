@@ -8,14 +8,14 @@ import { Button } from "../components/Button";
 import { Modal } from "../components/Modal";
 import { useAuth } from "../auth/AuthProvider";
 import { supabase } from "../lib/supabase";
-import type { ActionGuideline, Department, EmpRole, Employee, Grade, Kind, Recipient } from "../lib/types";
+import type { ActionGuideline, Department, Employee, Grade, Kind, Recipient } from "../lib/types";
+import { ROLE_LABEL } from "../lib/roles";
 import "./Guidelines.css";
 
 const KINDS: Kind[] = ["rain", "snow", "wind", "heat"];
 const KIND_LABEL: Record<Kind, string> = { rain: "폭우", snow: "폭설", wind: "강풍", heat: "폭염" };
 const GRADES: Grade[] = ["watch", "warning"];
 const GRADE_LABEL: Record<Grade, string> = { watch: "주의보", warning: "경보" };
-const ROLE_LABEL: Record<EmpRole, string> = { admin: "시스템 관리자", approver: "사업부장", staff: "실무자" };
 
 function DeptIcon() {
   return (
