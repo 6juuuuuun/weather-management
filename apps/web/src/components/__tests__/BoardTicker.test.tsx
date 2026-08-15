@@ -56,6 +56,7 @@ describe("BoardTicker", () => {
 
   // 회귀: 트랙에 gap이나 padding이 있으면 -50% 이동이 이음매와 어긋난다(계산상 11px 튐).
   // 두 벌이 정확히 같은 폭이 되려면 모든 자식이 동일한 자기 여백만 가져야 한다.
+  // 좌측 인셋은 애니메이션되지 않는 .bt가 가진다.
   it("트랙의 자식은 두 벌이 정확히 같은 수여야 한다", () => {
     const items = [rain, { ...rain, label: "기온" }, { ...rain, label: "풍속" }];
     const { container } = render(<BoardTicker items={items} />);

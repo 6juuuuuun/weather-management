@@ -9,6 +9,9 @@
   align-items: center;
   overflow: hidden;
   flex-shrink: 0;
+  /* 좌측 인셋은 애니메이션되지 않는 부모가 가진다. 트랙에 두면 폭 계산(W=2C')이
+     깨져 -50% 이동이 이음매와 어긋난다 — 그게 직전 라운드의 결함이었다. */
+  padding-left: 56px;
 }
 
 .bt-track {
