@@ -14,9 +14,10 @@
 .bt-track {
   display: flex;
   align-items: center;
-  gap: 34px;
   white-space: nowrap;
-  padding-left: 56px;
+  /* gap과 padding-left를 쓰지 않는다. 두 벌이 모두 형제라 벌 사이에도 gap이 들어가고
+     padding은 앞쪽에 한 번만 있어, -50% 이동이 이음매와 어긋난다(계산상 11px).
+     항목마다 자기 오른쪽 여백을 지니면 트랙 폭이 정확히 한 벌의 2배가 되어 딱 맞는다. */
   animation: bt-roll 46s linear infinite;
 }
 
@@ -31,11 +32,12 @@
 }
 
 .bt-item {
+  margin-right: 34px;
   font-size: 26px;
   font-weight: 300;
   display: inline-flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 10px; /* 항목 내부 라벨/값/문구 사이 간격 — 트랙 레벨 gap과 무관 */
 }
 
 .bt-label {
