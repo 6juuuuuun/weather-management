@@ -9,13 +9,8 @@ import { DeptModal } from "../components/DeptModal";
 import { useAuth } from "../auth/AuthProvider";
 import { supabase } from "../lib/supabase";
 import type { Department, EmpRole, Employee } from "../lib/types";
+import { ROLE_LABEL } from "../lib/roles";
 import "./Employees.css";
-
-const ROLE_LABEL: Record<EmpRole, string> = {
-  admin: "시스템 관리자",
-  approver: "사업부장",
-  staff: "실무자",
-};
 
 const ROLE_ORDER: EmpRole[] = ["admin", "approver", "staff"];
 
@@ -318,6 +313,7 @@ export default function Employees() {
                       <StatusDot ok={!!e.kakaowork_user_id} label={e.kakaowork_user_id ? "연결됨" : "미연결"} />
                     </td>
                     <td className="employees-actions">
+                      <div className="employees-actions-inner">
                       {!isAdmin ? null : unassigned ? (
                         assigningId === e.id ? (
                           <select
@@ -379,6 +375,7 @@ export default function Employees() {
                           </button>
                         </>
                       )}
+                      </div>
                     </td>
                   </tr>
                 );

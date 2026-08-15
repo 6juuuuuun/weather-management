@@ -8,14 +8,14 @@ import { Button } from "../components/Button";
 import { Modal } from "../components/Modal";
 import { useAuth } from "../auth/AuthProvider";
 import { supabase } from "../lib/supabase";
-import type { ActionGuideline, Department, EmpRole, Employee, Grade, Kind, Recipient } from "../lib/types";
+import type { ActionGuideline, Department, Employee, Grade, Kind, Recipient } from "../lib/types";
+import { ROLE_LABEL } from "../lib/roles";
 import "./Guidelines.css";
 
 const KINDS: Kind[] = ["rain", "snow", "wind", "heat"];
 const KIND_LABEL: Record<Kind, string> = { rain: "폭우", snow: "폭설", wind: "강풍", heat: "폭염" };
 const GRADES: Grade[] = ["watch", "warning"];
 const GRADE_LABEL: Record<Grade, string> = { watch: "주의보", warning: "경보" };
-const ROLE_LABEL: Record<EmpRole, string> = { admin: "시스템 관리자", approver: "사업부장", staff: "실무자" };
 
 function DeptIcon() {
   return (
@@ -35,7 +35,9 @@ function DeptIcon() {
 }
 
 function formatDate(iso: string): string {
-  return new Intl.DateTimeFormat("ko-KR", { month: "numeric", day: "numeric" }).format(new Date(iso));
+  // ko-KR의 numeric 포맷은 "8. 15."처럼 마침표가 붙어 문장 끝처럼 읽힌다. "8월 15일"로 쓴다.
+  const d = new Date(iso);
+  return `${d.getMonth() + 1}월 ${d.getDate()}일`;
 }
 
 function editBufferFor(

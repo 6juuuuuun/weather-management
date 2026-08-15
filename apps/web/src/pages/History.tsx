@@ -102,8 +102,9 @@ function cloneContent(content: DeptBlock[]): DeptBlock[] {
 }
 
 export default function History() {
-  const { employee } = useAuth();
-  const canResend = employee?.role === "approver";
+  // 재발송도 승인과 같은 서버 게이트(alert_recipients)를 타므로 역할이 아니라 isApprover로 판정한다.
+  // 서버가 최종 게이트이므로 이 값은 화면 노출 제어용이다.
+  const { isApprover: canResend } = useAuth();
 
   const [rows, setRows] = useState<DispatchRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -431,7 +432,7 @@ export default function History() {
       )}
 
       <p className="history-footnote">
-        ⓘ 행 클릭 시 발송 당시 원본 메시지가 열립니다 · 재발송과 수정 발송은 사업부장 권한입니다
+        ⓘ 행 클릭 시 발송 당시 원본 메시지가 열립니다 · 재발송과 수정 발송은 Alert 수신자 권한입니다
       </p>
 
       {selected && (

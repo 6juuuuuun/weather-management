@@ -75,11 +75,13 @@ $$ select exists (select 1 from alert_recipients where employee_id = current_emp
 
 승인은 부서 단위 업무가 아니라 전사 판단이므로, **Alert 수신자는 부서 미지정 `staff`여도 `/events/:id`에 접근할 수 있어야 한다.** `RequireRole`의 부서 게이트에 "Alert 수신자면 통과" 예외를 추가한다.
 
+이 예외는 `/events/:id` 전용 분기가 아니라 `RequireRole` 컴포넌트 자체에 구현되어, `requireDepartment`를 쓰는 모든 라우트(`/criteria`, `/guidelines`, `/events/:id`)에 적용된다(`routes.tsx:32,40,48`). 추가 데이터 노출은 없다 — `/criteria`는 로그인 사용자 전체가 읽을 수 있고 편집은 `isAdmin`으로 별도 게이트되며, `/guidelines`는 `r_guidelines` RLS 정책으로 필터링된다. 다만 이후 `requireDepartment`를 쓰는 새 라우트를 추가할 때는 이 예외를 자동으로 물려받는다는 점을 인지해야 한다.
+
 ## 4. 부수 효과
 
 ### 4.1 체크리스트가 의미를 되찾는다
 
-`lib/setup.ts`의 5번 항목 "Alert 수신자 ≥ 1"이 이제 **"승인 가능한 사람이 최소 1명 있다"**를 뜻하게 된다. 항목을 추가할 필요가 없다. 승인자 0명 상태는 자동으로 "초기 설정 미완료"로 표시된다.
+`lib/setup.ts`의 5번 항목 "Alert 수신자 ≥ 1"은 `alert_recipients` 행 수를 셀 뿐, 그 행이 실제로 로그인 가능한지는 보지 않는다. 인증이 카카오워크 봇 DM 매직링크로 바뀐 뒤(`35cab34`)에는 카카오워크 워크스페이스 멤버가 아닌 사람은 애초에 로그인 링크를 받지 못한다(`auth-kakaowork/index.ts:78`) — OAuth가 폐기되어 다른 진입 경로도 없다. 그런 사람은 `auth_user_id`를 가질 수 없고, 따라서 `current_emp_id()`가 그를 반환할 수 없고, 따라서 승인도 할 수 없다. 즉 이 체크리스트 항목은 **"승인 가능한 사람이 최소 1명 있다"를 보장하지 않는다** — 등록된 수신자의 이메일 오타나 카카오워크 미가입만으로도 체크리스트는 5/5를 유지한 채 승인자가 실질적으로 0명인 상태가 만들어질 수 있다. 체크리스트를 `auth_user_id`와 `kakaowork_user_id`가 모두 있는 수신자만 세도록 강화하는 것은 이 브랜치의 범위 밖이며 후속 작업이다.
 
 ### 4.2 `approver` 역할의 잔여 의미
 
@@ -100,7 +102,7 @@ $$ select exists (select 1 from alert_recipients where employee_id = current_emp
 | 승인 대기 중 승인자가 명단에서 제거됨 | 남은 다른 수신자가 승인. 명단이 비면 위와 동일 |
 | `staff`가 Alert 수신자로 지정됨 | 승인 가능. 관리자가 명시적으로 등록한 것이므로 의도된 동작 |
 | Alert 수신자가 부서 미지정 | `/events/:id` 접근 허용 (3.3) |
-| 카카오워크 미연결자가 Alert 수신자 | DM은 미도달하나 웹에서는 승인 가능. 별도 이슈(A′ 트랙)로 다룬다 |
+| 카카오워크 미연결자가 Alert 수신자 | DM도 미도달하고 **로그인 자체가 불가능**하므로 웹에서도 승인 불가(`auth-kakaowork/index.ts:78` — 카카오워크 워크스페이스 멤버가 아니면 로그인 링크가 발급되지 않는다). 체크리스트 강화(4.1)는 별도 이슈(A′ 트랙)로 다룬다 |
 
 ## 6. 테스트
 

@@ -13,7 +13,9 @@ async function resetEvents(db: ReturnType<typeof serviceClient>) {
   await db.from("weather_events").delete().neq("id", crypto.randomUUID());
 }
 
-async function loginAs(role: string, email: string) {
+// asApprover=true면 alert_recipients에도 등록한다 — 승인 권한의 유일한 출처이므로
+// 역할만 approver로 줘서는 승인이 되지 않는다.
+async function loginAs(role: string, email: string, asApprover = true) {
   const admin = serviceClient();
   const { data: created } = await admin.auth.admin.createUser({ email, password:"pw123456!", email_confirm:true });
   let userId = created?.user?.id;
@@ -23,7 +25,11 @@ async function loginAs(role: string, email: string) {
   }
   if (!userId) throw new Error(`cannot create or find auth user for ${email}`);
   await admin.from("employees").delete().eq("email", email);
-  await admin.from("employees").insert({ auth_user_id: userId, name: email, email, role });
+  const { data: emp } = await admin.from("employees")
+    .insert({ auth_user_id: userId, name: email, email, role }).select().single();
+  if (asApprover) {
+    await admin.from("alert_recipients").upsert({ employee_id: emp!.id });
+  }
   const c = createClient(URL, Deno.env.get("SUPABASE_ANON_KEY")!);
   const { data } = await c.auth.signInWithPassword({ email, password:"pw123456!" });
   return data.session!.access_token;
@@ -121,12 +127,15 @@ Deno.test("send approve: 발송 본문에 트리거 관측 수치가 들어가�
   await db.from("weather_observations").delete().eq("observed_at", observedAt);
 });
 
-Deno.test("send approve: staff는 403", async () => {
-  const token = await loginAs("staff", "st2@t.co");
+Deno.test("send approve: Alert 수신자가 아닌 staff는 403", async () => {
+  const db = serviceClient();
+  await resetEvents(db);
+  const { data: ev } = await db.from("weather_events").insert({ kind:"rain", grade:"watch" }).select().single();
+  await db.from("messages").insert({ event_id: ev.id, content: [] });
+  const token = await loginAs("staff", "st1@t.co", false);
   const res = await fetch(FN, { method:"POST",
     headers: { Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
-    body: JSON.stringify({ mode:"approve", event_id: crypto.randomUUID(), content: [] }) });
-  await res.body?.cancel();
+    body: JSON.stringify({ mode:"approve", event_id: ev.id, content: [] }) });
   assertEquals(res.status, 403);
 });
 
@@ -156,4 +165,38 @@ Deno.test("send dismiss: PENDING_APPROVAL이 아니면 409 + 상태 불변", asy
   assertEquals(res.status, 409);
   const { data: after } = await db.from("weather_events").select("status").eq("id", ev.id).single();
   assertEquals(after!.status, "ACTIVE");
+});
+
+Deno.test("send approve: Alert 수신자가 아니면 approver 역할이어도 403", async () => {
+  const db = serviceClient();
+  await resetEvents(db);
+  const { data: ev } = await db.from("weather_events").insert({ kind:"rain", grade:"watch" }).select().single();
+  await db.from("messages").insert({ event_id: ev.id, content: [] });
+  const token = await loginAs("approver", "nonrecip@t.co", false);   // 수신자 등록 안 함
+  const res = await fetch(FN, { method:"POST",
+    headers: { Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
+    body: JSON.stringify({ mode:"approve", event_id: ev.id, content: [] }) });
+  assertEquals(res.status, 403);
+  const { data: after } = await db.from("weather_events").select("status").eq("id", ev.id).single();
+  assertEquals(after!.status, "PENDING_APPROVAL");
+});
+
+// 2026-08-13 운영에서 실제로 막혔던 경로의 재현 — admin이 Alert 수신자인데 승인을 못 했다.
+Deno.test("send approve: admin이 Alert 수신자면 승인할 수 있다", async () => {
+  const db = serviceClient();
+  await resetEvents(db);
+  const { data: ev } = await db.from("weather_events").insert({ kind:"rain", grade:"watch" }).select().single();
+  const content = [{ department_id:"d", department_name:"객실", staff_actions:["a"],
+    guest_notice:"", recipients:[{ employee_id:"e", name:"홍", kakaowork_user_id:"kw1" }], selected:true }];
+  await db.from("messages").insert({ event_id: ev.id, content });
+  const token = await loginAs("admin", "adminrecip@t.co");
+  const res = await fetch(FN, { method:"POST",
+    headers: { Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
+    body: JSON.stringify({ mode:"approve", event_id: ev.id, content }) });
+  assertEquals(res.status, 200);
+  const { data: after } = await db.from("weather_events").select("status").eq("id", ev.id).single();
+  assertEquals(after!.status, "ACTIVE");
+  // ACTIVE 상태로 남기면 one_open_event 부분 유니크 인덱스에 걸려 다음에 실행되는
+  // rls_test.ts의 rain/watch 삽입이 null을 돌려받고 죽는다 — 열어둔 이벤트를 반드시 정리한다.
+  await resetEvents(db);
 });

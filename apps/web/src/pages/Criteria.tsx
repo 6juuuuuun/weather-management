@@ -7,6 +7,7 @@ import { Chip } from "../components/Chip";
 import { useAuth } from "../auth/AuthProvider";
 import { supabase } from "../lib/supabase";
 import type { EmpRole, Grade, Kind } from "../lib/types";
+import { ROLE_LABEL } from "../lib/roles";
 import "./Criteria.css";
 
 // Task 2 시드(supabase/seed.sql)와 동일한 값 — 프리셋 불러오기 시 이 값으로 로컬 state를 리셋한다.
@@ -22,12 +23,6 @@ const PRESET: Record<Kind, Record<Grade, Record<string, number>>> = {
 
 const KIND_ORDER: Kind[] = ["rain", "snow", "wind", "heat"];
 const GRADE_ORDER: Grade[] = ["watch", "warning"];
-
-const ROLE_LABEL: Record<EmpRole, string> = {
-  admin: "시스템 관리자",
-  approver: "사업부장",
-  staff: "실무자",
-};
 
 type ThresholdField = { key: string; unit: string };
 type RowDef = { kind: Kind; label: string; desc: string; icon: ReactNode; fields: ThresholdField[] };
@@ -90,7 +85,9 @@ const ROW_DEFS: RowDef[] = [
   {
     kind: "heat",
     label: "폭염",
-    desc: "현재 기온 또는 체감온도",
+    // 폭염만 입력칸이 2개라 라벨 폭이 좁다. "현재"는 다른 지표 설명에도 없는 수식어이고
+    // 어차피 현재 관측값을 뜻하므로 빼서 한 줄에 맞춘다(행 높이가 다른 행과 어긋나지 않게).
+    desc: "기온 또는 체감온도",
     icon: <HeatIcon />,
     fields: [
       { key: "temp_c", unit: "℃ 또는 체감" },
@@ -240,7 +237,7 @@ export default function Criteria() {
       )}
 
       <p className="criteria-intro">
-        날씨 요소별 임계값을 설정합니다. 기준 초과 시 특보가 감지되고 사업부장에게 알림이 발송됩니다
+        날씨 요소별 임계값을 설정합니다. 기준 초과 시 특보가 감지되고 Alert 수신자에게 알림이 발송됩니다
       </p>
 
       {loading ? (
@@ -272,9 +269,13 @@ export default function Criteria() {
                     <div className="criteria-row-fields">
                       {row.fields.map((field) => (
                         <div className="criteria-field" key={field.key}>
+                          {/* 시각적으로는 왼쪽 라벨("폭우 / 시간당 강수량")이 어느 기준인지 알려주지만
+                              프로그램적으로는 연결돼 있지 않아, 스크린리더에는 값만 읽혔다.
+                              등급·항목·단위를 합쳐 접근명을 만든다. */}
                           <input
                             type="number"
                             className="criteria-input"
+                            aria-label={`${grade === "watch" ? "주의보" : "경보"} ${row.label} 기준 · ${row.desc} (${field.unit})`}
                             value={criteria[row.kind][grade][field.key] ?? ""}
                             disabled={!isAdmin}
                             onChange={(e) => setField(row.kind, grade, field.key, e.target.value)}

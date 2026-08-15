@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { DeptBlock } from "../lib/types";
@@ -79,13 +79,25 @@ const legacyDispatchRow = {
   weather_events: { kind: "snow", grade: "warning", detected_at: legacyDetectedAt },
 };
 
-vi.mock("../auth/AuthProvider", () => ({
-  useAuth: () => ({
+const mocks = vi.hoisted(() => ({
+  authState: {
     employee: { id: "emp1", name: "김운영", role: "approver" },
     loading: false,
-    signOut: () => {},
-  }),
+    isApprover: true,
+  },
 }));
+
+vi.mock("../auth/AuthProvider", () => ({
+  useAuth: () => mocks.authState,
+}));
+
+beforeEach(() => {
+  mocks.authState = {
+    employee: { id: "emp1", name: "김운영", role: "approver" },
+    loading: false,
+    isApprover: true,
+  };
+});
 
 vi.mock("../lib/supabase", () => ({
   supabase: {
@@ -170,5 +182,20 @@ describe("History", () => {
 
     await waitFor(() => expect(screen.queryByText("폭우")).not.toBeInTheDocument());
     expect(screen.getByText("발송 이력이 없습니다")).toBeInTheDocument();
+  });
+
+  it("role이 approver여도 Alert 수신자가 아니면 재발송 버튼이 보이지 않는다", async () => {
+    mocks.authState = {
+      employee: { id: "emp1", name: "김운영", role: "approver" },
+      loading: false,
+      isApprover: false,
+    };
+    render(
+      <MemoryRouter>
+        <History />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("폭우")).toBeInTheDocument());
+    expect(screen.queryByText("재발송")).not.toBeInTheDocument();
   });
 });

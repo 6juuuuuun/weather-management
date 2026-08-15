@@ -48,6 +48,14 @@ function num(v: number | null | undefined, digits = 1): string {
   return v == null ? "–" : v.toFixed(digits);
 }
 
+// 관측은 매시 1회이므로, 마지막 유효 관측이 100분을 넘겼다면 그 뒤로 최소 한 번은
+// 수집에 실패했다는 뜻이다(정시 수집 지연을 감안해 60분이 아니라 100분).
+const STALE_OBSERVATION_MIN = 100;
+
+function isStaleObservation(iso: string): boolean {
+  return (Date.now() - new Date(iso).getTime()) / 60000 > STALE_OBSERVATION_MIN;
+}
+
 // KST 자정(UTC 전날 15:00) — supabase/functions/_shared/db.ts의 todayAccums와 동일 로직
 function kstMidnightISO(now: Date): string {
   const kst = new Date(now.getTime() + 9 * 3600_000);
@@ -86,7 +94,7 @@ function dispatchScope(row: DispatchRow): { label: string; failCount: number; to
 }
 
 export default function Dashboard() {
-  const { employee } = useAuth();
+  const { employee, isApprover } = useAuth();
   const [data, setData] = useState<DashboardData | null>(null);
   const [setup, setSetup] = useState<SetupChecklist | null>(null);
   const [setupDetail, setSetupDetail] = useState<{ missingDeptCount: number }>({ missingDeptCount: 0 });
@@ -95,9 +103,14 @@ export default function Dashboard() {
     const isAdmin = employee?.role === "admin";
 
     const [obsRes, eventsRes, dispatchesRes, criteriaRes, siteRes, snowTodayRes] = await Promise.all([
+      // 결측 행(기상청 조회 실패로 기록되는 빈 행)을 제외하고 마지막 '유효' 관측을 읽는다.
+      // 제외하지 않으면 기상청이 한 번만 삐끗해도 전 카드가 빈 값이 되는데, 상단의
+      // "마지막 수집 N분 전"은 heartbeat(함수 실행 여부) 기준이라 그대로 최신으로 표시돼
+      // "방금 수집했다는데 값이 없다"는 모순이 생긴다. 바로 아래 적설 누적 쿼리도 같은 기준이다.
       supabase
         .from("weather_observations")
         .select("*")
+        .eq("missing", false)
         .order("observed_at", { ascending: false })
         .limit(1)
         .maybeSingle(),
@@ -248,12 +261,23 @@ export default function Dashboard() {
                 </p>
               </div>
             </div>
-            {employee?.role === "approver" && (
+            {isApprover && (
               <Link to={`/events/${pendingEvent.id}`}>
                 <Button variant="primary">초안 검토하기</Button>
               </Link>
             )}
           </div>
+        )}
+
+        {/* 카드가 보여주는 값이 '마지막 유효 관측'이므로 그 시각을 함께 밝힌다.
+            이게 없으면 수집이 계속 실패해도 옛 수치가 현재값처럼 읽힌다. */}
+        {data?.observation && (
+          <p className="obs-stamp">
+            {formatTime(data.observation.observed_at)} 관측 기준
+            {isStaleObservation(data.observation.observed_at) && (
+              <span className="obs-stamp-warn"> · 이후 수집이 실패해 값이 갱신되지 않았습니다</span>
+            )}
+          </p>
         )}
 
         <div className="obs-grid">
@@ -393,7 +417,10 @@ export default function Dashboard() {
                     <span className="obs-card-unit">cm</span>
                   </div>
                   <p className="obs-card-caption">
-                    오늘 누적 · 이번 시간 +{num(obs?.snow_new_cm)}cm
+                    {/* num()은 결측값에 "–"를 돌려주므로 "+"를 그대로 붙이면 "+–cm"이 된다.
+                        값이 없을 때는 증분 표기 자체를 접는다. */}
+                    오늘 누적 · 이번 시간{" "}
+                    {obs?.snow_new_cm == null ? "–" : `+${num(obs.snow_new_cm)}cm`}
                   </p>
                 </div>
               </>

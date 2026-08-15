@@ -127,12 +127,18 @@
   color: var(--ink-muted-80);
 }
 
+/* td에 직접 display:flex를 주면 셀이 테이블 레이아웃에서 빠져나가 행 높이를 따르지 않는다.
+   그 결과 이 셀의 아래 테두리만 다른 셀보다 위에 그려져 행 구분선이 어긋나 보였다.
+   셀은 table-cell로 두고 정렬은 안쪽 div가 맡는다. */
 .employees-actions {
+  text-align: right;
+}
+
+.employees-actions-inner {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  text-align: right;
 }
 
 .employees-icon-btn {
