@@ -1,0 +1,53 @@
+/* 하단 티커. 순수 검정은 이 시스템에서 글로벌 네비에만 쓰이므로,
+   화면 최하단 띠로서 같은 문법을 따른다(DESIGN-apple.md). */
+
+.bt {
+  height: 86px;
+  background: var(--surface-black);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.bt-track {
+  display: flex;
+  align-items: center;
+  gap: 34px;
+  white-space: nowrap;
+  padding-left: 56px;
+  animation: bt-roll 46s linear infinite;
+}
+
+@keyframes bt-roll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+/* 화면 낭독기·모션 민감 사용자를 위해 움직임을 끈다 */
+@media (prefers-reduced-motion: reduce) {
+  .bt-track { animation: none; }
+}
+
+.bt-item {
+  font-size: 26px;
+  font-weight: 300;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.bt-label {
+  font-weight: 400;
+  color: #c9c9ce;
+}
+
+.bt-value { font-weight: 400; }
+
+.bt-gap { color: #9a9aa0; }
+
+.bt-over {
+  color: var(--warn-strong);
+  font-weight: 600;
+}
