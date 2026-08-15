@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 // 대시보드는 한 번에 여러 테이블을 Promise.all로 조회한다. 체인 모양이 테이블마다 달라
@@ -195,5 +195,13 @@ describe("Dashboard 보드 모드", () => {
     const { container, queryByRole } = renderAt("?board=1");
     await waitFor(() => expect(container.querySelector(".bd")).toBeTruthy());
     expect(queryByRole("button", { name: "전체화면" })).toBeNull();
+  });
+
+  it("전체화면 버튼을 누르면 board=1이 URL에 붙는다", async () => {
+    const { findByRole, container } = renderAt("");
+    fireEvent.click(await findByRole("button", { name: "전체화면" }));
+    // URL이 진실의 출처다 — 벽걸이 기기는 이 주소를 북마크해 부팅 직후 바로 들어온다.
+    // 전체화면 API는 그 위의 장식이라, 브라우저가 거부해도 레이아웃은 전환돼야 한다.
+    await waitFor(() => expect(container.querySelector(".bd")).toBeTruthy());
   });
 });
