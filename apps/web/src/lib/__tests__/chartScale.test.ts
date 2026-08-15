@@ -66,6 +66,16 @@ describe("computeScale", () => {
     const r = computeScale([0.05, 0.1, 5], 50, false);
     expect(r.lo).toBe(0);
   });
+
+  // 회귀: flat 분기가 비음수에서 hi를 임계의 35%로 고정해, 값이 0이 아니면
+  // 축 위로 벗어났다(풍속 6m/s 고정 → hi 4.9).
+  it("값이 전부 동일하고 0이 아니어도 값이 축 안에 들어온다", () => {
+    for (const [v, thr] of [[15, 20], [6, 14], [28, 33]] as const) {
+      const r = computeScale([v, v, v], thr, false);
+      expect(r.lo).toBeLessThanOrEqual(v);
+      expect(r.hi).toBeGreaterThanOrEqual(v);
+    }
+  });
 });
 
 describe("yOf", () => {

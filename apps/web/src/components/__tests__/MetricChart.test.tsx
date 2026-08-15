@@ -37,8 +37,31 @@ describe("MetricChart", () => {
     const { container } = render(
       <MetricChart values={[5, 25, 8]} threshold={20} unit="mm" gradeLabel="주의보" allowNegative={false} tone="calm" />,
     );
-    expect(svgOf(container).querySelectorAll("path.mc-area-below").length).toBe(1);
-    expect(svgOf(container).querySelectorAll("path.mc-area-above").length).toBe(1);
+    const svg = svgOf(container);
+    expect(svg.querySelectorAll("path.mc-area-below").length).toBe(1);
+    const above = svg.querySelector("path.mc-area-above");
+    expect(above).toBeTruthy();
+    // 현재는 안전(calm)해도 오늘 넘긴 이력은 경고색으로 남아야 한다.
+    // mc-fill-calm이면 뮤트색이라 이력이 사라진다.
+    expect(above!.getAttribute("class")).toContain("mc-fill-near");
+  });
+
+  // 회귀: 예전에는 id를 tone/length/lo로 만들어, 월보드에 동시에 뜨는 4장 중
+  // 조건이 같은 카드끼리 clipPath id가 충돌해 분할 채색이 조용히 깨졌다.
+  it("같은 props로 두 장을 그려도 clipPath id가 겹치지 않는다", () => {
+    const props = {
+      values: [5, 25, 8], threshold: 20, unit: "mm",
+      gradeLabel: "주의보", allowNegative: false, tone: "calm" as const,
+    };
+    const { container } = render(
+      <>
+        <MetricChart {...props} />
+        <MetricChart {...props} />
+      </>,
+    );
+    const ids = [...container.querySelectorAll("clipPath")].map((el) => el.id);
+    expect(ids.length).toBe(4);
+    expect(new Set(ids).size).toBe(4);
   });
 
   it("한 번도 넘지 않았으면 초과 영역을 그리지 않는다", () => {

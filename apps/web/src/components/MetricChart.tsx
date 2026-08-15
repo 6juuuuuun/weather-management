@@ -31,7 +31,9 @@ export function MetricChart({
   // 두 지표가 같은 tone·같은 lo(예: 둘 다 0으로 클램프)일 때 id가 겹쳐
   // 서로 다른 차트의 clipPath를 잘못 참조하게 된다. useId는 컴포넌트
   // 인스턴스마다 고유해 이 충돌이 원천적으로 없다.
-  const uid = useId();
+  // useId()는 ":r0:" 형태로 콜론을 포함한다. url(#...) 프래그먼트 참조에서
+  // 콜론 포함 id가 일부 WebKit에서 깨지므로 제거한다.
+  const uid = useId().replace(/:/g, "");
 
   if (values.length === 0) return <div className="mc-empty" />;
 

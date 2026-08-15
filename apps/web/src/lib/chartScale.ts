@@ -33,8 +33,12 @@ export function computeScale(values: number[], threshold: number, allowNegative:
 
   if (hi - lo < 1e-9) {
     // 전부 같은 값. 억지로 벌리면 강수량 축이 -1.3mm 같은 불가능한 값이 된다.
+    const v = lo; // 상수값 (lo와 hi가 사실상 같다)
     lo = allowNegative ? lo - 1 : 0;
-    hi = allowNegative ? hi + 1 : Math.max(threshold * FLAT_HEADROOM, lo + 1);
+    // 예전엔 hi를 임계의 35%로만 고정해, 값이 그보다 크면(예: 풍속 6m/s
+    // 고정, 임계 14 → hi 4.9) 값이 축 위로 넘쳐 흘렀다. 값 자체를 항상
+    // 포함하도록 값에 비례한 여유폭도 함께 고려한다.
+    hi = allowNegative ? hi + 1 : Math.max(threshold * FLAT_HEADROOM, v * (1 + PADDING_RATIO), lo + 1);
     return { lo, hi, flat: true, thresholdVisible: lo <= threshold && threshold <= hi };
   }
 
