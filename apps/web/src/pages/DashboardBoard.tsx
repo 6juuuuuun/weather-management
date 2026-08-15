@@ -57,8 +57,10 @@ export function DashboardBoard({
   const shown = events.slice(0, MAX_EVENTS);
   const hidden = events.length - shown.length;
 
+  // threshold<=0(기준 미설정)인 지표는 뺀다 — gapPhrase가 "…기준 초과 +0.0mm"
+  // 처럼 존재하지 않는 기준까지의 거리를 말해버려 하단 티커가 거짓 경보를 낸다.
   const tickerItems: TickerItem[] = metrics
-    .filter((m): m is BoardMetric & { value: number } => m.value !== null)
+    .filter((m): m is BoardMetric & { value: number } => m.value !== null && m.threshold > 0)
     .map((m) => ({
       label: m.label, value: m.value, unit: m.unit,
       threshold: m.threshold, gradeLabel: m.gradeLabel,
@@ -81,7 +83,10 @@ export function DashboardBoard({
         <div className={events.length > 1 ? "bd-events bd-events-row" : "bd-events"}>
           {shown.map((e) => (
             <div className="bd-event" key={e.id}>
-              <span className={e.severe ? "bd-tag bd-tag-severe" : "bd-tag"}>{e.tag}</span>
+              {/* 배지는 진행 상태만 말한다. 심각도는 제목 색과 "주의보/경보" 글자가
+                  이미 전달한다(F2: #8a4b00↔--danger는 ΔE 1.5로 뭉개져 --warn과
+                  같은 실패를 반복한다). */}
+              <span className="bd-tag">{e.tag}</span>
               <span className={e.severe ? "bd-event-title bd-event-severe" : "bd-event-title"}>{e.title}</span>
               <span className="bd-event-detail">{e.detail}</span>
             </div>
@@ -102,7 +107,9 @@ export function DashboardBoard({
               </span>
               <MetricChart
                 values={m.history}
-                threshold={m.threshold}
+                // threshold<=0은 "기준 미설정"이다. 그대로 넘기면 값 0이 임계
+                // 0과 같아져 차트가 거짓 기준선("주의보 0mm")을 그린다.
+                threshold={m.threshold > 0 ? m.threshold : null}
                 unit={m.unit}
                 gradeLabel="주의보"
                 allowNegative={m.allowNegative}

@@ -76,6 +76,16 @@ describe("computeScale", () => {
       expect(r.hi).toBeGreaterThanOrEqual(v);
     }
   });
+
+  // threshold가 null이면 기준 미설정이다(값 0을 임계처럼 취급하면 안 된다).
+  // 포함 판정을 건너뛰어도 축은 여전히 유효해야 한다.
+  it("threshold가 null이면 기준선을 스케일에 넣지 않고도 유효한 범위를 돌려준다", () => {
+    const r = computeScale([0, 0, 0], null, false);
+    expect(r.thresholdVisible).toBe(false);
+    expect(r.hi).toBeGreaterThan(r.lo);
+    expect(Number.isFinite(r.lo)).toBe(true);
+    expect(Number.isFinite(r.hi)).toBe(true);
+  });
 });
 
 describe("yOf", () => {

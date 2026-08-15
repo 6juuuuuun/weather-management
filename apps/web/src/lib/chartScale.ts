@@ -21,11 +21,18 @@ export type ScaleResult = {
   thresholdVisible: boolean;
 };
 
-export function computeScale(values: number[], threshold: number, allowNegative: boolean): ScaleResult {
+// threshold가 null이면 "기준 미설정" 상태다(예: Criteria.tsx가 DB에 행이
+// 없을 때 채우는 0을 상위에서 null로 변환해 넘긴다). 0을 그대로 받으면
+// 0을 실제 임계처럼 취급해 값 0이 "임계 초과"로 스케일에 그려지므로,
+// null을 별도 상태로 다뤄 포함 판정 자체를 건너뛴다.
+export function computeScale(values: number[], threshold: number | null, allowNegative: boolean): ScaleResult {
   if (values.length === 0) {
     const lo = allowNegative ? -1 : 0;
-    const hi = Math.max(threshold * FLAT_HEADROOM, lo + 1);
-    return { lo, hi, flat: true, thresholdVisible: lo <= threshold && threshold <= hi };
+    const hi = threshold === null ? lo + 1 : Math.max(threshold * FLAT_HEADROOM, lo + 1);
+    return {
+      lo, hi, flat: true,
+      thresholdVisible: threshold !== null && lo <= threshold && threshold <= hi,
+    };
   }
 
   let lo = Math.min(...values);
@@ -37,23 +44,34 @@ export function computeScale(values: number[], threshold: number, allowNegative:
     lo = allowNegative ? lo - 1 : 0;
     // 예전엔 hi를 임계의 35%로만 고정해, 값이 그보다 크면(예: 풍속 6m/s
     // 고정, 임계 14 → hi 4.9) 값이 축 위로 넘쳐 흘렀다. 값 자체를 항상
-    // 포함하도록 값에 비례한 여유폭도 함께 고려한다.
-    hi = allowNegative ? hi + 1 : Math.max(threshold * FLAT_HEADROOM, v * (1 + PADDING_RATIO), lo + 1);
-    return { lo, hi, flat: true, thresholdVisible: lo <= threshold && threshold <= hi };
+    // 포함하도록 값에 비례한 여유폭도 함께 고려한다. threshold가 null이면
+    // 임계 항목 자체가 의미가 없으므로 Math.max에서 뺀다.
+    hi = allowNegative
+      ? hi + 1
+      : threshold === null
+        ? Math.max(v * (1 + PADDING_RATIO), lo + 1)
+        : Math.max(threshold * FLAT_HEADROOM, v * (1 + PADDING_RATIO), lo + 1);
+    return {
+      lo, hi, flat: true,
+      thresholdVisible: threshold !== null && lo <= threshold && threshold <= hi,
+    };
   }
 
   const span = hi - lo;
-  const reach = span * THRESHOLD_REACH;
-  // 사정권 판정은 양방향이어야 한다. `threshold <= hi + reach` 하나로만 쓰면
-  // 임계가 lo 아래에 있을 때 우변이 언제나 임계보다 커서 거리와 무관하게 포함된다
-  // (하루 종일 임계를 웃돈 날 축이 불필요하게 넓어져 추이가 눌린다).
-  const nearEnough =
-    threshold > hi ? threshold - hi <= reach
-    : threshold < lo ? lo - threshold <= reach
-    : true; // 이미 데이터 범위 안
-  if (nearEnough) {
-    hi = Math.max(hi, threshold);
-    lo = Math.min(lo, threshold);
+  // threshold가 null이면 스케일에 포함할 기준 자체가 없으므로 사정권 판정을 건너뛴다.
+  if (threshold !== null) {
+    const reach = span * THRESHOLD_REACH;
+    // 사정권 판정은 양방향이어야 한다. `threshold <= hi + reach` 하나로만 쓰면
+    // 임계가 lo 아래에 있을 때 우변이 언제나 임계보다 커서 거리와 무관하게 포함된다
+    // (하루 종일 임계를 웃돈 날 축이 불필요하게 넓어져 추이가 눌린다).
+    const nearEnough =
+      threshold > hi ? threshold - hi <= reach
+      : threshold < lo ? lo - threshold <= reach
+      : true; // 이미 데이터 범위 안
+    if (nearEnough) {
+      hi = Math.max(hi, threshold);
+      lo = Math.min(lo, threshold);
+    }
   }
 
   const pad = (hi - lo) * PADDING_RATIO;
@@ -65,7 +83,10 @@ export function computeScale(values: number[], threshold: number, allowNegative:
     if (hi <= lo) hi = lo + 1;
   }
 
-  return { lo, hi, flat: false, thresholdVisible: lo <= threshold && threshold <= hi };
+  return {
+    lo, hi, flat: false,
+    thresholdVisible: threshold !== null && lo <= threshold && threshold <= hi,
+  };
 }
 
 export function yOf(

@@ -11,7 +11,10 @@ const PAD_B = 18;
 
 export type MetricChartProps = {
   values: number[];
-  threshold: number;
+  // null이면 이 지표에 아직 기준이 설정되지 않았다는 뜻이다(DashboardBoard가
+  // threshold<=0을 null로 변환해 넘긴다). 0을 그대로 받으면 0을 실제 임계처럼
+  // 그려 "0mm 초과" 같은 거짓 기준선이 뜬다.
+  threshold: number | null;
   unit: string;
   gradeLabel: string;
   allowNegative: boolean;
@@ -45,10 +48,13 @@ export function MetricChart({
   const last = pts[pts.length - 1];
   const line = "M" + pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" L");
   const area = `${line} L${last.x.toFixed(1)},${H} L${pts[0].x.toFixed(1)},${H} Z`;
-  const ty = yOf(threshold, lo, hi, H, PAD_T, PAD_B);
+  // threshold가 null이면 비교 대상이 없다 — ty는 (thresholdVisible이 항상
+  // false라) 실제로 렌더에 쓰이지 않는 자리표시값이다.
+  const ty = threshold !== null ? yOf(threshold, lo, hi, H, PAD_T, PAD_B) : 0;
 
   const allZero = values.every((v) => v === 0);
-  const everOver = Math.max(...values) >= threshold;
+  // threshold가 null이면 "넘겼다"를 판정할 기준이 없으므로 항상 미달로 본다.
+  const everOver = threshold !== null && Math.max(...values) >= threshold;
   const clipId = `mc-lo-${uid}`;
   const clipHiId = `mc-hi-${uid}`;
 
@@ -65,7 +71,9 @@ export function MetricChart({
         </defs>
       )}
 
-      {thresholdVisible && (
+      {/* threshold !== null은 thresholdVisible이 참일 때 항상 성립하지만(computeScale
+          계약), fmt(threshold)에 number를 넘기려면 여기서도 타입을 좁혀야 한다. */}
+      {thresholdVisible && threshold !== null && (
         <>
           <line className="mc-threshold" x1="0" y1={ty} x2={W} y2={ty} />
           {/* 라벨은 좌측. 우측은 최신값 점이 있어 겹친다(시안에서 확인). */}

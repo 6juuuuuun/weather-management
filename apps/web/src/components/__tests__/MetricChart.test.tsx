@@ -101,4 +101,15 @@ describe("MetricChart", () => {
     );
     expect(svgOf(container).querySelector("path.mc-line")?.getAttribute("class")).toContain("mc-tone-over");
   });
+
+  // threshold가 null이면 기준 미설정이다. 임계 0을 그대로 그리면 "0mm 초과"
+  // 같은 거짓 기준선이 뜬다 — 기준선도, 분할 채색도 없어야 한다.
+  it("threshold가 null이면 기준선도 초과 채색도 그리지 않는다", () => {
+    const { container } = render(
+      <MetricChart values={[5, 25, 8]} threshold={null} unit="mm" gradeLabel="주의보" allowNegative={false} tone="calm" />,
+    );
+    const svg = svgOf(container);
+    expect(svg.querySelector("line.mc-threshold")).toBeNull();
+    expect(svg.querySelector("path.mc-area-above")).toBeNull();
+  });
 });

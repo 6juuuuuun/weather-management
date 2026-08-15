@@ -97,4 +97,23 @@ describe("DashboardBoard", () => {
     expect(container.querySelector("button")).toBeNull();
     expect(container.querySelector("a")).toBeNull();
   });
+
+  // F1: threshold<=0은 "기준 미설정"이다. 값이 있어도 티커·차트·카드 색
+  // 세 곳 모두에서 거짓 경보(가짜 기준선, "…초과" 문구, 빨간 숫자)를 내면 안 된다.
+  it("threshold가 0인 지표는 티커에 나타나지 않고 기준선도 그리지 않으며 카드가 빨갛지 않다", () => {
+    const zeroThresholdMetric: BoardMetric = {
+      key: "rain", label: "시간당 강수량", unit: "mm", value: 5, threshold: 0,
+      gradeLabel: "폭우 주의보", allowNegative: false, history: [3, 4, 5],
+    };
+    const { container } = render(
+      <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo="마지막 수집 2분 전"
+        metrics={[zeroThresholdMetric]} events={[]} />,
+    );
+    // 티커: threshold<=0 지표를 빼면 항목이 하나도 없어 트랙 자체가 렌더되지 않는다.
+    expect(container.querySelector(".bt")).toBeNull();
+    // 차트: 기준선을 그리지 않는다.
+    expect(container.querySelector("line.mc-threshold")).toBeNull();
+    // 카드: 값이 임계(0) 이상이어도 danger 색 클래스가 붙지 않는다.
+    expect(container.querySelector(".bd-value-over")).toBeNull();
+  });
 });
