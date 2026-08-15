@@ -46,7 +46,7 @@ vi.mock("../lib/supabase", () => ({
   },
 }));
 
-import Dashboard from "./Dashboard";
+import Dashboard, { toBoardProps } from "./Dashboard";
 
 const validObs = {
   observed_at: "2026-08-15T02:00:00.000Z",
@@ -162,5 +162,27 @@ describe("Dashboard 보드 모드", () => {
     const { container } = renderAt("");
     await waitFor(() => expect(container.querySelector(".obs-grid")).toBeTruthy());
     expect(container.querySelector(".bd")).toBeNull();
+  });
+
+  // F1: 이력 쿼리는 월보드 전용이다. 일반 대시보드가 쓰지도 않는 요청을
+  // 30초 폴링에 얹지 않기 위해 boardMode일 때만 조회해야 한다.
+  it("보드 모드가 아니면 이력을 조회하지 않는다", async () => {
+    renderAt("");
+    await waitFor(() => expect(mocks.calls.length).toBeGreaterThan(0));
+    const history = mocks.calls.find(
+      (c) => c.table === "weather_observations" && c.chain.includes("gte") && c.chain.includes("order"),
+    );
+    expect(history).toBeUndefined();
+  });
+
+  // F2: clock은 렌더 시점(new Date())이 아니라 컴포넌트가 별도 타이머로 넘긴
+  // now를 그대로 반영해야 한다. new Date()로 되돌아가면 이 테스트는 실행 시각과
+  // fixed가 우연히 같은 분일 확률이 아니고서는 반드시 실패한다.
+  it("clock은 호출 시점이 아니라 전달된 now를 반영한다", () => {
+    const fixed = new Date("2026-08-15T05:07:00.000Z");
+    const props = toBoardProps(null, "곤지암", fixed);
+    expect(props.clock).toBe(
+      fixed.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }),
+    );
   });
 });

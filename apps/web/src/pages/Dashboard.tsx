@@ -110,6 +110,7 @@ export default function Dashboard() {
   const [siteName, setSiteName] = useState("곤지암");
   const [searchParams] = useSearchParams();
   const boardMode = searchParams.get("board") === "1";
+  const [now, setNow] = useState(() => new Date());
 
   const load = useCallback(async () => {
     const isAdmin = employee?.role === "admin";
@@ -144,13 +145,16 @@ export default function Dashboard() {
         .select("snow_new_cm")
         .gte("observed_at", kstMidnightISO(new Date()))
         .eq("missing", false),
-      // 월보드 차트용. 최신 관측 쿼리와 같은 기준(결측 제외)으로 읽는다.
-      supabase
-        .from("weather_observations")
-        .select("observed_at, rain_mm_per_hr, temp_c, feels_c, wind_ms")
-        .eq("missing", false)
-        .gte("observed_at", new Date(Date.now() - 24 * 3600_000).toISOString())
-        .order("observed_at", { ascending: true }),
+      // 이력은 월보드 차트 전용이다. 일반 대시보드는 쓰지 않으므로 조회하지 않는다 —
+      // 운영 화면의 30초 폴링에 쓰지도 않는 요청을 얹지 않기 위해서다.
+      boardMode
+        ? supabase
+            .from("weather_observations")
+            .select("observed_at, rain_mm_per_hr, temp_c, feels_c, wind_ms")
+            .eq("missing", false)
+            .gte("observed_at", new Date(Date.now() - 24 * 3600_000).toISOString())
+            .order("observed_at", { ascending: true })
+        : Promise.resolve({ data: [] as ObservationPoint[], error: null }),
     ]);
 
     const snowRows = snowTodayRes.data ?? [];
@@ -194,13 +198,21 @@ export default function Dashboard() {
     } else {
       setSetup(null);
     }
-  }, [employee?.role]);
+  }, [employee?.role, boardMode]);
 
   useEffect(() => {
     load();
     const t = setInterval(load, POLL_MS);
     return () => clearInterval(t);
   }, [load]);
+
+  useEffect(() => {
+    if (!boardMode) return;
+    // 시계는 데이터 폴링(30초)과 분리해서 돌린다. 같이 묶으면 폴링 위상에 따라
+    // 분 표시가 최대 1분 가까이 뒤처진 채 벽에 걸린다.
+    const t = setInterval(() => setNow(new Date()), 10_000);
+    return () => clearInterval(t);
+  }, [boardMode]);
 
   const today = formatDate(new Date());
 
@@ -210,7 +222,7 @@ export default function Dashboard() {
   // .bd는 자체적으로 position:fixed 전체화면 레이아웃이라 GlobalNav/SubNav를
   // 씌우면 운영자가 아닌 관망 화면에 조작 요소가 그대로 노출된다.
   if (boardMode) {
-    return <DashboardBoard {...toBoardProps(data, siteName)} />;
+    return <DashboardBoard {...toBoardProps(data, siteName, now)} />;
   }
 
   return (
@@ -567,7 +579,7 @@ const OBS_FIELD: Record<BoardMetric["key"], keyof ObservationPoint> = {
   feels: "feels_c",
 };
 
-function toBoardProps(data: DashboardData | null, siteName: string) {
+export function toBoardProps(data: DashboardData | null, siteName: string, now: Date) {
   const obs = data?.observation ?? null;
   const history = data?.history ?? [];
 
@@ -585,8 +597,10 @@ function toBoardProps(data: DashboardData | null, siteName: string) {
       threshold,
       value: raw ?? null,
       history: history
-        .map((h) => h[field] as number | null)
-        .filter((v): v is number => v !== null),
+        .map((h) => h[field] as number | null | undefined)
+        // 실제 Supabase 응답은 선택된 컬럼을 항상 null로 채우지만, 테스트 하네스는
+        // 필드 자체가 없는 행을 돌려줄 수 있어 undefined도 걸러야 한다.
+        .filter((v): v is number => v !== null && v !== undefined),
     };
   });
 
@@ -603,7 +617,7 @@ function toBoardProps(data: DashboardData | null, siteName: string) {
 
   return {
     siteName,
-    clock: new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }),
+    clock: now.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }),
     collectedAgo: obs ? `${formatTime(obs.observed_at)} 관측 기준` : "관측 없음",
     metrics,
     events,
