@@ -185,4 +185,15 @@ describe("Dashboard 보드 모드", () => {
       fixed.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }),
     );
   });
+
+  it("일반 모드에 전체화면 버튼이 있다", async () => {
+    const { findByRole } = renderAt("");
+    expect(await findByRole("button", { name: "전체화면" })).toBeTruthy();
+  });
+
+  it("보드 모드에는 전체화면 버튼이 없다", async () => {
+    const { container, queryByRole } = renderAt("?board=1");
+    await waitFor(() => expect(container.querySelector(".bd")).toBeTruthy());
+    expect(queryByRole("button", { name: "전체화면" })).toBeNull();
+  });
 });

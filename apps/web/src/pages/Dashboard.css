@@ -8,6 +8,24 @@
   color: var(--ink-muted-48);
 }
 
+/* 월보드 진입. 이 시스템의 상호작용 색은 Action Blue 하나뿐이다. */
+.dash-fullscreen {
+  margin-right: 16px;
+  padding: 8px 18px;
+  border: 1px solid var(--hairline);
+  border-radius: 9999px;
+  background: var(--canvas);
+  color: var(--primary);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.dash-fullscreen:active {
+  transform: scale(0.95);
+}
+
 .dash-date {
   font-family: var(--font-ui);
   font-size: 15px;

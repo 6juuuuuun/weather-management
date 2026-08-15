@@ -108,7 +108,7 @@ export default function Dashboard() {
   const [setup, setSetup] = useState<SetupChecklist | null>(null);
   const [setupDetail, setSetupDetail] = useState<{ missingDeptCount: number }>({ missingDeptCount: 0 });
   const [siteName, setSiteName] = useState("곤지암");
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const boardMode = searchParams.get("board") === "1";
   const [now, setNow] = useState(() => new Date());
 
@@ -214,6 +214,37 @@ export default function Dashboard() {
     return () => clearInterval(t);
   }, [boardMode]);
 
+  // 보드 모드에서 ESC로 전체화면을 빠져나오면 파라미터도 함께 정리해서
+  // 다음 새로고침에서 다시 월보드로 들어가지 않게 한다. 이 훅은 boardMode가
+  // false에서 true로 바뀔 때도 항상 호출돼야 하므로(훅 개수 불변) 이른 반환보다 위에 둔다.
+  useEffect(() => {
+    if (!boardMode) return;
+    function onFsChange() {
+      // fullscreenchange는 진입/종료 모두에서 발생한다. fullscreenElement가 비어있을
+      // 때만 "빠져나왔다"고 볼 수 있으므로, 이 조건으로 두 경우를 가른다.
+      if (!document.fullscreenElement) {
+        const next = new URLSearchParams(searchParams);
+        next.delete("board");
+        setSearchParams(next, { replace: true });
+      }
+    }
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, [boardMode, searchParams, setSearchParams]);
+
+  // 벽걸이 기기가 이 주소를 북마크하면 부팅 후 바로 월보드로 들어간다.
+  // 그래서 전체화면 API와 별개로 URL에 상태를 남긴다 — API가 거부돼도 레이아웃은 바뀐다.
+  function enterBoard() {
+    const next = new URLSearchParams(searchParams);
+    next.set("board", "1");
+    setSearchParams(next);
+    // requestFullscreen이 없는 환경(구형 브라우저·jsdom)에서는 optional chaining이
+    // .catch()까지 포함한 나머지 체인 전체를 건너뛰므로 별도 존재 확인이 필요 없다.
+    void document.documentElement.requestFullscreen?.().catch(() => {
+      /* 브라우저 정책으로 거부될 수 있다. 레이아웃 전환만으로도 쓸 수 있으므로 무시한다. */
+    });
+  }
+
   const today = formatDate(new Date());
 
   const pendingEvent = data?.openEvents.find((e) => e.status === "PENDING_APPROVAL") ?? null;
@@ -226,7 +257,17 @@ export default function Dashboard() {
   }
 
   return (
-    <AppLayout title="대시보드" actions={<span className="dash-date">{today}</span>}>
+    <AppLayout
+      title="대시보드"
+      actions={
+        <>
+          <button type="button" className="dash-fullscreen" onClick={enterBoard}>
+            전체화면
+          </button>
+          <span className="dash-date">{today}</span>
+        </>
+      }
+    >
       <p className="dash-desc">실시간 날씨 모니터링과 특보 현황</p>
 
       <div className="dash-stack">
