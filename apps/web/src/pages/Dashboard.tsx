@@ -8,8 +8,9 @@ import { supabase } from "../lib/supabase";
 import { computeSetupChecklist } from "../lib/setup";
 import type { SetupChecklist } from "../lib/setup";
 import type { Dispatch, Kind, WeatherCriteria, WeatherEvent, WeatherObservation } from "../lib/types";
-import { DashboardBoard } from "./DashboardBoard";
+import { DashboardBoard, toTickerItems } from "./DashboardBoard";
 import type { BoardEvent, BoardMetric } from "./DashboardBoard";
+import { BoardTicker } from "../components/BoardTicker";
 import "./Dashboard.css";
 
 const POLL_MS = 30_000;
@@ -248,6 +249,11 @@ export default function Dashboard() {
   const today = formatDate(new Date());
 
   const pendingEvent = data?.openEvents.find((e) => e.status === "PENDING_APPROVAL") ?? null;
+
+  // 하단 티커는 월보드와 같은 항목을 쓴다 — 카드가 못 말하는 "기준까지 얼마 남았나"를
+  // 운영 화면에서도 읽을 수 있게 한다. `now`는 보드 모드에서만 틱하므로(시계 훅이
+  // 조기 반환한다) 여기서 리렌더가 늘지 않는다.
+  const tickerItems = toTickerItems(toBoardProps(data, siteName, now).metrics);
 
   // 월보드는 운영 화면(AppLayout: 네비게이션 + 조작 버튼)을 감싸지 않는다.
   // .bd는 자체적으로 position:fixed 전체화면 레이아웃이라 GlobalNav/SubNav를
@@ -585,7 +591,12 @@ export default function Dashboard() {
             )}
           </div>
         </div>
+
+        {/* 티커가 position:fixed로 본문 위에 떠 있으므로, 스크롤 끝에서 마지막
+            내용이 가려지지 않도록 티커 높이만큼 자리를 비워둔다. */}
+        <div className="dash-ticker-spacer" />
       </div>
+      <BoardTicker items={tickerItems} fixed />
     </AppLayout>
   );
 }

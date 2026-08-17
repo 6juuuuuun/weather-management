@@ -40,11 +40,13 @@ function Row({ items, copyIndex }: { items: TickerItem[]; copyIndex: number }) {
   );
 }
 
-export function BoardTicker({ items }: { items: TickerItem[] }) {
+/** fixed: 화면 하단에 고정한다(운영 대시보드). 기본은 부모 레이아웃의 마지막 칸을
+ *  차지하는 흐름 배치다(월보드). 월보드는 자체가 position:fixed라 고정이 불필요하다. */
+export function BoardTicker({ items, fixed = false }: { items: TickerItem[]; fixed?: boolean }) {
   if (items.length === 0) return null;
   // 트랙을 2벌 이어붙이고 -50% 이동시켜 끊김 없이 순환시킨다.
   return (
-    <div className="bt">
+    <div className={fixed ? "bt bt-fixed" : "bt"}>
       <div className="bt-track">
         <Row items={items} copyIndex={0} />
         <Row items={items} copyIndex={1} />

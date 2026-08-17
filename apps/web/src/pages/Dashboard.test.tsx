@@ -205,3 +205,61 @@ describe("Dashboard 보드 모드", () => {
     await waitFor(() => expect(container.querySelector(".bd")).toBeTruthy());
   });
 });
+
+describe("Dashboard 하단 티커", () => {
+  // 기준이 설정된 지표가 있어야 티커에 항목이 생긴다. 기본 픽스처는 weather_criteria를
+  // 빈 배열로 주므로 threshold가 전부 0(미설정)이고, 그러면 티커는 아무것도 렌더하지 않는다.
+  function withCriteria() {
+    mocks.dataFor = (table, chain) => {
+      if (table === "weather_observations") {
+        return chain.includes("gte") ? [{ snow_new_cm: 0 }] : validObs;
+      }
+      if (table === "weather_criteria") {
+        return [
+          { kind: "rain", grade: "watch", threshold: { rain_mm_per_hr: 20 } },
+          { kind: "heat", grade: "watch", threshold: { temp_c: 33, feels_c: 33 } },
+        ];
+      }
+      return chain.includes("maybeSingle") || chain.includes("single") ? null : [];
+    };
+  }
+
+  it("일반 대시보드에도 티커가 뜨고, 화면 하단에 고정된다", async () => {
+    withCriteria();
+    const { container } = renderAt("");
+    await waitFor(() => expect(container.querySelector(".bt")).toBeTruthy());
+    // .bt-fixed가 없으면 티커가 본문 흐름에 끼어 레이아웃을 밀어낸다.
+    expect(container.querySelector(".bt-fixed")).toBeTruthy();
+  });
+
+  it("고정 티커가 본문 마지막을 가리지 않도록 자리를 비워둔다", async () => {
+    withCriteria();
+    const { container } = renderAt("");
+    await waitFor(() => expect(container.querySelector(".bt-fixed")).toBeTruthy());
+    expect(container.querySelector(".dash-ticker-spacer")).toBeTruthy();
+  });
+
+  it("카드가 못 말하는 기준까지의 거리를 문구로 준다", async () => {
+    withCriteria();
+    renderAt("");
+    // 강수량 35mm, 폭우 주의보 20mm → 초과 +15.0mm
+    expect((await screen.findAllByText(/폭우 주의보 기준 초과 \+15\.0mm/)).length).toBeGreaterThan(0);
+    // 기온 24.5℃, 폭염 주의보 33℃ → 8.5℃ 남음
+    expect(screen.getAllByText(/폭염 주의보까지 8\.5℃/).length).toBeGreaterThan(0);
+  });
+
+  it("월보드의 티커는 고정하지 않는다 — .bd 안에서 흐름 배치로 맨 아래 칸을 차지한다", async () => {
+    withCriteria();
+    const { container } = renderAt("?board=1");
+    await waitFor(() => expect(container.querySelector(".bt")).toBeTruthy());
+    expect(container.querySelector(".bt-fixed")).toBeNull();
+  });
+
+  it("기준이 하나도 설정되지 않았으면 티커를 띄우지 않는다", async () => {
+    // 기본 픽스처는 criteria가 빈 배열 → threshold 전부 0(미설정).
+    // 이때 항목을 만들면 "폭우 주의보 기준 초과 +0.0mm"라는 거짓 경보를 방송한다.
+    const { container } = renderAt("");
+    await waitFor(() => expect(container.querySelector(".obs-grid")).toBeTruthy());
+    expect(container.querySelector(".bt")).toBeNull();
+  });
+});

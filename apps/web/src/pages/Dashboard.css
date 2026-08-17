@@ -408,3 +408,9 @@
 .dispatch-row-scope-fail {
   color: var(--danger);
 }
+
+/* 하단 고정 티커(.bt-fixed)가 본문 위에 떠 있어, 스크롤 끝에서 마지막 카드가
+   가려진다. 티커 높이(46px)에 여유 8px을 더해 자리를 비워둔다. */
+.dash-ticker-spacer {
+  height: 54px;
+}

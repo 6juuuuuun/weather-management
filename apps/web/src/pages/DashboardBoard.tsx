@@ -50,21 +50,26 @@ function toneOf(m: BoardMetric): "calm" | "near" | "over" {
   return "calm";
 }
 
+/** 지표를 티커 항목으로 바꾼다. 월보드와 운영 대시보드가 같은 함수를 쓴다 —
+ *  "기준 미설정" 판정이 두 곳에 복제되면 한쪽만 고쳐지는 일이 실제로 있었다.
+ *  threshold<=0(기준 미설정)인 지표는 뺀다 — gapPhrase가 "…기준 초과 +0.0mm"
+ *  처럼 존재하지 않는 기준까지의 거리를 말해버려 티커가 거짓 경보를 낸다. */
+export function toTickerItems(metrics: BoardMetric[]): TickerItem[] {
+  return metrics
+    .filter((m): m is BoardMetric & { value: number } => m.value !== null && m.threshold > 0)
+    .map((m) => ({
+      label: m.label, value: m.value, unit: m.unit,
+      threshold: m.threshold, gradeLabel: m.gradeLabel,
+    }));
+}
+
 export function DashboardBoard({
   siteName, clock, collectedAgo, metrics, events,
 }: DashboardBoardProps) {
   const status = statusHeadline(events);
   const shown = events.slice(0, MAX_EVENTS);
   const hidden = events.length - shown.length;
-
-  // threshold<=0(기준 미설정)인 지표는 뺀다 — gapPhrase가 "…기준 초과 +0.0mm"
-  // 처럼 존재하지 않는 기준까지의 거리를 말해버려 하단 티커가 거짓 경보를 낸다.
-  const tickerItems: TickerItem[] = metrics
-    .filter((m): m is BoardMetric & { value: number } => m.value !== null && m.threshold > 0)
-    .map((m) => ({
-      label: m.label, value: m.value, unit: m.unit,
-      threshold: m.threshold, gradeLabel: m.gradeLabel,
-    }));
+  const tickerItems = toTickerItems(metrics);
 
   return (
     <div className="bd">
