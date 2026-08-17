@@ -22,7 +22,13 @@
 }
 
 /* ---------- GlobalNav ---------- */
+/* 스크롤해도 상단에 고정한다 — 화면을 내린 상태에서 다른 메뉴로 가려고 매번
+   맨 위까지 되돌아가야 했다. z-index는 모달(100·200)과 월보드(50) 아래에 둔다.
+   배경이 불투명한 --surface-black이라 밑으로 지나가는 본문이 비치지 않는다. */
 .global-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   height: 56px;
   background: var(--surface-black);
   color: var(--canvas);
