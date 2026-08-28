@@ -1,11 +1,15 @@
 import express from "express";
 import cookieParser from "cookie-parser";
+import { authRouter, adminUserRouter } from "./auth/routes.ts";
 
 export const app = express();
 app.use(express.json());
 app.use(cookieParser());
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
+
+app.use("/api/auth", authRouter);
+app.use("/api/admin/users", adminUserRouter);
 
 // 라우터 등록 순서: 기능 라우터 → /api 404 폴백 → 정적 서빙.
 // 이후 태스크가 기능 라우터와 정적 파일 서빙을 이 사이에 끼워 넣는다. 폴백이
