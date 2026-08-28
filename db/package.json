@@ -1,0 +1,13 @@
+{
+  "name": "weather-db",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "migrate": "for f in migrations/*.sql; do echo \"→ $f\"; psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f \"$f\"; done",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "pg": "^8.13.1",
+    "vitest": "^2.1.8"
+  }
+}

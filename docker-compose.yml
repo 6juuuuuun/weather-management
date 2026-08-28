@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: weather
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5433:5432"   # 로컬 개발용. 서버 배치 시 제거한다
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d weather"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  pgdata:
