@@ -6,6 +6,12 @@ export type Querier = {
 
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// pg는 numeric 컬럼을 정밀도 손실을 피하려고 기본적으로 문자열로 돌려준다(예: "21.5").
+// weather_observations의 관측값들(temp_c 등)이 전부 numeric이라 이걸 그대로 두면
+// API 응답의 숫자 필드가 죄다 문자열이 되어, 화면 쪽 산술·비교가 조용히 깨진다.
+// pg.types는 프로세스 전역 레지스트리라 여기서 한 번만 등록하면 두 풀(아래) 모두에 적용된다.
+pg.types.setTypeParser(pg.types.builtins.NUMERIC, (v) => parseFloat(v));
+
 // 정책을 적용받는 풀과 우회하는 풀을 분리한다. 한 풀에서 역할만 바꾸면
 // 실수로 우회 상태가 남을 수 있어, 아예 다른 접속으로 갈라 둔다.
 const userPool = new pg.Pool({ connectionString: process.env.DATABASE_URL_USER });
