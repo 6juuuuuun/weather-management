@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { withService } from "../db.ts";
-import { hash, verify } from "./password.ts";
+import { hash, verify, temporaryPassword } from "./password.ts";
 import { issue, lookup, revoke } from "./session.ts";
 import { COOKIE, requireAuth, requireAdmin } from "./middleware.ts";
 
 const MAX_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
+const MIN_PASSWORD = 10;
 
 const allowedDomains = () =>
   (process.env.ALLOWED_EMAIL_DOMAINS ?? "").split(",").map((d) => d.trim().toLowerCase()).filter(Boolean);
@@ -137,6 +138,29 @@ authRouter.post("/logout", async (req, res) => {
 
 authRouter.get("/me", requireAuth, (req, res) => res.json({ user: req.user }));
 
+authRouter.post("/change-password", requireAuth, async (req, res) => {
+  const { current, next } = req.body ?? {};
+  if (typeof next !== "string" || next.length < MIN_PASSWORD) {
+    return res.status(400).json({ error: `비밀번호는 ${MIN_PASSWORD}자 이상이어야 합니다` });
+  }
+  const account = await withService(async (q) => {
+    const { rows } = await q.query("select id, password_hash from auth_accounts where id = $1", [
+      req.user!.accountId,
+    ]);
+    return rows[0];
+  });
+  if (!(await verify(account.password_hash, String(current ?? "")))) {
+    return res.status(401).json({ error: "현재 비밀번호가 맞지 않습니다" });
+  }
+  await withService(async (q) =>
+    q.query("update auth_accounts set password_hash = $2, must_change_password = false where id = $1", [
+      account.id,
+      await hash(next),
+    ]),
+  );
+  res.status(204).end();
+});
+
 export const adminUserRouter = Router();
 
 adminUserRouter.patch("/:id/status", requireAuth, requireAdmin, async (req, res) => {
@@ -152,4 +176,23 @@ adminUserRouter.patch("/:id/status", requireAuth, requireAdmin, async (req, res)
     }
   });
   res.json({ ok: true });
+});
+
+adminUserRouter.post("/:id/reset-password", requireAuth, requireAdmin, async (req, res) => {
+  // 관리자 자신을 대상으로 쓰면 현재 비밀번호 확인 없이 자기 비밀번호를 바꾸는
+  // 셈이 된다 — change-password가 강제하는 "현재 비밀번호 검증"을 우회하는
+  // 길이 열린다. 관리자 권한은 남을 구제하는 데만 쓰게 막는다.
+  if (req.user!.accountId === req.params.id) {
+    return res.status(403).json({ error: "본인 계정은 이 방법으로 재설정할 수 없습니다" });
+  }
+  const temp = temporaryPassword();
+  await withService(async (q) => {
+    await q.query(
+      "update auth_accounts set password_hash = $2, must_change_password = true, failed_attempts = 0, locked_until = null where id = $1",
+      [req.params.id, await hash(temp)],
+    );
+    // 비밀번호를 잃어버렸다는 전제의 발급이다. 남아 있는 세션도 함께 끊는다.
+    await q.query("delete from auth_sessions where account_id = $1", [req.params.id]);
+  });
+  res.json({ temporary_password: temp });
 });
