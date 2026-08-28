@@ -16,7 +16,8 @@
 - **`SET LOCAL`만 쓴다.** `SET`은 커넥션 풀에서 다음 요청으로 값이 새므로 금지
 - 서버 로직(수집·발송)은 정책을 우회해야 하므로 **별도 DB 역할**로 접속한다
 - **비밀번호 해싱과 토큰 생성에 검증된 라이브러리를 쓴다.** 암호학을 직접 구현하지 않는다
-- **메일을 쓰지 않는다.** 가입 검증은 관리자 승인, 비밀번호 재설정은 관리자의 임시 비밀번호 발급
+- **메일을 쓰지 않는다.** 가입 검증은 사내망 접근과 회사 도메인 제한, 비밀번호 재설정은 관리자의 임시 비밀번호 발급
+- **가입 승인 절차를 두지 않는다.** 가입하면 바로 쓸 수 있고, 실제 관문은 관리자의 역할 부여다
 - 세션은 **httpOnly 쿠키**. 토큰을 `localStorage`에 두지 않는다
 - 알림 채널은 **카카오워크를 그대로 유지**한다. SMS 전환은 이 계획의 범위 밖
 - 모든 주석과 커밋 메시지는 한국어. 주석은 *무엇*이 아니라 *왜*를 적는다
@@ -34,7 +35,7 @@ server/
     index.ts           부팅, 미들웨어 조립
     db.ts              커넥션 풀, withUser, withService
     auth/
-      routes.ts        가입·로그인·로그아웃·승인
+      routes.ts        가입·로그인·로그아웃·계정 상태
       password.ts      해싱·검증·임시 비밀번호
       session.ts       세션 발급·조회·폐기
       middleware.ts    쿠키 → 사용자 확인 → req.user
@@ -429,7 +430,7 @@ withService만 정책을 우회한다. SET LOCAL은 파라미터 바인딩이 �
 
 ---
 
-## Task 3: 인증 — 가입·승인·로그인·세션
+## Task 3: 인증 — 가입·로그인·세션
 
 **Files:**
 - Create: `db/migrations/0009_auth_local.sql`
@@ -440,12 +441,11 @@ withService만 정책을 우회한다. SET LOCAL은 파라미터 바인딩이 �
 **Interfaces:**
 - Consumes: `withUser`, `withService`
 - Produces:
-  - `POST /api/auth/signup` `{email,password,name,department_id,phone}` → `201 {ok:true, status:"pending"}`
+  - `POST /api/auth/signup` `{email,password,name,department_id,phone}` → `201 {ok:true}`
   - `POST /api/auth/login` `{email,password}` → `200 {user}` + `Set-Cookie: sid=...`
   - `POST /api/auth/logout` → `204`
   - `GET /api/auth/me` → `200 {user}` | `401`
-  - `GET /api/admin/users/pending` → `200 [{id,email,name,created_at}]` (관리자만)
-  - `POST /api/admin/users/:id/approve` → `200 {ok:true}`
+  - `PATCH /api/admin/users/:id/status` `{status:"active"|"disabled"}` → `200 {ok:true}` (관리자만)
   - 미들웨어 `requireAuth`, `requireAdmin` — `req.user = { accountId, employeeId, role, email }`
 
 - [ ] **Step 1: 인증용 테이블 마이그레이션을 쓴다**
@@ -459,9 +459,10 @@ create table auth_accounts (
   id uuid primary key default gen_random_uuid(),
   email text unique not null,
   password_hash text not null,
-  -- 가입 직후는 pending이다. 관리자가 승인해야 로그인할 수 있다.
-  -- 메일 인증을 쓸 수 없어(사내 SMTP 미확보) 승인으로 대신한다.
-  status text not null default 'pending' check (status in ('pending','active','disabled')),
+  -- 가입하면 바로 쓸 수 있다. 사내 DNS로만 열리므로 가입 화면에 닿는 것 자체가
+  -- 1차 관문이고, 가입해도 staff라 조회만 된다. 실제 관문은 관리자의 역할 부여다.
+  -- disabled는 퇴사자나 사고 계정을 막기 위해 남긴다.
+  status text not null default 'active' check (status in ('active','disabled')),
   -- 관리자가 임시 비밀번호를 발급하면 참이 되고, 다음 로그인에서 변경을 강제한다.
   must_change_password boolean not null default false,
   failed_attempts int not null default 0,
@@ -513,10 +514,24 @@ beforeEach(async () => {
 });
 
 describe("가입", () => {
-  it("허용 도메인이면 가입되고 승인 대기 상태가 된다", async () => {
+  it("허용 도메인이면 가입되고 바로 로그인할 수 있다", async () => {
     const res = await request(app).post("/api/auth/signup").send(SIGNUP);
     expect(res.status).toBe(201);
-    expect(res.body).toEqual({ ok: true, status: "pending" });
+
+    const login = await request(app)
+      .post("/api/auth/login")
+      .send({ email: SIGNUP.email, password: SIGNUP.password });
+    expect(login.status).toBe(200);
+  });
+
+  // 가입 자체는 열려 있어도 권한은 없어야 한다. 이게 실제 관문이다.
+  it("가입한 계정의 기본 역할은 staff다", async () => {
+    await request(app).post("/api/auth/signup").send(SIGNUP);
+    const role = await withService(async (q) => {
+      const { rows } = await q.query("select role from employees where email = $1", [SIGNUP.email]);
+      return rows[0].role;
+    });
+    expect(role).toBe("staff");
   });
 
   // 사내 DNS로만 열리지만, 도메인 제한이 없으면 외부 메일로도 계정이 생긴다.
@@ -536,19 +551,18 @@ describe("가입", () => {
 });
 
 describe("로그인", () => {
-  // 승인 전에 로그인이 되면 관리자 승인 장치가 무의미해진다.
-  it("승인 전에는 로그인할 수 없다", async () => {
+  // 퇴사자를 막는 유일한 수단이다. 비활성화가 안 먹으면 계정을 회수할 방법이 없다.
+  it("비활성화된 계정은 로그인할 수 없다", async () => {
     await request(app).post("/api/auth/signup").send(SIGNUP);
+    await withService((q) => q.query("update auth_accounts set status='disabled'"));
     const res = await request(app)
       .post("/api/auth/login")
       .send({ email: SIGNUP.email, password: SIGNUP.password });
     expect(res.status).toBe(403);
-    expect(res.body.error).toMatch(/승인/);
   });
 
-  it("승인 후에는 로그인되고 세션 쿠키가 내려온다", async () => {
+  it("로그인하면 세션 쿠키가 내려온다", async () => {
     await request(app).post("/api/auth/signup").send(SIGNUP);
-    await withService((q) => q.query("update auth_accounts set status='active'"));
 
     const res = await request(app)
       .post("/api/auth/login")
@@ -563,7 +577,6 @@ describe("로그인", () => {
 
   it("비밀번호가 틀리면 401이고 사유를 구분해 알려주지 않는다", async () => {
     await request(app).post("/api/auth/signup").send(SIGNUP);
-    await withService((q) => q.query("update auth_accounts set status='active'"));
     const res = await request(app)
       .post("/api/auth/login")
       .send({ email: SIGNUP.email, password: "wrong" });
@@ -574,7 +587,6 @@ describe("로그인", () => {
 
   it("5회 실패하면 잠긴다", async () => {
     await request(app).post("/api/auth/signup").send(SIGNUP);
-    await withService((q) => q.query("update auth_accounts set status='active'"));
     for (let i = 0; i < 5; i++) {
       await request(app).post("/api/auth/login").send({ email: SIGNUP.email, password: "wrong" });
     }
@@ -585,37 +597,61 @@ describe("로그인", () => {
   });
 });
 
-describe("가입 승인", () => {
-  it("관리자는 승인 대기 목록을 볼 수 있다", async () => {
-    await request(app).post("/api/auth/signup").send(SIGNUP);
-
+describe("계정 비활성화", () => {
+  async function adminAgent() {
     const admin = { email: "boss@gonjiam.com", password: "admin-password-1", name: "관리자" };
     await request(app).post("/api/auth/signup").send(admin);
-    await withService(async (q) => {
-      await q.query("update auth_accounts set status='active' where email=$1", [admin.email]);
-      await q.query("update employees set role='admin' where email=$1", [admin.email]);
-    });
+    await withService((q) => q.query("update employees set role='admin' where email=$1", [admin.email]));
     const agent = request.agent(app);
     await agent.post("/api/auth/login").send({ email: admin.email, password: admin.password });
+    return agent;
+  }
 
-    const res = await agent.get("/api/admin/users/pending");
-    expect(res.status).toBe(200);
-    expect(res.body.map((u: any) => u.email)).toContain(SIGNUP.email);
+  it("관리자는 계정을 비활성화할 수 있고 즉시 로그인이 막힌다", async () => {
+    await request(app).post("/api/auth/signup").send(SIGNUP);
+    const admin = await adminAgent();
+    const id = await withService(async (q) => {
+      const { rows } = await q.query("select id from auth_accounts where email=$1", [SIGNUP.email]);
+      return rows[0].id;
+    });
+
+    expect((await admin.patch(`/api/admin/users/${id}/status`).send({ status: "disabled" })).status).toBe(200);
+    const login = await request(app)
+      .post("/api/auth/login")
+      .send({ email: SIGNUP.email, password: SIGNUP.password });
+    expect(login.status).toBe(403);
   });
 
-  it("일반 직원은 승인 대기 목록을 볼 수 없다", async () => {
+  it("비활성화하면 남아 있던 세션도 끊긴다", async () => {
     await request(app).post("/api/auth/signup").send(SIGNUP);
-    await withService((q) => q.query("update auth_accounts set status='active'"));
+    const victim = request.agent(app);
+    await victim.post("/api/auth/login").send({ email: SIGNUP.email, password: SIGNUP.password });
+    const admin = await adminAgent();
+    const id = await withService(async (q) => {
+      const { rows } = await q.query("select id from auth_accounts where email=$1", [SIGNUP.email]);
+      return rows[0].id;
+    });
+
+    await admin.patch(`/api/admin/users/${id}/status`).send({ status: "disabled" });
+    // 퇴사자를 막는 것이 목적이다. 세션이 남으면 막은 의미가 없다.
+    expect((await victim.get("/api/auth/me")).status).toBe(401);
+  });
+
+  it("일반 직원은 계정 상태를 바꿀 수 없다", async () => {
+    await request(app).post("/api/auth/signup").send(SIGNUP);
     const agent = request.agent(app);
     await agent.post("/api/auth/login").send({ email: SIGNUP.email, password: SIGNUP.password });
-    expect((await agent.get("/api/admin/users/pending")).status).toBe(403);
+    const id = await withService(async (q) => {
+      const { rows } = await q.query("select id from auth_accounts where email=$1", [SIGNUP.email]);
+      return rows[0].id;
+    });
+    expect((await agent.patch(`/api/admin/users/${id}/status`).send({ status: "disabled" })).status).toBe(403);
   });
 });
 
 describe("세션", () => {
   async function loginAgent() {
     await request(app).post("/api/auth/signup").send(SIGNUP);
-    await withService((q) => q.query("update auth_accounts set status='active'"));
     const agent = request.agent(app);
     await agent.post("/api/auth/login").send({ email: SIGNUP.email, password: SIGNUP.password });
     return agent;
@@ -814,7 +850,7 @@ authRouter.post("/signup", async (req, res) => {
     if (e?.code === "23505") return res.status(409).json({ error: "이미 가입된 이메일입니다" });
     throw e;
   }
-  res.status(201).json({ ok: true, status: "pending" });
+  res.status(201).json({ ok: true });
 });
 
 authRouter.post("/login", async (req, res) => {
@@ -851,7 +887,7 @@ authRouter.post("/login", async (req, res) => {
   }
 
   if (account.status !== "active") {
-    return res.status(403).json({ error: "관리자 승인 후 이용할 수 있습니다" });
+    return res.status(403).json({ error: "사용할 수 없는 계정입니다. 관리자에게 문의해 주세요" });
   }
 
   await withService((q) =>
@@ -880,23 +916,18 @@ authRouter.get("/me", requireAuth, (req, res) => res.json({ user: req.user }));
 
 export const adminUserRouter = Router();
 
-// 관리자가 승인할 대상을 볼 수 없으면 가입이 접수돼도 아무도 모른다.
-adminUserRouter.get("/pending", requireAuth, requireAdmin, async (_req, res) => {
-  const rows = await withService(async (q) => {
-    const { rows } = await q.query(
-      `select a.id, a.email, a.created_at, e.name, e.department_id
-         from auth_accounts a left join employees e on e.auth_user_id = a.id
-        where a.status = 'pending' order by a.created_at`,
-    );
-    return rows;
+adminUserRouter.patch("/:id/status", requireAuth, requireAdmin, async (req, res) => {
+  const status = String(req.body?.status ?? "");
+  if (status !== "active" && status !== "disabled") {
+    return res.status(400).json({ error: "status는 active 또는 disabled여야 합니다" });
+  }
+  await withService(async (q) => {
+    await q.query("update auth_accounts set status = $2 where id = $1", [req.params.id, status]);
+    // 퇴사자를 막는 것이 목적이다. 남아 있는 세션을 끊지 않으면 막은 의미가 없다.
+    if (status === "disabled") {
+      await q.query("delete from auth_sessions where account_id = $1", [req.params.id]);
+    }
   });
-  res.json(rows);
-});
-
-adminUserRouter.post("/:id/approve", requireAuth, requireAdmin, async (req, res) => {
-  await withService((q) =>
-    q.query("update auth_accounts set status = 'active' where id = $1", [req.params.id]),
-  );
   res.json({ ok: true });
 });
 ```
@@ -923,9 +954,11 @@ Expected: 14건 통과.
 
 ```bash
 git add db/migrations/0009_auth_local.sql server/
-git commit -m "feat(server): 자체 인증 — 가입·관리자 승인·세션 쿠키
+git commit -m "feat(server): 자체 인증 — 가입·로그인·세션 쿠키
 
-메일을 쓸 수 없어 가입 검증을 관리자 승인으로 대신한다. 세션 토큰은
+사내 DNS로만 열리므로 가입 승인 절차를 두지 않는다. 가입해도 staff라
+조회만 되고, 실제 관문은 관리자의 역할 부여다. 퇴사자는 계정 비활성화로
+막고 이때 남은 세션도 끊는다. 세션 토큰은
 httpOnly 쿠키로 내리고 DB에는 해시만 남겨, DB가 유출돼도 세션을 재사용할 수 없다.
 로그인 실패 응답은 계정 존재 여부가 드러나지 않도록 사유를 구분하지 않는다."
 ```
@@ -960,7 +993,6 @@ const ADMIN = { email: "boss@gonjiam.com", password: "admin-password-here", name
 
 async function activeAgent(who: typeof USER) {
   await request(app).post("/api/auth/signup").send(who);
-  await withService((q) => q.query("update auth_accounts set status='active' where email=$1", [who.email]));
   const agent = request.agent(app);
   await agent.post("/api/auth/login").send({ email: who.email, password: who.password });
   return agent;
@@ -1158,7 +1190,6 @@ import { withService } from "../src/db.ts";
 async function loggedIn() {
   const who = { email: "view@gonjiam.com", password: "view-password-1", name: "조회자" };
   await request(app).post("/api/auth/signup").send(who);
-  await withService((q) => q.query("update auth_accounts set status='active' where email=$1", [who.email]));
   const agent = request.agent(app);
   await agent.post("/api/auth/login").send({ email: who.email, password: who.password });
   return agent;
@@ -1385,7 +1416,6 @@ async function agentAs(role: "staff" | "admin", email: string) {
   const who = { email, password: "some-password-1", name: "테스트" };
   await request(app).post("/api/auth/signup").send(who);
   await withService(async (q) => {
-    await q.query("update auth_accounts set status='active' where email=$1", [email]);
     await q.query("update employees set role=$2 where email=$1", [email, role]);
   });
   const agent = request.agent(app);
@@ -1577,7 +1607,6 @@ async function agentAs(role: "staff" | "admin", email: string) {
   const who = { email, password: "some-password-1", name: "테스트" };
   await request(app).post("/api/auth/signup").send(who);
   await withService(async (q) => {
-    await q.query("update auth_accounts set status='active' where email=$1", [email]);
     await q.query("update employees set role=$2 where email=$1", [email, role]);
   });
   const agent = request.agent(app);
@@ -1927,18 +1956,18 @@ function renderSignup() {
 }
 
 describe("회원가입", () => {
-  it("가입에 성공하면 승인 대기 안내를 보여준다", async () => {
+  it("가입에 성공하면 완료 안내를 보여준다", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, status: "pending" }), { status: 201 })),
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 201 })),
     );
     renderSignup();
     fireEvent.change(screen.getByLabelText("회사 이메일"), { target: { value: "a@gonjiam.com" } });
     fireEvent.change(screen.getByLabelText("비밀번호"), { target: { value: "password12345" } });
     fireEvent.change(screen.getByLabelText("이름"), { target: { value: "홍길동" } });
-    fireEvent.click(screen.getByRole("button", { name: "가입 신청" }));
+    fireEvent.click(screen.getByRole("button", { name: "가입하기" }));
 
-    expect(await screen.findByText(/승인/)).toBeInTheDocument();
+    expect(await screen.findByText(/가입이 완료/)).toBeInTheDocument();
   });
 
   // 회귀: 예전 로그인 화면은 catch가 없어 실패해도 성공 화면을 보여줬다.
@@ -1953,10 +1982,10 @@ describe("회원가입", () => {
     fireEvent.change(screen.getByLabelText("회사 이메일"), { target: { value: "a@gmail.com" } });
     fireEvent.change(screen.getByLabelText("비밀번호"), { target: { value: "password12345" } });
     fireEvent.change(screen.getByLabelText("이름"), { target: { value: "홍길동" } });
-    fireEvent.click(screen.getByRole("button", { name: "가입 신청" }));
+    fireEvent.click(screen.getByRole("button", { name: "가입하기" }));
 
     expect(await screen.findByText(/회사 이메일로만/)).toBeInTheDocument();
-    expect(screen.queryByText(/승인/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/가입이 완료/)).not.toBeInTheDocument();
   });
 
   it("비밀번호가 10자 미만이면 보내지 않는다", async () => {
@@ -1966,7 +1995,7 @@ describe("회원가입", () => {
     fireEvent.change(screen.getByLabelText("회사 이메일"), { target: { value: "a@gonjiam.com" } });
     fireEvent.change(screen.getByLabelText("비밀번호"), { target: { value: "short" } });
     fireEvent.change(screen.getByLabelText("이름"), { target: { value: "홍길동" } });
-    fireEvent.click(screen.getByRole("button", { name: "가입 신청" }));
+    fireEvent.click(screen.getByRole("button", { name: "가입하기" }));
 
     await waitFor(() => expect(screen.getByText(/10자/)).toBeInTheDocument());
     expect(fetchMock).not.toHaveBeenCalled();
@@ -2034,8 +2063,8 @@ export default function Signup() {
   if (done) {
     return (
       <div className="signup">
-        <h1>가입 신청이 접수되었습니다</h1>
-        <p>관리자 승인 후 로그인할 수 있습니다.</p>
+        <h1>가입이 완료되었습니다</h1>
+        <p>로그인 후 바로 이용할 수 있습니다.</p>
         <Link to="/login">로그인 화면으로</Link>
       </div>
     );
@@ -2043,7 +2072,7 @@ export default function Signup() {
 
   return (
     <div className="signup">
-      <h1>가입 신청</h1>
+      <h1>가입</h1>
       <form onSubmit={submit}>
         <label htmlFor="email">회사 이메일</label>
         <input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
@@ -2064,7 +2093,7 @@ export default function Signup() {
         <input id="phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="010-0000-0000" />
 
         {error && <p className="signup-error">{error}</p>}
-        <button type="submit" disabled={busy}>가입 신청</button>
+        <button type="submit" disabled={busy}>가입하기</button>
       </form>
       <Link to="/login">이미 계정이 있으신가요?</Link>
     </div>
@@ -2078,22 +2107,23 @@ export default function Signup() {
 
 이메일·비밀번호 입력과 "계정이 없으신가요? 가입 신청" 링크를 둔다. 매직링크 요청 코드와 `requestMagicLink` 호출을 지운다.
 
-`403`이면 "관리자 승인 후 이용할 수 있습니다", `423`이면 "잠시 후 다시 시도해 주세요"를 보여준다. `must_change_password`가 참이면 `/change-password`로 보낸다.
+`403`이면 "사용할 수 없는 계정입니다. 관리자에게 문의해 주세요", `423`이면 "잠시 후 다시 시도해 주세요"를 보여준다. `must_change_password`가 참이면 `/change-password`로 보낸다.
 
 - [ ] **Step 5: AuthProvider를 세션 쿠키 기준으로 바꾼다**
 
 `supabase.auth.getUser()` 대신 `/api/auth/me`를 부른다. `onAuthStateChange` 구독을 없애고, `login`·`logout`을 컨텍스트에 노출한다. `employee`와 `isApprover`는 지금처럼 **한 번에 함께** 설정한다 — 따로 설정하면 둘이 어긋난 순간이 생긴다.
 
-- [ ] **Step 6: 직원 관리 화면에 승인 대기 목록을 붙인다**
+- [ ] **Step 6: 직원 관리 화면에 계정 관리를 붙인다**
 
-`Employees.tsx` 위에 승인 대기 구역을 만든다. `GET /api/admin/users/pending`으로 목록을 받고,
-각 줄에 [승인] 버튼을 둬 `POST /api/admin/users/:id/approve`를 부른다. 승인하면 목록에서 사라진다.
+`Employees.tsx`의 각 직원 줄에 두 가지를 더한다.
 
-**이 화면이 없으면 가입이 접수돼도 관리자가 모른다.** 대기 인원이 있으면 개수를
-구역 제목에 함께 보여준다 — 예: `승인 대기 2명`.
-
-같은 화면에서 임시 비밀번호 발급(`POST /api/admin/users/:id/reset-password`)도 할 수 있게 한다.
-응답으로 온 임시 비밀번호를 화면에 한 번 보여주고, 관리자가 당사자에게 전달하도록 안내한다.
+- **역할 바꾸기** — `PATCH /api/employees/:id {role}`. 가입은 열려 있고 권한만 관리자가 준다.
+  **이것이 실제 관문이므로 화면이 없으면 아무도 특보를 승인할 수 없다**
+- **계정 비활성화** — `PATCH /api/admin/users/:id/status {status:"disabled"}`.
+  퇴사자를 막는 유일한 수단이다. 비활성화된 계정은 목록에서 흐리게 표시한다
+- **임시 비밀번호 발급** — `POST /api/admin/users/:id/reset-password`.
+  응답으로 온 임시 비밀번호를 화면에 한 번 보여주고, 당사자에게 전달하도록 안내한다.
+  화면을 벗어나면 다시 볼 수 없다고 함께 적는다
 
 - [ ] **Step 7: 라우트를 정리한다**
 
@@ -2113,9 +2143,9 @@ Expected: 기존 테스트 중 매직링크를 검증하던 것들은 비밀번�
 git add apps/web/
 git commit -m "feat(web): 이메일·비밀번호 로그인과 회원가입 화면
 
-매직링크 콜백을 걷어내고 세션 쿠키 기반으로 바꾼다. 가입은 승인 대기
-상태로 접수되며, 실패 응답은 사유를 그대로 보여준다 — 예전 로그인 화면은
-catch가 없어 실패해도 성공 화면을 보여주는 결함이 있었다."
+매직링크 콜백을 걷어내고 세션 쿠키 기반으로 바꾼다. 가입하면 바로 쓸 수 있고,
+권한은 직원 관리 화면에서 관리자가 부여한다. 실패 응답은 사유를 그대로 보여준다 —
+예전 로그인 화면은 catch가 없어 실패해도 성공 화면을 보여주는 결함이 있었다."
 ```
 
 ---
@@ -2704,7 +2734,7 @@ Expected: 지웠던 부서가 되돌아온다. **되돌아오지 않으면 백�
 
 `docs/운영.md`에 다음을 적는다. 명령을 그대로 붙여 넣을 수 있어야 하고, 배경 지식을 요구하지 않는다.
 
-- 처음 올릴 때: `.env` 만들기 → `docker compose up -d --build` → 마이그레이션 적용 → 첫 관리자 승인 방법
+- 처음 올릴 때: `.env` 만들기 → `docker compose up -d --build` → 마이그레이션 적용 → 첫 관리자 지정 방법(가입 후 DB에서 role을 admin으로 한 번 올린다)
 - 껐다 켜기: `docker compose restart app`
 - 로그 보기: `docker compose logs -f app`
 - 상태 확인: `curl localhost:8080/api/health/deep`이 무엇을 뜻하는지
