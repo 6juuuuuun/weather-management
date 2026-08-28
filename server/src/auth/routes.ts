@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { withService } from "../db.ts";
+import { withService, UUID } from "../db.ts";
 import { hash, verify, temporaryPassword } from "./password.ts";
 import { issue, lookup, revoke } from "./session.ts";
 import { COOKIE, requireAuth, requireAdmin } from "./middleware.ts";
@@ -180,13 +180,18 @@ adminUserRouter.patch("/:id/status", requireAuth, requireAdmin, async (req, res)
 
 adminUserRouter.post("/:id/reset-password", requireAuth, requireAdmin, async (req, res) => {
   const targetId = String(req.params.id ?? "");
+  // Postgres의 uuid 파서는 하이픈 없는 32자리, 중괄호로 감싼 표기, 대소문자
+  // 섞인 표기를 전부 같은 값으로 받아들인다. 문자열 비교로 표기 변형을
+  // 하나씩 쫓아가는 대신, db.ts의 withUser와 같은 정규 형식(8-4-4-4-12,
+  // 대소문자 무관)이 아니면 SQL에 닿기 전에 거부한다 — 그 뒤에야 자기대상
+  // 비교가 의미를 갖는다.
+  if (!UUID.test(targetId)) {
+    return res.status(400).json({ error: "id 형식이 올바르지 않습니다" });
+  }
   // 관리자 자신을 대상으로 쓰면 현재 비밀번호 확인 없이 자기 비밀번호를 바꾸는
   // 셈이 된다 — change-password가 강제하는 "현재 비밀번호 검증"을 우회하는
-  // 길이 열린다. 관리자 권한은 남을 구제하는 데만 쓰게 막는다.
-  // uuid 컬럼은 Postgres에서 값으로(대소문자 무시) 비교되지만 JS의 ===는
-  // 대소문자를 구분한다. 그대로 두면 관리자가 자기 accountId를 대문자로 바꿔
-  // 보내는 것만으로 이 가드를 피해 가고, SQL은 정확히 자기 행을 찾아 갱신해
-  // 버린다 — 두 비교 기준을 반드시 맞춘다.
+  // 길이 열린다. 관리자 권한은 남을 구제하는 데만 쓰게 막는다. 위에서 이미
+  // 정규 형식으로 좁혔으니, 남은 대소문자 차이만 무시하면 된다.
   if (req.user!.accountId.toLowerCase() === targetId.toLowerCase()) {
     return res.status(403).json({ error: "본인 계정은 이 방법으로 재설정할 수 없습니다" });
   }

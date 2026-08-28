@@ -106,6 +106,49 @@ describe("비밀번호 재설정", () => {
     expect(login.status).toBe(200);
   });
 
+  // Postgres의 uuid 파서는 하이픈 없는 32자리, 중괄호로 감싼 표기도 같은
+  // 값으로 받아들인다. 대소문자만 맞춘 비교로는 이 표기들을 못 잡는다 —
+  // 문자열이 다르니 가드는 "다른 계정"이라 오판해 통과시키고, SQL은 같은
+  // uuid로 인식해 정확히 자기 행을 갱신해 버린다. 표기를 하나씩 쫓는 대신
+  // 정규 형식이 아니면 SQL에 닿기 전에 400으로 거부해야 한다.
+  it("자기 id를 하이픈 없이 보내도 막힌다", async () => {
+    const admin = await activeAgent(ADMIN);
+    await withService((q) => q.query("update employees set role='admin' where email=$1", [ADMIN.email]));
+    const admin2 = request.agent(app);
+    await admin2.post("/api/auth/login").send({ email: ADMIN.email, password: ADMIN.password });
+
+    const adminId = await withService(async (q) => {
+      const { rows } = await q.query("select id from auth_accounts where email=$1", [ADMIN.email]);
+      return rows[0].id;
+    });
+
+    const res = await admin2.post(`/api/admin/users/${adminId.replace(/-/g, "")}/reset-password`);
+    expect(res.status).toBe(400);
+    const login = await request(app)
+      .post("/api/auth/login")
+      .send({ email: ADMIN.email, password: ADMIN.password });
+    expect(login.status).toBe(200);
+  });
+
+  it("자기 id를 중괄호로 감싸 보내도 막힌다", async () => {
+    const admin = await activeAgent(ADMIN);
+    await withService((q) => q.query("update employees set role='admin' where email=$1", [ADMIN.email]));
+    const admin2 = request.agent(app);
+    await admin2.post("/api/auth/login").send({ email: ADMIN.email, password: ADMIN.password });
+
+    const adminId = await withService(async (q) => {
+      const { rows } = await q.query("select id from auth_accounts where email=$1", [ADMIN.email]);
+      return rows[0].id;
+    });
+
+    const res = await admin2.post(`/api/admin/users/{${adminId}}/reset-password`);
+    expect(res.status).toBe(400);
+    const login = await request(app)
+      .post("/api/auth/login")
+      .send({ email: ADMIN.email, password: ADMIN.password });
+    expect(login.status).toBe(200);
+  });
+
   it("없는 계정을 대상으로 하면 404다", async () => {
     const admin = await activeAgent(ADMIN);
     await withService((q) => q.query("update employees set role='admin' where email=$1", [ADMIN.email]));
@@ -210,5 +253,26 @@ describe("강제 변경 세션 제한", () => {
     const after = await admin2.post(`/api/admin/users/${otherId}/reset-password`);
     expect(after.status).toBe(200);
     expect(typeof after.body.temporary_password).toBe("string");
+  });
+
+  // Express는 기본으로 경로 대소문자를 구분하지 않고 끝 슬래시도 무시해
+  // 실제 핸들러까지 두 형태 모두 도달한다. 그런데 허용 목록 비교가 정확
+  // 일치라면, 강제 변경 중인 세션이 탈출구인 change-password를 대문자나
+  // 끝 슬래시가 붙은 형태로 부르는 순간 그 탈출구 자체가 막혀 버려 아무것도
+  // 못 하는 상태에 갇힌다. 보안 구멍은 아니지만 실제 장애다.
+  it("강제 변경 중에도 대소문자가 다른 change-password 경로는 막히지 않는다", async () => {
+    const { admin2 } = await forcedChangeAdminAgent();
+    const res = await admin2
+      .post("/API/AUTH/Change-Password")
+      .send({ current: ADMIN.password, next: "admin-new-password-3" });
+    expect(res.status).toBe(204);
+  });
+
+  it("강제 변경 중에도 끝 슬래시가 붙은 change-password 경로는 막히지 않는다", async () => {
+    const { admin2 } = await forcedChangeAdminAgent();
+    const res = await admin2
+      .post("/api/auth/change-password/")
+      .send({ current: ADMIN.password, next: "admin-new-password-4" });
+    expect(res.status).toBe(204);
   });
 });

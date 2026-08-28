@@ -4,7 +4,7 @@ export type Querier = {
   query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
 };
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // 정책을 적용받는 풀과 우회하는 풀을 분리한다. 한 풀에서 역할만 바꾸면
 // 실수로 우회 상태가 남을 수 있어, 아예 다른 접속으로 갈라 둔다.

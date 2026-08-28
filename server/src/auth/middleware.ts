@@ -27,7 +27,12 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   req.user = user;
 
   if (user.mustChangePassword) {
-    const path = req.originalUrl.split("?")[0];
+    // Express는 기본으로 경로 대소문자를 구분하지 않고 끝 슬래시도 무시한다
+    // (둘 다 그대로 핸들러에 도달한다). 허용 목록 비교가 정확 일치인 채로
+    // 두면, 탈출구인 change-password를 대문자나 끝 슬래시가 붙은 형태로
+    // 부르는 세션이 그 탈출구에서조차 막혀 버린다. 비교 전에 같은 기준으로
+    // 맞춘다.
+    const path = (req.originalUrl.split("?")[0] ?? "").toLowerCase().replace(/\/+$/, "");
     const allowed = ALLOWED_WHILE_MUST_CHANGE.some((r) => r.method === req.method && r.path === path);
     if (!allowed) {
       return res.status(403).json({ error: "비밀번호를 먼저 변경해야 합니다", must_change_password: true });
