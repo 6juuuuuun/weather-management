@@ -4,7 +4,7 @@
 
 **Goal:** Supabase와 Cloudflare 의존을 걷어내고, Postgres와 Express 컨테이너 2개로 도는 자립형 시스템으로 이식한다.
 
-**Architecture:** Postgres는 그대로 쓰고 권한 정책(RLS) 14개를 살린다. `auth.uid()`를 자체 정의하고 Express가 트랜잭션마다 `SET LOCAL`로 사용자 ID를 넣어 정책을 그대로 적용한다. Supabase PostgREST가 하던 일은 목적별 REST 엔드포인트로, Supabase Auth는 세션 쿠키 기반 자체 인증으로, Edge Functions는 Express 라우트로, pg_cron은 앱 내부 스케줄러로 옮긴다.
+**Architecture:** Postgres는 그대로 쓰고 권한 정책(RLS) 27개를 살린다. `auth.uid()`를 자체 정의하고 Express가 트랜잭션마다 `SET LOCAL`로 사용자 ID를 넣어 정책을 그대로 적용한다. Supabase PostgREST가 하던 일은 목적별 REST 엔드포인트로, Supabase Auth는 세션 쿠키 기반 자체 인증으로, Edge Functions는 Express 라우트로, pg_cron은 앱 내부 스케줄러로 옮긴다.
 
 **Tech Stack:** Postgres 16, Node 22, Express 5, node-postgres(`pg`), `argon2`, `node-cron`, Vitest, Supertest, Docker Compose
 
@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **권한 정책 14개를 앱 코드로 옮기지 않는다.** DB에 남기고 `auth.uid()`로 통한다. 개인정보 안전망을 코드로 옮기면 검사 누락이 곧 유출이다
+- **권한 정책 27개를 앱 코드로 옮기지 않는다.** DB에 남기고 `auth.uid()`로 통한다. 개인정보 안전망을 코드로 옮기면 검사 누락이 곧 유출이다
 - **`SET LOCAL`만 쓴다.** `SET`은 커넥션 풀에서 다음 요청으로 값이 새므로 금지
 - 서버 로직(수집·발송)은 정책을 우회해야 하므로 **별도 DB 역할**로 접속한다
 - **비밀번호 해싱과 토큰 생성에 검증된 라이브러리를 쓴다.** 암호학을 직접 구현하지 않는다
@@ -178,6 +178,24 @@ import { Client } from "pg";
 const url = process.env.DATABASE_URL!;
 let db: Client;
 
+// 마이그레이션에서 뽑은 최종 목록이다(create 29건에서 drop으로 사라진 2건을 뺀 27건).
+// 이관 중 마이그레이션이 조용히 실패하면 여기서 걸린다.
+const EXPECTED_POLICIES = [
+  "action_guidelines.r_guidelines", "action_guidelines.w_admin_all",
+  "alert_recipients.r_all", "alert_recipients.w_admin_all",
+  "alert_settings.r_all", "alert_settings.w_admin",
+  "departments.r_all", "departments.w_admin_del", "departments.w_admin_ins", "departments.w_admin_upd",
+  "dispatches.r_all",
+  "employees.r_all", "employees.w_admin_del", "employees.w_admin_ins", "employees.w_admin_upd",
+  "heartbeats.r_all",
+  "messages.r_messages", "messages.w_approver",
+  "recipients.r_all", "recipients.w_admin_all",
+  "site_settings.r_all", "site_settings.w_admin",
+  "weather_criteria.r_all", "weather_criteria.w_admin", "weather_criteria.w_admin_ins",
+  "weather_events.r_all",
+  "weather_observations.r_all",
+];
+
 beforeAll(async () => {
   db = new Client({ connectionString: url });
   await db.connect();
@@ -186,9 +204,13 @@ beforeAll(async () => {
 describe("자체 호스팅 스키마", () => {
   // 이 시스템의 개인정보 안전망은 DB 안에 있다. 이식하면서 정책이 유실되면
   // 코드에 검사가 없는 상태로 명부가 열린다 — 가장 먼저 확인해야 할 것이다.
-  it("권한 정책이 14개 그대로 있다", async () => {
-    const { rows } = await db.query("select count(*)::int as n from pg_policies where schemaname = 'public'");
-    expect(rows[0].n).toBe(14);
+  // 개수만 세면 정책 이름이 바뀌어도 통과한다. (테이블, 정책명) 쌍을 통째로 비교한다.
+  it("권한 정책 27개가 이름까지 그대로 있다", async () => {
+    const { rows } = await db.query(
+      "select tablename, policyname from pg_policies where schemaname = 'public' order by tablename, policyname",
+    );
+    const actual = rows.map((r) => `${r.tablename}.${r.policyname}`);
+    expect(actual).toEqual(EXPECTED_POLICIES);
   });
 
   it("auth.uid()가 세션 변수를 읽는다", async () => {
@@ -224,7 +246,7 @@ export DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@127.0.0.1:5433/wea
 cd db && npm run migrate && npx vitest run
 ```
 
-Expected: 4건 통과. 정책 개수가 14가 아니면 이관이 빠진 것이다 — 개수를 맞출 때까지 다음 태스크로 넘어가지 않는다.
+Expected: 4건 통과. 정책 목록이 27개와 다르면 이관이 빠진 것이다 — 맞출 때까지 다음 태스크로 넘어가지 않는다.
 
 - [ ] **Step 8: 커밋**
 
@@ -232,7 +254,7 @@ Expected: 4건 통과. 정책 개수가 14가 아니면 이관이 빠진 것이�
 git add docker-compose.yml db/
 git commit -m "feat(db): 자체 호스팅 Postgres 컨테이너와 스키마 이관
 
-auth.uid()를 자체 정의해 권한 정책 14개를 한 줄도 고치지 않고 살린다.
+auth.uid()를 자체 정의해 권한 정책 27개를 한 줄도 고치지 않고 살린다.
 app_user는 정책을 적용받고, 수집·발송용 app_service만 우회한다.
 pg_cron 마이그레이션은 스케줄러가 앱으로 옮겨가므로 이관하지 않는다."
 ```
@@ -423,7 +445,7 @@ if (process.env.NODE_ENV !== "test") {
 git add server/
 git commit -m "feat(server): Express 뼈대와 권한 통로
 
-withUser는 SET LOCAL로 사용자 ID를 넣어 정책 14개를 그대로 적용받고,
+withUser는 SET LOCAL로 사용자 ID를 넣어 정책 27개를 그대로 적용받고,
 withService만 정책을 우회한다. SET LOCAL은 파라미터 바인딩이 안 되므로
 사용자 ID를 UUID 형식으로 먼저 막는다."
 ```
@@ -485,6 +507,10 @@ create index on auth_sessions (expires_at);
 alter table employees
   add constraint employees_auth_account_fk
   foreign key (auth_user_id) references auth_accounts(id) on delete set null;
+
+-- 가입 시 본인이 입력한다. 알림톡·SMS는 이 번호로 나가므로 없으면 발송 대상이 없다.
+-- 기존 스키마에 없던 컬럼이라 여기서 더한다.
+alter table employees add column if not exists phone text;
 
 commit;
 ```
@@ -1281,7 +1307,7 @@ import { requireAuth } from "../auth/middleware.ts";
 export const dashboardRouter = Router();
 dashboardRouter.use(requireAuth);
 
-// 모든 질의는 withUser를 거친다. 정책 14개가 여기서 적용된다.
+// 모든 질의는 withUser를 거친다. 정책 27개가 여기서 적용된다.
 const OBS_COLS = "observed_at, rain_mm_per_hr, temp_c, feels_c, wind_ms, snow_new_cm, missing";
 
 dashboardRouter.get("/observations/latest", async (req, res) => {
@@ -2556,7 +2582,7 @@ docker compose up -d 하나로 전체가 뜬다."
 - Create: `server/src/jobs/watchdog.ts`
 - Create: `server/test/watchdog.test.ts`
 - Create: `docs/운영.md`
-- Modify: `docker-compose.yml`, `server/src/jobs/scheduler.ts`
+- Modify: `server/src/jobs/scheduler.ts`
 
 **Interfaces:**
 - Produces: `checkHealth(): Promise<{ ok: boolean; reasons: string[] }>`, `GET /api/health/deep`
