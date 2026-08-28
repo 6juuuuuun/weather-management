@@ -179,20 +179,29 @@ adminUserRouter.patch("/:id/status", requireAuth, requireAdmin, async (req, res)
 });
 
 adminUserRouter.post("/:id/reset-password", requireAuth, requireAdmin, async (req, res) => {
+  const targetId = String(req.params.id ?? "");
   // 관리자 자신을 대상으로 쓰면 현재 비밀번호 확인 없이 자기 비밀번호를 바꾸는
   // 셈이 된다 — change-password가 강제하는 "현재 비밀번호 검증"을 우회하는
   // 길이 열린다. 관리자 권한은 남을 구제하는 데만 쓰게 막는다.
-  if (req.user!.accountId === req.params.id) {
+  // uuid 컬럼은 Postgres에서 값으로(대소문자 무시) 비교되지만 JS의 ===는
+  // 대소문자를 구분한다. 그대로 두면 관리자가 자기 accountId를 대문자로 바꿔
+  // 보내는 것만으로 이 가드를 피해 가고, SQL은 정확히 자기 행을 찾아 갱신해
+  // 버린다 — 두 비교 기준을 반드시 맞춘다.
+  if (req.user!.accountId.toLowerCase() === targetId.toLowerCase()) {
     return res.status(403).json({ error: "본인 계정은 이 방법으로 재설정할 수 없습니다" });
   }
   const temp = temporaryPassword();
-  await withService(async (q) => {
-    await q.query(
-      "update auth_accounts set password_hash = $2, must_change_password = true, failed_attempts = 0, locked_until = null where id = $1",
-      [req.params.id, await hash(temp)],
+  const found = await withService(async (q) => {
+    const { rows } = await q.query(
+      "update auth_accounts set password_hash = $2, must_change_password = true, failed_attempts = 0, locked_until = null where id = $1 returning id",
+      [targetId, await hash(temp)],
     );
+    if (rows.length === 0) return false;
     // 비밀번호를 잃어버렸다는 전제의 발급이다. 남아 있는 세션도 함께 끊는다.
-    await q.query("delete from auth_sessions where account_id = $1", [req.params.id]);
+    await q.query("delete from auth_sessions where account_id = $1", [targetId]);
+    return true;
   });
+  // 영향 행이 0이면 잘못된 id를 잘못 성공으로 오인하게 둘 수 없다.
+  if (!found) return res.status(404).json({ error: "계정을 찾을 수 없습니다" });
   res.json({ temporary_password: temp });
 });

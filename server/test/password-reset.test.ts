@@ -82,6 +82,41 @@ describe("비밀번호 재설정", () => {
     expect(login.status).toBe(200);
   });
 
+  // uuid 컬럼은 Postgres에서 값으로(대소문자 무시) 비교되지만, 가드의 JS
+  // 문자열 비교(===)는 대소문자를 구분한다. 관리자가 자기 accountId를
+  // 대문자로 바꿔 보내면 가드는 "다른 계정"이라 오판하고 통과시키지만, SQL은
+  // 정확히 자기 행을 찾아 갱신해 버린다 — 가드를 만든 이유 자체가 무력화된다.
+  it("자기 accountId를 대문자로 바꿔 보내도 막힌다", async () => {
+    const admin = await activeAgent(ADMIN);
+    await withService((q) => q.query("update employees set role='admin' where email=$1", [ADMIN.email]));
+    const admin2 = request.agent(app);
+    await admin2.post("/api/auth/login").send({ email: ADMIN.email, password: ADMIN.password });
+
+    const adminId = await withService(async (q) => {
+      const { rows } = await q.query("select id from auth_accounts where email=$1", [ADMIN.email]);
+      return rows[0].id;
+    });
+
+    const res = await admin2.post(`/api/admin/users/${adminId.toUpperCase()}/reset-password`);
+    expect(res.status).toBe(403);
+    // 발급이 거부됐다면 관리자 본인의 비밀번호는 그대로여야 한다
+    const login = await request(app)
+      .post("/api/auth/login")
+      .send({ email: ADMIN.email, password: ADMIN.password });
+    expect(login.status).toBe(200);
+  });
+
+  it("없는 계정을 대상으로 하면 404다", async () => {
+    const admin = await activeAgent(ADMIN);
+    await withService((q) => q.query("update employees set role='admin' where email=$1", [ADMIN.email]));
+    const admin2 = request.agent(app);
+    await admin2.post("/api/auth/login").send({ email: ADMIN.email, password: ADMIN.password });
+
+    // 형식은 유효하지만 어떤 계정과도 일치하지 않는 uuid
+    const res = await admin2.post("/api/admin/users/00000000-0000-0000-0000-000000000000/reset-password");
+    expect(res.status).toBe(404);
+  });
+
   it("발급 즉시 기존 세션이 끊긴다", async () => {
     const victim = await activeAgent(USER);
     const admin = await activeAgent(ADMIN);
@@ -121,5 +156,59 @@ describe("비밀번호 변경", () => {
     const agent = await activeAgent(USER);
     const res = await agent.post("/api/auth/change-password").send({ current: USER.password, next: "short" });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("강제 변경 세션 제한", () => {
+  // 관리자가 임시 비밀번호를 발급한 계정을 흉내낸다: 비밀번호 해시는 손대지
+  // 않고 플래그만 켜서, "임시 비밀번호로 로그인했다"는 상태를 재현한다.
+  async function forcedChangeAdminAgent() {
+    const admin2 = request.agent(app);
+    await request(app).post("/api/auth/signup").send(ADMIN);
+    await withService((q) => q.query("update employees set role='admin' where email=$1", [ADMIN.email]));
+    await admin2.post("/api/auth/login").send({ email: ADMIN.email, password: ADMIN.password });
+    const adminId = await withService(async (q) => {
+      const { rows } = await q.query("select id from auth_accounts where email=$1", [ADMIN.email]);
+      return rows[0].id;
+    });
+    await withService((q) =>
+      q.query("update auth_accounts set must_change_password = true where id = $1", [adminId]),
+    );
+    await activeAgent(OTHER);
+    const otherId = await withService(async (q) => {
+      const { rows } = await q.query("select id from auth_accounts where email=$1", [OTHER.email]);
+      return rows[0].id;
+    });
+    return { admin2, otherId };
+  }
+
+  // requireAuth가 아니라 requireAdmin이 403을 낸 것이면(예: 비관리자 대상)
+  // 이 가드가 실제로 작동했는지 알 수 없다 — 그래서 응답 본문의
+  // must_change_password 플래그까지 함께 확인한다.
+  it("must_change_password가 참인 세션은 일반 API를 쓸 수 없다", async () => {
+    const { admin2, otherId } = await forcedChangeAdminAgent();
+
+    const res = await admin2.post(`/api/admin/users/${otherId}/reset-password`);
+    expect(res.status).toBe(403);
+    expect(res.body.must_change_password).toBe(true);
+
+    // 빠져나갈 길인 /me, /logout은 열려 있어야 한다
+    expect((await admin2.get("/api/auth/me")).status).toBe(200);
+  });
+
+  it("비밀번호를 바꾸고 나면 같은 세션으로 그 API가 통과한다", async () => {
+    const { admin2, otherId } = await forcedChangeAdminAgent();
+
+    const blocked = await admin2.post(`/api/admin/users/${otherId}/reset-password`);
+    expect(blocked.status).toBe(403);
+
+    const changed = await admin2
+      .post("/api/auth/change-password")
+      .send({ current: ADMIN.password, next: "admin-new-password-1" });
+    expect(changed.status).toBe(204);
+
+    const after = await admin2.post(`/api/admin/users/${otherId}/reset-password`);
+    expect(after.status).toBe(200);
+    expect(typeof after.body.temporary_password).toBe("string");
   });
 });
