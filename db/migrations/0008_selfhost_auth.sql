@@ -2,6 +2,10 @@
 -- 하나에만 의존하므로, 이 함수만 우리가 채우면 정책은 한 줄도 고치지 않아도 된다.
 begin;
 
+-- 주의: 아래 create schema/create function은 0000_auth_bootstrap.sql과 동일 정의를
+-- 중복으로 갖고 있다(0002_rls.sql의 create policy가 auth.uid()를 먼저 요구해서 0000이
+-- 앞자리 번호로 따로 존재한다). 이 파일은 브리프 원문 대조를 위해 고치지 않기로 했으니,
+-- 아래를 고치면 0000_auth_bootstrap.sql의 동일 블록도 같이 고칠 것.
 create schema if not exists auth;
 
 -- Express가 트랜잭션마다 SET LOCAL로 넣는 값을 읽는다.

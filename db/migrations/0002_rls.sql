@@ -1,8 +1,8 @@
--- auth.uid()는 0008_selfhost_auth.sql이 정의하는데, 그 파일은 파일명 순서상 이 파일보다
--- 뒤에 적용된다(0001~0007은 Supabase 원본 이력을 그대로 보존하려고 번호를 바꾸지 않았다).
--- check_function_bodies를 끄지 않으면 이 함수를 만드는 시점에 auth 스키마가 없어서
--- CREATE FUNCTION 자체가 실패한다 — 실제 호출은 항상 0008 적용 이후에 일어나므로 안전하다.
-set check_function_bodies = off;
+-- auth.uid()는 db/migrations/0000_auth_bootstrap.sql이 이 파일보다 먼저 정의한다
+-- (0001~0007은 Supabase 원본 이력을 그대로 보존하려고 번호를 바꾸지 않았고, 대신
+-- 0000을 앞에 끼워 넣었다). 그래서 아래 create function/create policy 시점에는
+-- auth.uid()가 이미 존재한다 — 이 파일에는 그걸 우회하는 장치가 필요 없다.
+-- 0000이 없다고 착각해 지우면 "schema auth does not exist"로 이 파일부터 깨진다.
 
 create function current_emp_id() returns uuid
 language sql stable security definer set search_path = public as
