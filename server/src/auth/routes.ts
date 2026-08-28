@@ -13,10 +13,16 @@ const allowedDomains = () =>
 export const authRouter = Router();
 
 authRouter.post("/signup", async (req, res) => {
-  const { email, password, name, department_id, phone } = req.body ?? {};
-  if (!email || !password || !name) return res.status(400).json({ error: "필수 항목이 비어 있습니다" });
+  const { password, name, department_id, phone } = req.body ?? {};
+  const emailRaw = req.body?.email;
+  if (!emailRaw || !password || !name) return res.status(400).json({ error: "필수 항목이 비어 있습니다" });
 
-  const domain = String(email).split("@")[1]?.toLowerCase();
+  // 이메일 대소문자를 정규화한다. 그대로 두면 Kim@과 kim@이 서로 다른 계정·직원
+  // 행으로 갈라져 같은 사람이 명부에 두 번 오르고, 부서 수신자 목록에도 중복으로
+  // 들어가 특보가 두 번 나가는 등 발송 대상이 어긋난다.
+  const email = String(emailRaw).trim().toLowerCase();
+
+  const domain = email.split("@")[1];
   if (!domain || !allowedDomains().includes(domain)) {
     return res.status(400).json({ error: "회사 이메일로만 가입할 수 있습니다" });
   }
@@ -30,8 +36,11 @@ authRouter.post("/signup", async (req, res) => {
       // 가입과 동시에 직원 레코드를 만든다. 권한은 staff이고 관리자가 나중에 올린다.
       // 관리자가 부서 배정을 위해 미리 employees 행을 만들어 둔 경우(로그인 계정은
       // 아직 없음)를 대비해 email이 이미 있으면 그 행에 계정을 이어 붙인다(upsert).
-      // role은 갱신하지 않는다 — 이미 admin으로 올라간 기존 행이 재가입으로 staff로
-      // 강등되면 안 된다. 실제 관문은 관리자의 역할 부여이지 가입이 아니다.
+      // role은 갱신하지 않는다 — 이미 admin으로 올라간 행(또는 관리자가 미리
+      // approver로 지정해 둔 행)이 재가입으로 staff로 강등되면 안 된다. 실제 관문은
+      // 관리자의 역할 부여이지 가입이 아니다. name만 coalesce 없이 그대로 덮어쓰는
+      // 이유는 name이 가입 필수값이라 excluded.name이 null일 수 없고, 본인이 지금
+      // 입력한 이름이 관리자가 미리 적어 둔 이름보다 정확하다고 보기 때문이다.
       await q.query(
         `insert into employees (auth_user_id, name, email, phone, department_id, role)
          values ($1, $2, $3, $4, $5, 'staff')
@@ -51,7 +60,8 @@ authRouter.post("/signup", async (req, res) => {
 });
 
 authRouter.post("/login", async (req, res) => {
-  const { email, password } = req.body ?? {};
+  const { password } = req.body ?? {};
+  const email = String(req.body?.email ?? "").trim().toLowerCase();
   const account = await withService(async (q) => {
     const { rows } = await q.query(
       "select id, password_hash, status, failed_attempts, locked_until, must_change_password from auth_accounts where email = $1",
@@ -72,11 +82,27 @@ authRouter.post("/login", async (req, res) => {
   if (!(await verify(account.password_hash, String(password ?? "")))) {
     await withService((q) =>
       q.query(
-        `update auth_accounts
-            set failed_attempts = failed_attempts + 1,
-                locked_until = case when failed_attempts + 1 >= $2
+        // 잠금이 이미 만료된 상태(locked_until이 과거)라면 실패 횟수를 이어 올리지
+        // 않고 1부터 다시 센다. 그냥 이어 올리면(성공해야만 0으로 돌아가는데 잠긴
+        // 동안은 성공할 수 없으므로) 잠금이 풀린 직후 딱 한 번만 틀려도
+        // failed_attempts(이미 5 이상) + 1 >= 5가 다시 참이 되어 계속 재잠금된다 —
+        // 이메일만 알면 그 계정을 사실상 영원히 잠글 수 있는 구멍이다. 이 시스템에서
+        // 그 대상이 특보 승인권자라면, 실제 경보 발생 시 승인 자체가 막히는
+        // 문제로 이어진다.
+        `update auth_accounts a
+            set failed_attempts = t.next_failed,
+                locked_until = case when t.next_failed >= $2
                                then now() + ($3 || ' minutes')::interval else null end
-          where id = $1`,
+           from (
+             select id,
+                    case when locked_until is not null and locked_until <= now()
+                         then 1
+                         else failed_attempts + 1
+                    end as next_failed
+               from auth_accounts
+              where id = $1
+           ) t
+          where a.id = t.id`,
         [account.id, MAX_ATTEMPTS, String(LOCK_MINUTES)],
       ),
     );

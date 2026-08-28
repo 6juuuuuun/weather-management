@@ -53,6 +53,63 @@ describe("가입", () => {
     const res = await request(app).post("/api/auth/signup").send(SIGNUP);
     expect(res.status).toBe(409);
   });
+
+  // 대소문자만 다른 이메일을 다른 계정으로 취급하면 같은 사람이 명부에 두 번
+  // 올라가고, 부서 수신자 목록에도 중복으로 들어가 발송 대상이 어긋난다.
+  it("이메일 대소문자만 다른 재가입도 거부한다", async () => {
+    await request(app).post("/api/auth/signup").send(SIGNUP);
+    const res = await request(app)
+      .post("/api/auth/signup")
+      .send({ ...SIGNUP, email: "HONG@Gonjiam.com" });
+    expect(res.status).toBe(409);
+  });
+
+  // 관리자가 부서 배정을 위해 로그인 계정 없이 미리 만들어 둔 employees 행에
+  // 본인이 나중에 가입해 계정을 이어 붙이는 흐름. role·부서·전화번호처럼
+  // 가입자가 비워 둔 값은 기존 값이 살아 있어야 한다.
+  it("관리자가 미리 등록해 둔 직원 행에 가입하면 기존 값을 덮어쓰지 않는다", async () => {
+    const deptId = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+    await withService(async (q) => {
+      await q.query("insert into departments (id, name) values ($1, $2) on conflict (id) do nothing", [
+        deptId,
+        "테스트부서",
+      ]);
+      await q.query(
+        `insert into employees (name, email, phone, department_id, role)
+         values ($1, $2, $3, $4, $5)
+         on conflict (email) do update
+           set name = excluded.name, phone = excluded.phone,
+               department_id = excluded.department_id, role = excluded.role`,
+        ["기존기록", "yoon@gonjiam.com", "010-9999-9999", deptId, "approver"],
+      );
+    });
+
+    const res = await request(app).post("/api/auth/signup").send({
+      email: "yoon@gonjiam.com",
+      password: "self-signup-pass-1",
+      name: "윤가입", // 본인이 입력한 이름 — 관리자가 적어 둔 이름과 다르다
+      // department_id, phone은 일부러 비워서 보낸다
+    });
+    expect(res.status).toBe(201);
+
+    const row = await withService(async (q) => {
+      const { rows } = await q.query(
+        "select role, department_id, phone, auth_user_id, name from employees where email = $1",
+        ["yoon@gonjiam.com"],
+      );
+      return rows[0];
+    });
+    const account = await withService(async (q) => {
+      const { rows } = await q.query("select id from auth_accounts where email = $1", ["yoon@gonjiam.com"]);
+      return rows[0];
+    });
+
+    expect(row.role).toBe("approver"); // 미리 부여된 역할이 유지된다
+    expect(row.department_id).toBe(deptId); // 비워 보낸 부서는 기존 값이 남는다
+    expect(row.phone).toBe("010-9999-9999"); // 비워 보낸 전화번호도 기존 값이 남는다
+    expect(row.name).toBe("윤가입"); // 본인이 입력한 이름으로는 갱신된다
+    expect(row.auth_user_id).toBe(account.id); // 새 계정에 이어 붙는다
+  });
 });
 
 describe("로그인", () => {
@@ -99,6 +156,29 @@ describe("로그인", () => {
       .post("/api/auth/login")
       .send({ email: SIGNUP.email, password: SIGNUP.password });
     expect(res.status).toBe(423);
+  });
+
+  // 잠금 시간이 지난 뒤 실패 횟수를 이어서 올리면, 풀리자마자 한 번만 틀려도
+  // failed_attempts(이미 5 이상) + 1 >= 5가 다시 참이 되어 계속 재잠금된다 —
+  // 이메일만 알면 그 계정을 사실상 영원히 잠글 수 있다. 잠금 창이 지나면
+  // 이전 실패는 잊고 1부터 다시 세야 한다.
+  it("잠금이 풀린 뒤에는 한 번 틀려도 다시 잠기지 않고 올바른 비밀번호로 로그인된다", async () => {
+    await request(app).post("/api/auth/signup").send(SIGNUP);
+    for (let i = 0; i < 5; i++) {
+      await request(app).post("/api/auth/login").send({ email: SIGNUP.email, password: "wrong" });
+    }
+    await withService((q) =>
+      q.query("update auth_accounts set locked_until = now() - interval '1 second' where email = $1", [
+        SIGNUP.email,
+      ]),
+    );
+
+    await request(app).post("/api/auth/login").send({ email: SIGNUP.email, password: "wrong" });
+
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ email: SIGNUP.email, password: SIGNUP.password });
+    expect(res.status).toBe(200);
   });
 });
 
