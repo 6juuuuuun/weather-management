@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "migrate": "for f in migrations/*.sql; do echo \"→ $f\"; psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -v app_user_pw=\"$APP_USER_PASSWORD\" -v app_service_pw=\"$APP_SERVICE_PASSWORD\" -f \"$f\"; done",
+    "migrate": "for f in migrations/*.sql; do echo \"→ $f\"; psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -v app_user_pw=\"$APP_USER_PASSWORD\" -v app_service_pw=\"$APP_SERVICE_PASSWORD\" -f \"$f\"; done; echo \"→ seed.sql\"; psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f seed.sql",
     "test": "vitest run"
   },
   "devDependencies": {
