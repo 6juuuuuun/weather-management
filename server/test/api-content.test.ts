@@ -129,6 +129,27 @@ describe("행동지침", () => {
     expect(count).toBe(0);
   });
 
+  // department_id는 UUID 형식 검사(위 두 테스트와 같은 자리)만으로는 못 막는다 —
+  // 형식은 맞지만 실존하지 않는 부서를 그대로 insert하면 외래키 위반(23503)이라
+  // 검증 없이 두면 index.ts의 공용 에러 핸들러가 그냥 500으로 뭉갠다.
+  it("존재하지 않는 department_id면 400이고 아무것도 저장되지 않는다", async () => {
+    const agent = await agentAs("admin", "i2@gonjiam.com");
+    const ghostId = "00000000-0000-0000-0000-000000000000";
+    const res = await agent.put("/api/guidelines").send({
+      rows: [{ department_id: ghostId, kind: "rain", grade: "watch", staff_actions: [], guest_notice: "" }],
+    });
+    // 500(외래키 위반이 그대로 샌 경우)이 아니라 400이어야 한다 — 이 단언이 없으면
+    // "그냥 에러 핸들러가 잡아 어쨌든 에러 응답은 났다"는 상태로도 통과해 버린다.
+    expect(res.status).toBe(400);
+    const count = await withService(async (q) => {
+      const { rows } = await q.query("select count(*)::int as n from action_guidelines where department_id = $1", [
+        ghostId,
+      ]);
+      return rows[0].n;
+    });
+    expect(count).toBe(0);
+  });
+
   // r_guidelines 정책(0002_rls.sql): admin·approver는 전체, staff는 자기 부서만.
   // 핸들러가 withUser 대신 withService(정책 우회)를 쓰는 회귀를 이 테스트가 잡는다 —
   // withService로 바뀌면 staff 응답에도 남의 부서 지침이 섞여 나와 실패한다.
@@ -268,6 +289,69 @@ describe("발송 이력", () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(2);
     expect(res.body.map((d: any) => d.repeat_no)).toEqual([3, 2]);
+  });
+
+  // History.tsx(apps/web)는 dispatches 자체 컬럼만으로는 표의 "특보"·"특보 발생"
+  // 열과 상세 모달 제목을 못 채운다 — weather_events(kind, grade, detected_at)를
+  // 조인해서 받는다. 이 필드들이 빠지면(또는 조인이 깨지면) undefined로 나와
+  // 이 단언들이 실패한다.
+  it("weather_events를 조인해 kind·grade·detected_at을 함께 돌려준다", async () => {
+    const { eventId, messageId, kind, grade, detectedAt } = await withService(async (q) => {
+      const { rows: ev } = await q.query(
+        "insert into weather_events (kind, grade, detected_at) values ('wind','warning', now() - interval '5 hours') returning id, kind, grade, detected_at",
+      );
+      const { rows: msg } = await q.query(
+        "insert into messages (event_id, content) values ($1, $2) returning id",
+        [ev[0].id, JSON.stringify([])],
+      );
+      return {
+        eventId: ev[0].id as string,
+        messageId: msg[0].id as string,
+        kind: ev[0].kind as string,
+        grade: ev[0].grade as string,
+        detectedAt: (ev[0].detected_at as Date).toISOString(),
+      };
+    });
+    await withService(async (q) => {
+      await q.query(
+        "insert into dispatches (message_id, event_id, sent_at, repeat_no, results) values ($1, $2, now(), 1, '[]')",
+        [messageId, eventId],
+      );
+    });
+    const agent = await agentAs("staff", "r@gonjiam.com");
+    const res = await agent.get("/api/dispatches");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].kind).toBe(kind);
+    expect(res.body[0].grade).toBe(grade);
+    expect(new Date(res.body[0].detected_at).toISOString()).toBe(detectedAt);
+  });
+
+  // dispatches.content는 0004 마이그레이션이 나중에 추가한 nullable 스냅샷
+  // 컬럼이라 그 이전 발송 이력에는 값이 없다 — History.tsx가 그때 messages.content로
+  // 폴백하는 것과 같은 이유로, 서버는 폴백용 원본 필드를 message_content라는
+  // 이름으로(내려주는 dispatches.content와 겹치지 않게) 함께 내려줘야 한다.
+  it("content가 비어 있는 과거 발송 건은 message_content로 폴백할 원본을 함께 준다", async () => {
+    const { eventId, messageId } = await makeEventAndMessage();
+    const messageContent = [{ department_name: "시설", selected: true }];
+    await withService(async (q) => {
+      // messages.content를 makeEventAndMessage가 넣은 빈 배열 대신 실제 값으로 바꾼다.
+      await q.query("update messages set content = $2 where id = $1", [messageId, JSON.stringify(messageContent)]);
+      // dispatches.content는 명시적으로 null — 0004 이전 발송 이력을 흉내낸다.
+      await q.query(
+        "insert into dispatches (message_id, event_id, sent_at, repeat_no, results, content) values ($1, $2, now(), 1, '[]', null)",
+        [messageId, eventId],
+      );
+    });
+    const agent = await agentAs("staff", "s@gonjiam.com");
+    const res = await agent.get("/api/dispatches");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    // content 자체는 그대로 null이어야 한다 — 서버가 대신 채워 버리면(폴백을
+    // 서버가 미리 해버리면) 화면의 "스냅샷 우선, 없으면 폴백" 판단 로직과
+    // 어긋난다. 폴백은 별도 필드로만 제공한다.
+    expect(res.body[0].content).toBeNull();
+    expect(res.body[0].message_content).toEqual(messageContent);
   });
 
   it("로그인하지 않으면 401이다", async () => {

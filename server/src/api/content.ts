@@ -54,6 +54,23 @@ contentRouter.put("/guidelines", requireAdmin, async (req, res) => {
       )} 중이어야 하고 department_id는 올바른 uuid여야 합니다`,
     });
   }
+
+  // department_id는 형식(UUID)만 위에서 확인했다 — 형식은 맞지만 실존하지 않는
+  // 부서를 그대로 insert에 넘기면 외래키 위반(23503)이 나고, 그건 index.ts의
+  // 공용 에러 핸들러가 잡아 일반 500으로 뭉갠다. kind/grade와 같은 이유로,
+  // DB에 쓰기 전에 존재 여부까지 확인해 400으로 걸러 배치 검증을 완성한다.
+  const deptIds = [...new Set(inRows.map((r) => r.department_id as string))];
+  if (deptIds.length > 0) {
+    const existingIds = await withUser(req.user!.accountId, async (q) => {
+      const { rows } = await q.query("select id from departments where id = any($1::uuid[])", [deptIds]);
+      return new Set(rows.map((r) => r.id as string));
+    });
+    const missingId = deptIds.find((id) => !existingIds.has(id));
+    if (missingId) {
+      return res.status(400).json({ error: `department_id ${missingId}에 해당하는 부서가 없습니다` });
+    }
+  }
+
   await withUser(req.user!.accountId, async (q) => {
     for (const r of inRows) {
       // updated_by는 current_emp_id()(0002_rls.sql, security definer)로 서버가
@@ -105,6 +122,15 @@ contentRouter.get("/messages", async (req, res) => {
 // 실제 컬럼(History.tsx가 실제로 select하는 목록과 동일): id, message_id,
 // event_id, sent_at, channel, repeat_no, is_test, results, content.
 // 정렬·since 필터 기준도 created_at이 아니라 sent_at이다.
+//
+// History.tsx는 dispatches 자체 컬럼만으로는 화면을 못 그린다 — weather_events
+// (kind, grade, detected_at: 표의 "특보"·"특보 발생" 열과 상세 모달 제목)와
+// messages.content(폴백: dispatches.content는 0004 마이그레이션이 나중에 추가한
+// nullable 스냅샷 컬럼이라 그 이전 발송 이력엔 값이 없다 — 그때 메시지 본문으로
+// 대신한다, History.tsx의 `d.content ?? d.messages!.content ?? []`와 동일한 이유)
+// 두 개를 조인해 함께 내려준다. message_content로 이름을 구분해 dispatches.content
+// (스냅샷, null일 수 있음)와 섞이지 않게 한다 — 폴백 판단은 화면 쪽이 그대로 한다.
+// event_id·message_id 둘 다 not null 외래키라 참조 행이 항상 존재하므로 inner join.
 contentRouter.get("/dispatches", async (req, res) => {
   const rawLimit = Number(req.query.limit ?? 100);
   const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 100, 1), 500);
@@ -114,10 +140,14 @@ contentRouter.get("/dispatches", async (req, res) => {
   }
   const rows = await withUser(req.user!.accountId, async (q) => {
     const { rows } = await q.query(
-      `select id, message_id, event_id, sent_at, channel, repeat_no, is_test, results, content
-         from dispatches
-        where ($1::timestamptz is null or sent_at >= $1::timestamptz)
-        order by sent_at desc
+      `select d.id, d.message_id, d.event_id, d.sent_at, d.channel, d.repeat_no, d.is_test, d.results, d.content,
+              we.kind, we.grade, we.detected_at,
+              m.content as message_content
+         from dispatches d
+         join weather_events we on we.id = d.event_id
+         join messages m on m.id = d.message_id
+        where ($1::timestamptz is null or d.sent_at >= $1::timestamptz)
+        order by d.sent_at desc
         limit $2`,
       [since, limit],
     );
