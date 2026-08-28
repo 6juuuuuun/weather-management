@@ -7,6 +7,14 @@ orgRouter.use(requireAuth);
 
 const EMP_COLS = "id, auth_user_id, name, email, kakaowork_user_id, department_id, role, phone, created_at";
 
+// db/migrations/0001_schema.sql의 enum 정의와 그대로 맞춘다. 잘못된 값을 검증
+// 없이 그대로 바인딩하면 Postgres가 "invalid input value for enum ..."으로
+// 죽고, 그 예외가 어디서도 잡히지 않아 Express 기본 핸들러가 스택트레이스와
+// 내부 파일 경로가 담긴 HTML을 그대로 응답으로 내보낸다(실제로 재현해 확인함).
+// DB에 닿기 전에 여기서 막아 400으로 돌려준다.
+const EVENT_KINDS = ["rain", "snow", "wind", "heat"] as const;
+const EMP_ROLES = ["admin", "approver", "staff"] as const;
+
 // ---------------------------------------------------------------------------
 // 부서
 // ---------------------------------------------------------------------------
@@ -81,6 +89,9 @@ orgRouter.get("/employees", async (req, res) => {
 // 처리"는 그대로 허용해야 하므로 undefined 체크가 아니라 "in" 체크를 쓴다).
 orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
   const body = req.body ?? {};
+  if ("role" in body && !EMP_ROLES.includes(body.role)) {
+    return res.status(400).json({ error: `role은 ${EMP_ROLES.join(", ")} 중 하나여야 합니다` });
+  }
   const sets: string[] = [];
   const vals: unknown[] = [req.params.id];
   for (const key of ["name", "role", "department_id", "phone"] as const) {
@@ -196,6 +207,12 @@ orgRouter.get("/alert-settings", async (req, res) => {
 // 그 동작을 그대로 따른다 — 목록에 없는 kind는 조용히 무시된다(행이 없어 0건 갱신).
 orgRouter.put("/alert-settings", requireAdmin, async (req, res) => {
   const inRows: any[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  // 행 하나라도 kind가 잘못되면 그 행까지 일부만 반영되고 나머지가 400으로
+  // 끊기는 상태를 피하려고, DB에 닿기 전에 전체를 먼저 검증한다.
+  const badKind = inRows.find((r) => !EVENT_KINDS.includes(r?.kind));
+  if (badKind) {
+    return res.status(400).json({ error: `kind는 ${EVENT_KINDS.join(", ")} 중 하나여야 합니다` });
+  }
   const rows = await withUser(req.user!.accountId, async (q) => {
     const out: any[] = [];
     for (const r of inRows) {

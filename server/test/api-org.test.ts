@@ -246,6 +246,32 @@ describe("직원", () => {
     expect(res.status).toBe(404);
   });
 
+  // role은 Postgres enum(emp_role)이다. 검증 없이 그대로 바인딩하면 DB가
+  // "invalid input value for enum..."으로 죽고 그 예외가 잡히지 않아 Express
+  // 기본 핸들러가 스택트레이스와 서버 파일 경로가 담긴 HTML을 그대로 응답으로
+  // 내보낸다(실제로 재현해 확인한 버그) — 400 JSON으로 막혔는지, 그리고 그
+  // 내부 정보가 새지 않는지를 함께 확인한다.
+  it("잘못된 role이면 400이고 스택트레이스나 파일 경로가 새지 않는다", async () => {
+    const admin = await agentAs("admin", "emp-badrole-admin@gonjiam.com");
+    const targetId = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into employees (name, email, role) values ('원본','emp-badrole-target@gonjiam.com','staff') returning id",
+      );
+      return rows[0].id;
+    });
+    const res = await admin.patch(`/api/employees/${targetId}`).send({ role: "superadmin" });
+    expect(res.status).toBe(400);
+    expect(res.headers["content-type"]).toMatch(/json/);
+    expect(res.text).not.toMatch(/\/Users\/|\bat \/|node_modules/);
+    // 값이 실제로 안 바뀌었는지도 확인한다 — 검증이 응답만 400이고 DB는
+    // 이미 건드린 뒤라면 의미가 없다.
+    const role = await withService(async (q) => {
+      const { rows } = await q.query("select role from employees where id = $1", [targetId]);
+      return rows[0].role;
+    });
+    expect(role).toBe("staff");
+  });
+
   it("관리자는 직원을 삭제할 수 있고, 일반 직원은 삭제할 수 없다", async () => {
     const targetId = await withService(async (q) => {
       const { rows } = await q.query(
@@ -449,6 +475,35 @@ describe("특보 반복 발송 설정 (alert_settings)", () => {
     });
     expect(res.status).toBe(403);
     // 403이 실제 role 게이트임을 확인 — DB 값이 그대로 시드값(rain=until_daily_accum_below)이어야 한다.
+    const rainRow = await withService(async (q) => {
+      const { rows } = await q.query("select repeat_policy from alert_settings where kind='rain'");
+      return rows[0].repeat_policy;
+    });
+    expect(rainRow).toBe("until_daily_accum_below");
+  });
+
+  // kind는 Postgres enum(event_kind)이다. employees의 role과 같은 버그가 여기도
+  // 있었다 — 존재하지 않는 kind를 그대로 바인딩하면 DB 예외가 잡히지 않고
+  // 스택트레이스·서버 파일 경로가 담긴 HTML로 샜다(실제로 재현해 확인함).
+  it("잘못된 kind면 400이고 스택트레이스나 파일 경로가 새지 않는다", async () => {
+    const admin = await agentAs("admin", "as-badkind-admin@gonjiam.com");
+    const res = await admin.put("/api/alert-settings").send({
+      rows: [{ kind: "does-not-exist", enabled: false, repeat_policy: "once" }],
+    });
+    expect(res.status).toBe(400);
+    expect(res.headers["content-type"]).toMatch(/json/);
+    expect(res.text).not.toMatch(/\/Users\/|\bat \/|node_modules/);
+
+    // 유효한 kind와 무효한 kind가 한 요청에 섞여도, 유효한 쪽까지 일부 반영되고
+    // 무효한 쪽만 실패하는 "부분 성공"이 없어야 한다 — 전체를 먼저 검증하고
+    // 하나라도 잘못되면 아무것도 건드리지 않는다.
+    const res2 = await admin.put("/api/alert-settings").send({
+      rows: [
+        { kind: "rain", enabled: false, repeat_policy: "once" },
+        { kind: "does-not-exist", enabled: false, repeat_policy: "once" },
+      ],
+    });
+    expect(res2.status).toBe(400);
     const rainRow = await withService(async (q) => {
       const { rows } = await q.query("select repeat_policy from alert_settings where kind='rain'");
       return rows[0].repeat_policy;

@@ -15,6 +15,12 @@ beforeEach(async () => {
     await q.query("delete from auth_sessions");
     await q.query("update employees set auth_user_id = null");
     await q.query("delete from auth_accounts");
+    // 아래 "관리자가 미리 등록해 둔 직원 행에 가입하면..." 테스트가 고정 id로
+    // 부서를 하나 심는다(on conflict do nothing이라 재실행에도 늘어나진 않지만,
+    // 지우지 않으면 시드 소유가 아닌 이 행이 개발 DB에 영구히 남아 부서 개수를
+    // 세는 다른 검증(Task 6 등)을 어긋나게 한다). 시드 16개는 이름이 겹치지
+    // 않으니 이 delete가 그 행들을 건드릴 일은 없다.
+    await q.query("delete from departments where id = $1", ["eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"]);
   });
 });
 
