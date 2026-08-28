@@ -3,6 +3,7 @@ import cookieParser from "cookie-parser";
 import { authRouter, adminUserRouter } from "./auth/routes.ts";
 import { dashboardRouter } from "./api/dashboard.ts";
 import { orgRouter } from "./api/org.ts";
+import { contentRouter } from "./api/content.ts";
 
 export const app = express();
 app.use(express.json());
@@ -14,6 +15,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/admin/users", adminUserRouter);
 app.use("/api", dashboardRouter);
 app.use("/api", orgRouter);
+app.use("/api", contentRouter);
 
 // 라우터 등록 순서: 기능 라우터 → /api 404 폴백 → 정적 서빙 → 에러 핸들러.
 // 이후 태스크가 기능 라우터와 정적 파일 서빙을 이 사이에 끼워 넣는다. 폴백이

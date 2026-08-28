@@ -1,0 +1,276 @@
+import { describe, expect, it, beforeEach } from "vitest";
+import request from "supertest";
+import { app } from "../src/index.ts";
+import { withService } from "../src/db.ts";
+
+async function agentAs(role: "staff" | "admin" | "approver", email: string) {
+  const who = { email, password: "some-password-1", name: "테스트" };
+  await request(app).post("/api/auth/signup").send(who);
+  await withService(async (q) => {
+    await q.query("update employees set role=$2 where email=$1", [email, role]);
+  });
+  const agent = request.agent(app);
+  await agent.post("/api/auth/login").send({ email, password: who.password });
+  return agent;
+}
+
+// db/seed.sql이 심어 둔 부서(4루트+12자식)·특보 기준·alert_settings·site_settings는
+// 절대 건드리지 않는다 — 이 접두사로 만든 부서만 지운다. weather_events는 messages를
+// on delete cascade로 끌고 오지만 messages -> dispatches는 cascade가 없어(FK만
+// 있음) weather_events보다 먼저 지워야 FK 위반이 나지 않는다.
+const DEPT_PREFIX = "zztest-dept-";
+
+beforeEach(async () => {
+  await withService(async (q) => {
+    await q.query("delete from auth_sessions");
+    await q.query("delete from dispatches");
+    await q.query("delete from messages");
+    await q.query("delete from weather_events");
+    await q.query("delete from action_guidelines");
+    await q.query("update employees set auth_user_id = null");
+    await q.query("delete from auth_accounts");
+    await q.query("delete from employees");
+    await q.query("delete from departments where name like $1", [`${DEPT_PREFIX}%`]);
+  });
+});
+
+async function makeDept(name: string) {
+  return withService(async (q) => {
+    const { rows } = await q.query("insert into departments (name) values ($1) returning id", [
+      `${DEPT_PREFIX}${name}`,
+    ]);
+    return rows[0].id as string;
+  });
+}
+
+describe("행동지침", () => {
+  it("저장하면 같은 키의 기존 지침을 덮어쓴다 (staff_actions/guest_notice)", async () => {
+    const agent = await agentAs("admin", "g@gonjiam.com");
+    const deptId = await makeDept("시설");
+
+    const row = {
+      department_id: deptId,
+      kind: "rain",
+      grade: "watch",
+      staff_actions: ["배수로 점검"],
+      guest_notice: "우천 안내",
+    };
+    expect((await agent.put("/api/guidelines").send({ rows: [row] })).status).toBe(204);
+    expect(
+      (
+        await agent.put("/api/guidelines").send({
+          rows: [{ ...row, staff_actions: ["배수로 점검", "보고"], guest_notice: "우천 안내(개정)" }],
+        })
+      ).status,
+    ).toBe(204);
+
+    const res = await agent.get("/api/guidelines");
+    expect(res.status).toBe(200);
+    // upsert 대상이 (department_id, kind, grade) 하나뿐이므로 행이 늘지 않고 그대로
+    // 하나여야 한다 — 이 길이 검사가 없으면 on conflict가 빠져 매번 새 행이
+    // 쌓이는 회귀를 놓친다.
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].staff_actions).toEqual(["배수로 점검", "보고"]);
+    expect(res.body[0].guest_notice).toBe("우천 안내(개정)");
+  });
+
+  it("일반 직원은 지침을 바꿀 수 없다", async () => {
+    const agent = await agentAs("staff", "h@gonjiam.com");
+    const deptId = await makeDept("객실");
+    const res = await agent.put("/api/guidelines").send({
+      rows: [{ department_id: deptId, kind: "rain", grade: "watch", staff_actions: [], guest_notice: "" }],
+    });
+    expect(res.status).toBe(403);
+    // 403이 role 게이트에서 난 것이지 다른 이유(예: 빈 배열이라 아무것도 안 함)로
+    // 우연히 그런 게 아님을 DB로 직접 확인한다.
+    const count = await withService(async (q) => {
+      const { rows } = await q.query("select count(*)::int as n from action_guidelines where department_id = $1", [
+        deptId,
+      ]);
+      return rows[0].n;
+    });
+    expect(count).toBe(0);
+  });
+
+  it("kind가 잘못되면 400이고, 배치의 유효한 행도 함께 거부된다", async () => {
+    const agent = await agentAs("admin", "i@gonjiam.com");
+    const deptId = await makeDept("보안");
+    const res = await agent.put("/api/guidelines").send({
+      rows: [
+        { department_id: deptId, kind: "rain", grade: "watch", staff_actions: [], guest_notice: "정상 행" },
+        { department_id: deptId, kind: "typhoon", grade: "watch", staff_actions: [], guest_notice: "나쁜 kind" },
+      ],
+    });
+    expect(res.status).toBe(400);
+    // 배치 전체가 거부됐는지 — 유효했던 첫 행조차 저장되지 않아야 한다.
+    // (한 행씩 순서대로 insert했다면 첫 행은 이미 커밋돼 이 검사가 실패한다.)
+    const count = await withService(async (q) => {
+      const { rows } = await q.query("select count(*)::int as n from action_guidelines where department_id = $1", [
+        deptId,
+      ]);
+      return rows[0].n;
+    });
+    expect(count).toBe(0);
+  });
+
+  it("grade가 잘못되면 400이고 아무것도 저장되지 않는다", async () => {
+    const agent = await agentAs("admin", "j@gonjiam.com");
+    const deptId = await makeDept("조경");
+    const res = await agent.put("/api/guidelines").send({
+      rows: [{ department_id: deptId, kind: "rain", grade: "severe", staff_actions: [], guest_notice: "" }],
+    });
+    expect(res.status).toBe(400);
+    const count = await withService(async (q) => {
+      const { rows } = await q.query("select count(*)::int as n from action_guidelines where department_id = $1", [
+        deptId,
+      ]);
+      return rows[0].n;
+    });
+    expect(count).toBe(0);
+  });
+
+  // r_guidelines 정책(0002_rls.sql): admin·approver는 전체, staff는 자기 부서만.
+  // 핸들러가 withUser 대신 withService(정책 우회)를 쓰는 회귀를 이 테스트가 잡는다 —
+  // withService로 바뀌면 staff 응답에도 남의 부서 지침이 섞여 나와 실패한다.
+  it("일반 직원은 자기 부서의 지침만 조회된다", async () => {
+    const deptA = await makeDept("A부서");
+    const deptB = await makeDept("B부서");
+    const admin = await agentAs("admin", "k@gonjiam.com");
+    await admin.put("/api/guidelines").send({
+      rows: [
+        { department_id: deptA, kind: "rain", grade: "watch", staff_actions: [], guest_notice: "A" },
+        { department_id: deptB, kind: "rain", grade: "watch", staff_actions: [], guest_notice: "B" },
+      ],
+    });
+
+    const staff = await agentAs("staff", "l@gonjiam.com");
+    await withService(async (q) => {
+      await q.query("update employees set department_id = $1 where email = $2", [deptA, "l@gonjiam.com"]);
+    });
+
+    const res = await staff.get("/api/guidelines");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].department_id).toBe(deptA);
+  });
+
+  it("로그인하지 않으면 401이다", async () => {
+    expect((await request(app).get("/api/guidelines")).status).toBe(401);
+    expect((await request(app).put("/api/guidelines").send({ rows: [] })).status).toBe(401);
+  });
+});
+
+describe("메시지", () => {
+  // one_open_event 부분 유니크 인덱스(0001_schema.sql)가 kind+grade당 열린 특보를
+  // 하나로 제한한다 — 같은 (kind,grade)로 두 이벤트를 만들면 충돌한다. 테스트마다
+  // kind/grade 조합을 다르게 줘 서로 부딪히지 않게 한다.
+  async function makeEvent(kind = "rain", grade = "watch") {
+    return withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into weather_events (kind, grade) values ($1, $2) returning id",
+        [kind, grade],
+      );
+      return rows[0].id as string;
+    });
+  }
+
+  it("event_id가 없으면 400이다", async () => {
+    const agent = await agentAs("staff", "m@gonjiam.com");
+    expect((await agent.get("/api/messages")).status).toBe(400);
+  });
+
+  it("event_id로 필터링해 그 특보의 메시지만 돌려준다", async () => {
+    const evA = await makeEvent("rain", "watch");
+    const evB = await makeEvent("snow", "warning");
+    await withService(async (q) => {
+      await q.query("insert into messages (event_id, content) values ($1, $2)", [evA, JSON.stringify([{ a: 1 }])]);
+      await q.query("insert into messages (event_id, content) values ($1, $2)", [evB, JSON.stringify([{ b: 2 }])]);
+    });
+
+    const agent = await agentAs("staff", "n@gonjiam.com");
+    const res = await agent.get("/api/messages").query({ event_id: evA });
+    expect(res.status).toBe(200);
+    // event_id 필터가 실제로 걸려 있는지 — 걸려 있지 않으면 evB의 메시지까지
+    // 섞여 길이가 2가 된다.
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].event_id).toBe(evA);
+    expect(res.body[0].content).toEqual([{ a: 1 }]);
+  });
+
+  it("로그인하지 않으면 401이다", async () => {
+    const evA = await makeEvent();
+    expect((await request(app).get("/api/messages").query({ event_id: evA })).status).toBe(401);
+  });
+});
+
+describe("발송 이력", () => {
+  async function makeEventAndMessage() {
+    return withService(async (q) => {
+      const { rows: ev } = await q.query(
+        "insert into weather_events (kind, grade) values ('rain','watch') returning id",
+      );
+      const { rows: msg } = await q.query("insert into messages (event_id, content) values ($1, $2) returning id", [
+        ev[0].id,
+        JSON.stringify([]),
+      ]);
+      return { eventId: ev[0].id as string, messageId: msg[0].id as string };
+    });
+  }
+
+  it("최신순으로 정렬해 돌려준다", async () => {
+    const { eventId, messageId } = await makeEventAndMessage();
+    await withService(async (q) => {
+      await q.query(
+        `insert into dispatches (message_id, event_id, sent_at, repeat_no, results)
+         values ($1, $2, now() - interval '2 hours', 1, '[]'), ($1, $2, now() - interval '1 hour', 2, '[]')`,
+        [messageId, eventId],
+      );
+    });
+    const agent = await agentAs("staff", "o@gonjiam.com");
+    const res = await agent.get("/api/dispatches");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+    // sent_at desc — 정렬이 빠지면(삽입 순서 그대로면) repeat_no가 [1,2]로 나온다.
+    expect(res.body.map((d: any) => d.repeat_no)).toEqual([2, 1]);
+  });
+
+  it("since로 그 시각 이후 발송만 걸러낸다", async () => {
+    const { eventId, messageId } = await makeEventAndMessage();
+    const cutoff = new Date(Date.now() - 90 * 60_000).toISOString(); // 1.5시간 전
+    await withService(async (q) => {
+      await q.query(
+        `insert into dispatches (message_id, event_id, sent_at, repeat_no, results)
+         values ($1, $2, now() - interval '3 hours', 1, '[]'), ($1, $2, now() - interval '30 minutes', 2, '[]')`,
+        [messageId, eventId],
+      );
+    });
+    const agent = await agentAs("staff", "p@gonjiam.com");
+    const res = await agent.get("/api/dispatches").query({ since: cutoff });
+    expect(res.status).toBe(200);
+    // since를 무시하면(필터가 빠지면) 3시간 전 것도 함께 나와 길이가 2가 된다.
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].repeat_no).toBe(2);
+  });
+
+  it("limit으로 개수를 제한한다", async () => {
+    const { eventId, messageId } = await makeEventAndMessage();
+    await withService(async (q) => {
+      await q.query(
+        `insert into dispatches (message_id, event_id, sent_at, repeat_no, results)
+         values ($1, $2, now() - interval '3 hours', 1, '[]'),
+                ($1, $2, now() - interval '2 hours', 2, '[]'),
+                ($1, $2, now() - interval '1 hours', 3, '[]')`,
+        [messageId, eventId],
+      );
+    });
+    const agent = await agentAs("staff", "q@gonjiam.com");
+    const res = await agent.get("/api/dispatches").query({ limit: 2 });
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+    expect(res.body.map((d: any) => d.repeat_no)).toEqual([3, 2]);
+  });
+
+  it("로그인하지 않으면 401이다", async () => {
+    expect((await request(app).get("/api/dispatches")).status).toBe(401);
+  });
+});
