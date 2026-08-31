@@ -132,8 +132,12 @@ contentRouter.patch("/messages/:id", async (req, res) => {
     return res.status(400).json({ error: "content가 필요합니다" });
   }
   const outcome = await withUser(req.user!.accountId, async (q) => {
-    const { rows: existing } = await q.query("select id from messages where id = $1", [id]);
+    const { rows: existing } = await q.query("select id, status from messages where id = $1", [id]);
     if (existing.length === 0) return { kind: "not_found" as const };
+    // 승인(approved)된 메시지는 이미 발송 파이프라인이 읽어 간 내용이다. 이후 수정은
+    // 실제로 나간 문구와 화면에 보이는 문구를 어긋나게 만들 뿐 발송을 되돌리지 못하므로
+    // 초안 상태에서만 허용한다.
+    if (existing[0].status !== "draft") return { kind: "not_draft" as const };
     const { rows } = await q.query(
       `update messages set content = $2, updated_at = now(), updated_by = current_emp_id()
         where id = $1
@@ -144,6 +148,9 @@ contentRouter.patch("/messages/:id", async (req, res) => {
     return { kind: "ok" as const, row: rows[0] };
   });
   if (outcome.kind === "not_found") return res.status(404).json({ error: "메시지를 찾을 수 없습니다" });
+  if (outcome.kind === "not_draft") {
+    return res.status(409).json({ error: "이미 승인된 메시지는 수정할 수 없습니다" });
+  }
   if (outcome.kind === "forbidden") return res.status(403).json({ error: "권한이 없습니다" });
   res.json(outcome.row);
 });

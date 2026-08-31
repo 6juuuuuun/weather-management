@@ -6,13 +6,25 @@ export const dashboardRouter = Router();
 dashboardRouter.use(requireAuth);
 
 // 모든 질의는 withUser를 거친다. 정책 27개가 여기서 적용된다.
-const OBS_COLS = "observed_at, rain_mm_per_hr, temp_c, feels_c, wind_ms, snow_new_cm, missing";
+const OBS_COLS =
+  "observed_at, rain_mm_per_hr, temp_c, feels_c, wind_ms, humidity_pct, snow_new_cm, missing";
 
 // org.ts/content.ts와 같은 이유(0001_schema.sql의 enum)로 DB에 닿기 전에 막는다.
 const EVENT_KINDS = ["rain", "snow", "wind", "heat"] as const;
 const EVENT_GRADES = ["watch", "warning"] as const;
 
 const SITE_SETTINGS_COLS = "id, site_name, address, nx, ny, remind_interval_min, resolve_notice, updated_at";
+
+const isText = (v: unknown) => typeof v === "string";
+const isInt = (v: unknown) => typeof v === "number" && Number.isInteger(v);
+const SITE_SETTINGS_TYPES: Record<string, (v: unknown) => boolean> = {
+  site_name: isText,
+  address: isText,
+  nx: isInt,
+  ny: isInt,
+  remind_interval_min: isInt,
+  resolve_notice: (v) => typeof v === "boolean",
+};
 
 dashboardRouter.get("/observations/latest", async (req, res) => {
   const rows = await withUser(req.user!.accountId, async (q) => {
@@ -55,7 +67,11 @@ dashboardRouter.get("/observations/:id", async (req, res) => {
     const { rows } = await q.query(`select id, ${OBS_COLS} from weather_observations where id = $1`, [id]);
     return rows;
   });
-  res.json(rows[0] ?? null);
+  // 같은 파일의 다른 단건 조회(PATCH /site-settings 등)가 없는 행에 404를 주므로
+  // 규약을 맞춘다. 200 + null이면 호출부가 "조회는 됐는데 값이 없다"와
+  // "그런 관측이 없다"를 구분할 수 없다.
+  if (rows.length === 0) return res.status(404).json({ error: "관측을 찾을 수 없습니다" });
+  res.json(rows[0]);
 });
 
 // 브리프 원문은 "cleared_at is null"로 열린 특보를 걸렀지만 weather_events에는
@@ -139,7 +155,15 @@ dashboardRouter.patch("/site-settings", requireAdmin, async (req, res) => {
   const vals: unknown[] = [];
   for (const key of ["site_name", "address", "nx", "ny", "remind_interval_min", "resolve_notice"] as const) {
     if (key in body) {
-      vals.push(body[key]);
+      // enum을 허용 목록으로 선검증하는 것과 같은 이유로 타입도 DB에 닿기 전에 막는다 —
+      // 그냥 넘기면 Postgres가 22P02(잘못된 입력 구문)를 던져 클라이언트 잘못이
+      // 500(서버 잘못)으로 보고된다. 컬럼 타입은 0001_schema.sql 기준이다.
+      const v = body[key];
+      const ok = SITE_SETTINGS_TYPES[key](v);
+      if (!ok) {
+        return res.status(400).json({ error: `${key} 값의 형식이 올바르지 않습니다` });
+      }
+      vals.push(v);
       sets.push(`${key} = $${vals.length}`);
     }
   }

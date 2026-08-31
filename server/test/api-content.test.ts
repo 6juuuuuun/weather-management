@@ -328,6 +328,24 @@ describe("메시지 갱신 (임시 저장)", () => {
       .send({ content: [] });
     expect(res.status).toBe(404);
   });
+
+  // 승인된 메시지는 이미 발송 파이프라인이 읽어 간 내용이다. 이후 수정은 실제로
+  // 나간 문구와 화면에 보이는 문구를 어긋나게 만들 뿐 발송을 되돌리지 못한다.
+  it("이미 승인된 메시지는 수정할 수 없다 (409)", async () => {
+    const approver = await alertRecipientAgent("msg-approved@gonjiam.com");
+    const { messageId } = await makeMessage([{ a: 1 }]);
+    await withService((q) => q.query("update messages set status = 'approved' where id = $1", [messageId]));
+
+    const res = await approver.patch(`/api/messages/${messageId}`).send({ content: [{ a: 99 }] });
+    expect(res.status).toBe(409);
+
+    // 409가 실제 게이트에서 났는지 — 내용이 그대로여야 한다.
+    const stored = await withService(async (q) => {
+      const { rows } = await q.query("select content from messages where id = $1", [messageId]);
+      return rows[0].content;
+    });
+    expect(stored).toEqual([{ a: 1 }]);
+  });
 });
 
 describe("발송 이력", () => {

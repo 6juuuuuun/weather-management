@@ -125,14 +125,32 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
       sets.push(`${key} = $${vals.length}`);
     }
   }
+  // 이메일은 가입(POST /api/auth/signup)이 이 직원 행에 계정을 이어 붙이는 병합 키다.
+  // 오타가 난 채로 남으면 그 직원이 가입해도 부서·역할이 유실된 별도 계정이 되므로
+  // 관리자가 고칠 수 있어야 한다. 정규화 규칙은 가입 경로와 반드시 같아야 한다
+  // (auth/routes.ts: String(email).trim().toLowerCase()) — 다르면 병합이 어긋난다.
+  if ("email" in body) {
+    const email = String(body.email ?? "").trim().toLowerCase();
+    if (!email) return res.status(400).json({ error: "이메일이 비어 있습니다" });
+    vals.push(email);
+    sets.push(`email = $${vals.length}`);
+  }
   if (sets.length === 0) return res.status(400).json({ error: "변경할 값이 없습니다" });
-  const rows = await withUser(req.user!.accountId, async (q) => {
-    const { rows } = await q.query(
-      `update employees set ${sets.join(", ")} where id = $1 returning ${EMP_COLS}`,
-      vals,
-    );
-    return rows;
-  });
+  let rows: any[];
+  try {
+    rows = await withUser(req.user!.accountId, async (q) => {
+      const { rows } = await q.query(
+        `update employees set ${sets.join(", ")} where id = $1 returning ${EMP_COLS}`,
+        vals,
+      );
+      return rows;
+    });
+  } catch (e: any) {
+    // employees.email은 unique다. 이미 다른 직원이 쓰는 이메일로 바꾸려 한 경우로,
+    // 클라이언트 잘못이므로 500이 아니라 409다(POST /employees와 같은 처리).
+    if (e?.code === "23505") return res.status(409).json({ error: "이미 등록된 이메일입니다" });
+    throw e;
+  }
   if (rows.length === 0) return res.status(404).json({ error: "직원을 찾을 수 없습니다" });
   res.json(rows[0]);
 });

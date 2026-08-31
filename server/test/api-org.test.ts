@@ -298,6 +298,123 @@ describe("직원", () => {
     expect(res.body.phone).toBe("010-0000-0000");
   });
 
+  // 이메일은 가입(POST /api/auth/signup)이 직원 행에 계정을 이어 붙이는 병합 키다.
+  // 서버가 email을 받지 않으면 화면은 저장에 성공한 것처럼 보이고 값은 버려진다 —
+  // 오타가 남은 직원은 가입해도 부서·역할이 유실된 별도 계정이 된다.
+  it("관리자는 직원 이메일을 고칠 수 있고 소문자로 정규화해 저장한다", async () => {
+    const admin = await agentAs("admin", "emp-email-admin@gonjiam.com");
+    const targetId = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into employees (name, email, role) values ('오타직원','emp-typo@gonjiam.com','staff') returning id",
+      );
+      return rows[0].id;
+    });
+
+    const res = await admin.patch(`/api/employees/${targetId}`).send({ email: "  EMP-Fixed@Gonjiam.com  " });
+    expect(res.status).toBe(200);
+    // 가입 경로가 String(email).trim().toLowerCase()로 정규화하므로 같은 규칙이어야
+    // 병합 키가 맞는다. 대소문자가 남으면 가입 시 on conflict(email)이 걸리지 않는다.
+    expect(res.body.email).toBe("emp-fixed@gonjiam.com");
+
+    // 응답만이 아니라 DB에 실제로 반영됐는지 — returning만 흉내 내는 구현을 배제한다.
+    const stored = await withService(async (q) => {
+      const { rows } = await q.query("select email from employees where id = $1", [targetId]);
+      return rows[0].email;
+    });
+    expect(stored).toBe("emp-fixed@gonjiam.com");
+  });
+
+  // 고친 이메일이 실제로 병합 키로 쓰이는지까지 확인한다 — 정규화만 맞고
+  // 가입이 이어 붙지 않으면 이 수정은 아무 의미가 없다.
+  it("고친 이메일로 가입하면 그 직원 행에 계정이 이어 붙는다", async () => {
+    const admin = await agentAs("admin", "emp-merge-admin@gonjiam.com");
+    const deptId = await withService(async (q) => {
+      const { rows } = await q.query("insert into departments (name) values ($1) returning id", [
+        `${DEPT_PREFIX}병합용`,
+      ]);
+      return rows[0].id;
+    });
+    const targetId = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into employees (name, email, role, department_id) values ('사전등록','emp-merge-typo@gonjiam.com','approver',$1) returning id",
+        [deptId],
+      );
+      return rows[0].id;
+    });
+
+    expect(
+      (await admin.patch(`/api/employees/${targetId}`).send({ email: "emp-merge-fixed@gonjiam.com" })).status,
+    ).toBe(200);
+
+    const signup = await request(app).post("/api/auth/signup").send({
+      email: "emp-merge-fixed@gonjiam.com",
+      password: "merge-password-1",
+      name: "본인",
+    });
+    expect(signup.status).toBe(201);
+
+    // 같은 행에 이어 붙었으면 부서·역할이 살아 있고 행이 늘지 않는다.
+    const rows = await withService(async (q) => {
+      const { rows } = await q.query(
+        "select id, role, department_id, auth_user_id from employees where email = $1",
+        ["emp-merge-fixed@gonjiam.com"],
+      );
+      return rows;
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(targetId);
+    expect(rows[0].role).toBe("approver");
+    expect(rows[0].department_id).toBe(deptId);
+    expect(rows[0].auth_user_id).not.toBeNull();
+  });
+
+  // employees.email은 unique다 — 23505를 그대로 두면 500(서버 잘못)이 된다.
+  it("이미 쓰이는 이메일로 바꾸면 500이 아니라 409다", async () => {
+    const admin = await agentAs("admin", "emp-dup-admin@gonjiam.com");
+    await withService((q) =>
+      q.query("insert into employees (name, email, role) values ('선점자','emp-dup-taken@gonjiam.com','staff')"),
+    );
+    const targetId = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into employees (name, email, role) values ('대상','emp-dup-target@gonjiam.com','staff') returning id",
+      );
+      return rows[0].id;
+    });
+
+    const res = await admin.patch(`/api/employees/${targetId}`).send({ email: "emp-dup-taken@gonjiam.com" });
+    expect(res.status).toBe(409);
+    expect(typeof res.body.error).toBe("string");
+
+    // 거절됐으면 원래 이메일이 그대로여야 한다.
+    const stored = await withService(async (q) => {
+      const { rows } = await q.query("select email from employees where id = $1", [targetId]);
+      return rows[0].email;
+    });
+    expect(stored).toBe("emp-dup-target@gonjiam.com");
+  });
+
+  it("빈 이메일로는 바꿀 수 없다", async () => {
+    const admin = await agentAs("admin", "emp-blank-admin@gonjiam.com");
+    const targetId = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into employees (name, email, role) values ('대상','emp-blank-target@gonjiam.com','staff') returning id",
+      );
+      return rows[0].id;
+    });
+    // name을 함께 보내는 이유: email만 보내면 email을 아예 지원하지 않는 구현에서도
+    // "변경할 값이 없습니다" 400이 나와 같은 상태 코드로 통과해 버린다.
+    const res = await admin.patch(`/api/employees/${targetId}`).send({ name: "새이름", email: "   " });
+    expect(res.status).toBe(400);
+
+    // 거부됐으면 함께 보낸 name도 저장되면 안 된다 — 부분 반영은 더 나쁘다.
+    const stored = await withService(async (q) => {
+      const { rows } = await q.query("select name, email from employees where id = $1", [targetId]);
+      return rows[0];
+    });
+    expect(stored.name).toBe("대상");
+    expect(stored.email).toBe("emp-blank-target@gonjiam.com");
+  });
+
   it("department_id를 명시적으로 null로 보내면 미지정으로 바뀐다", async () => {
     const admin = await agentAs("admin", "emp-unassign-admin@gonjiam.com");
     const deptId = await withService(async (q) => {

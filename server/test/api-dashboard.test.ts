@@ -353,6 +353,36 @@ describe("사이트 설정 저장", () => {
     await admin.post("/api/auth/login").send({ email: who.email, password: who.password });
     expect((await admin.patch("/api/site-settings").send({})).status).toBe(400);
   });
+
+  // 검증 없이 넘기면 Postgres가 22P02를 던져 클라이언트 잘못이 500(서버 잘못)으로
+  // 보고된다. enum을 허용 목록으로 선검증하는 것과 같은 이유로 타입도 미리 막는다.
+  it("값 타입이 컬럼과 맞지 않으면 500이 아니라 400이다", async () => {
+    await withService((q) => q.query("insert into site_settings (id) values (1) on conflict do nothing"));
+    const who = { email: "site-type-admin@gonjiam.com", password: "site-password-1", name: "관리자" };
+    await request(app).post("/api/auth/signup").send(who);
+    await withService((q) => q.query("update employees set role='admin' where email=$1", [who.email]));
+    const admin = request.agent(app);
+    await admin.post("/api/auth/login").send({ email: who.email, password: who.password });
+
+    for (const body of [
+      { nx: "예순하나" },
+      { ny: 12.5 },
+      { remind_interval_min: "30" },
+      { resolve_notice: "true" },
+      { site_name: 123 },
+    ]) {
+      const res = await admin.patch("/api/site-settings").send(body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
+
+    // 400이 실제 게이트에서 났는지 — 시드 값이 그대로여야 한다.
+    const row = await withService(async (q) => {
+      const { rows } = await q.query("select nx, ny, site_name from site_settings where id = 1");
+      return rows[0];
+    });
+    expect(row.nx).toBe(61);
+    expect(row.ny).toBe(121);
+  });
 });
 
 describe("관측 단건 조회", () => {
@@ -379,11 +409,31 @@ describe("관측 단건 조회", () => {
     expect((await agent.get("/api/observations/not-a-number")).status).toBe(400);
   });
 
-  it("없는 id면 null을 돌려준다", async () => {
+  // 200 + null이면 호출부가 "그런 관측이 없다"와 "조회는 됐다"를 구분할 수 없다.
+  // 같은 파일의 다른 단건 조회들이 404를 주므로 규약을 맞춘다.
+  it("없는 id면 404다", async () => {
     const agent = await loggedIn();
     const res = await agent.get("/api/observations/999999999");
+    expect(res.status).toBe(404);
+  });
+
+  // 항목 7: 폭염·강풍 승인 화면(EventReview)이 체감온도 판단 근거로 습도를 읽는다.
+  // OBS_COLS에서 빠지면 화면의 습도가 항상 "-"가 된다.
+  it("습도(humidity_pct)를 함께 내려준다", async () => {
+    const id = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into weather_observations (observed_at, humidity_pct, missing) values (now() - interval '2 hour', 78.5, false) returning id",
+      );
+      return rows[0].id;
+    });
+    const agent = await loggedIn();
+    const res = await agent.get(`/api/observations/${id}`);
     expect(res.status).toBe(200);
-    expect(res.body).toBeNull();
+    expect(res.body.humidity_pct).toBe(78.5);
+
+    // 목록·최신 조회도 같은 OBS_COLS를 쓴다 — 한쪽만 고쳐지는 걸 막는다.
+    const latest = await agent.get("/api/observations/latest");
+    expect(latest.body).toHaveProperty("humidity_pct");
   });
 
   // /observations/latest·/observations?since=가 :id로 잘못 잡히지 않는지 확인한다 —
