@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { ApiError } from "../lib/api/client";
+import { jsonResponse, makeFetchQueue } from "../test-support/fetchQueue";
 import Settings from "./Settings";
 import type { AlertSetting, Employee } from "../lib/types";
 
@@ -11,7 +12,6 @@ const mocks = vi.hoisted(() => ({
   siteSettings: vi.fn(),
   saveSiteSettings: vi.fn(),
   heartbeat: vi.fn(),
-  callSend: vi.fn(),
   authState: { employee: null as Employee | null, loading: false, isApprover: false },
 }));
 
@@ -28,8 +28,6 @@ vi.mock("../lib/api/dashboard", () => ({
   heartbeat: (...a: unknown[]) => mocks.heartbeat(...a),
 }));
 
-vi.mock("../lib/api", () => ({ callSend: (...a: unknown[]) => mocks.callSend(...a) }));
-
 const admin: Employee = {
   id: "admin-1",
   auth_user_id: "u-admin",
@@ -40,6 +38,13 @@ const admin: Employee = {
   role: "admin",
   created_at: "2026-01-01T00:00:00Z",
 };
+
+// callSend는 목하지 않는다 — 모듈을 통째로 목하면 경로·메서드·본문이 틀려도 통과한다.
+let send: ReturnType<typeof makeFetchQueue>;
+const sendRequests = () =>
+  send.fetchMock.mock.calls
+    .filter(([path]) => path === "/api/send")
+    .map(([, init]) => ({ method: init!.method, body: JSON.parse(String(init!.body)) }));
 
 const KINDS = ["rain", "snow", "wind", "heat"] as const;
 const alertRows: AlertSetting[] = KINDS.map((kind) => ({
@@ -82,7 +87,12 @@ beforeEach(() => {
     ok: true,
     note: null,
   });
-  mocks.callSend.mockReset().mockResolvedValue({});
+  send = makeFetchQueue();
+  vi.stubGlobal("fetch", send.fetchMock);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("Settings 초기 로드", () => {
@@ -116,5 +126,34 @@ describe("Settings 수집 건전성", () => {
     expect(value.classList.contains("ok")).toBe(false);
     expect(value.classList.contains("unknown")).toBe(true);
     expect(container).toBeTruthy();
+  });
+});
+
+describe("Settings 테스트 발송", () => {
+  // 서버는 mode:"test"를 admin에게만 허용한다(server/src/jobs/send.ts). 화면이 부르는
+  // 경로·메서드·본문이 어긋나면 버튼이 조용히 아무 일도 하지 않는다.
+  it("POST /api/send에 { mode: 'test' }를 보내고 성공 토스트를 띄운다", async () => {
+    send.push("/api/send", () => jsonResponse({ ok: true }));
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /테스트 메시지 보내기/ }));
+    expect(await screen.findByText("테스트 메시지를 발송했습니다")).toBeInTheDocument();
+    expect(sendRequests()).toEqual([{ method: "POST", body: { mode: "test" } }]);
+  });
+
+  // 채널이 실패하면 서버는 200에 { ok:false, error }를 싣는다 — throw가 아니다.
+  it("ok:false로 오면 서버가 준 사유를 그대로 보여준다", async () => {
+    send.push("/api/send", () => jsonResponse({ ok: false, error: "카카오워크 미연결" }));
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /테스트 메시지 보내기/ }));
+    expect(await screen.findByText("카카오워크 미연결")).toBeInTheDocument();
+  });
+
+  // 권한 거부(403)는 예외로 온다. catch가 없으면 버튼이 "발송 중…"에 영구히 묶인다.
+  it("HTTP 오류에도 오류를 띄우고 버튼을 다시 쓸 수 있게 둔다", async () => {
+    send.push("/api/send", () => jsonResponse({ ok: false, error: "권한이 없습니다" }, 403));
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /테스트 메시지 보내기/ }));
+    expect(await screen.findByText(/테스트 발송 실패: 권한이 없습니다/)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /테스트 메시지 보내기/ })).not.toBeDisabled();
   });
 });

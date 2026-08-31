@@ -13,7 +13,7 @@ import { openEvents, observationsSince, observation as fetchObservation, criteri
 import type { CriteriaRow, ObservationDetail } from "../lib/api/dashboard";
 import { alertSettings as fetchAlertSettings, listRecipients } from "../lib/api/org";
 import { messagesOf, saveDraftMessage } from "../lib/api/content";
-import { callSend } from "../lib/api";
+import { callSend } from "../lib/api/send";
 import type { AlertSetting, DeptBlock, EventStatus, Grade, Kind, WeatherEvent } from "../lib/types";
 import "./EventReview.css";
 

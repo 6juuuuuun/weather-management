@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { ApiError } from "../lib/api/client";
+import { jsonResponse, makeFetchQueue } from "../test-support/fetchQueue";
 import EventReview from "./EventReview";
 import type { AlertSetting, DeptBlock, Employee, WeatherEvent } from "../lib/types";
 
@@ -15,7 +16,6 @@ const mocks = vi.hoisted(() => ({
   alertSettings: vi.fn(),
   listRecipients: vi.fn(),
   messagesOf: vi.fn(),
-  callSend: vi.fn(),
   authState: { employee: null as Employee | null, loading: false, isApprover: false },
 }));
 
@@ -36,10 +36,6 @@ vi.mock("../lib/api/org", () => ({
 vi.mock("../lib/api/content", () => ({
   messagesOf: (...args: unknown[]) => mocks.messagesOf(...args),
   saveDraftMessage: vi.fn().mockResolvedValue(null),
-}));
-
-vi.mock("../lib/api", () => ({
-  callSend: (...args: unknown[]) => mocks.callSend(...args),
 }));
 
 vi.mock("../auth/AuthProvider", () => ({
@@ -190,8 +186,17 @@ function renderPage() {
   );
 }
 
+// callSend는 더 이상 목하지 않는다 — 모듈을 통째로 목하면 경로·메서드·본문이 틀려도
+// 이 화면 테스트는 전부 통과한다. fetch를 갈아 끼워 실제 요청을 단언한다.
+let send: ReturnType<typeof makeFetchQueue>;
+const sendRequests = () =>
+  send.fetchMock.mock.calls
+    .filter(([path]) => path === "/api/send")
+    .map(([, init]) => ({ method: init!.method, body: JSON.parse(String(init!.body)) }));
+
 beforeEach(() => {
-  mocks.callSend.mockReset();
+  send = makeFetchQueue();
+  vi.stubGlobal("fetch", send.fetchMock);
   mocks.siteSettings.mockReset().mockResolvedValue(null);
   mocks.heartbeat.mockReset().mockResolvedValue(null);
   mocks.authState = { employee: approver, loading: false, isApprover: true };
@@ -199,6 +204,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
 
@@ -257,18 +263,34 @@ describe("EventReview", () => {
   });
 
   it("승인 및 발송이 성공하면 발송 이력으로 이동한다", async () => {
-    mocks.callSend.mockResolvedValue({ ok: true, dispatch_id: 1, fail_count: 0 });
+    send.push("/api/send", () => jsonResponse({ ok: true, dispatch_id: 1, fail_count: 0 }));
     renderPage();
     const approveBtn = await screen.findByRole("button", { name: /승인 및 발송/ });
     fireEvent.click(approveBtn);
     expect(await screen.findByText("이력 화면")).toBeInTheDocument();
-    expect(mocks.callSend).toHaveBeenCalledWith(
-      expect.objectContaining({ mode: "approve", event_id: "event-1" }),
-    );
+    // 경로·메서드·본문을 그대로 단언한다 — 서버(server/src/index.ts)의 POST /api/send가
+    // 기대하는 모양이다. content까지 실려야 승인 시점의 편집 결과가 반영된다.
+    const [req] = sendRequests();
+    expect(req!.method).toBe("POST");
+    expect(req!.body.mode).toBe("approve");
+    expect(req!.body.event_id).toBe("event-1");
+    expect(req!.body.content).toHaveLength(2);
+  });
+
+  // 승인은 alert_recipients 등록자만 가능하다(서버 runSend의 권한 검사). 거부는 이제
+  // 예외로 온다 — catch가 없으면 버튼이 "발송 중…"에 영구히 묶인다.
+  it("승인이 거부되면 오류를 보여주고 버튼을 다시 쓸 수 있게 둔다", async () => {
+    send.push("/api/send", () => jsonResponse({ ok: false, error: "권한이 없습니다" }, 403));
+    renderPage();
+    const approveBtn = await screen.findByRole("button", { name: /승인 및 발송/ });
+    fireEvent.click(approveBtn);
+    expect(await screen.findByText(/승인 및 발송에 실패했습니다/)).toBeInTheDocument();
+    expect(screen.queryByText("이력 화면")).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /승인 및 발송/ })).not.toBeDisabled();
   });
 
   it("fail_count가 있으면 danger 배너를 보여주고 이동하지 않는다", async () => {
-    mocks.callSend.mockResolvedValue({ ok: true, dispatch_id: 2, fail_count: 1 });
+    send.push("/api/send", () => jsonResponse({ ok: true, dispatch_id: 2, fail_count: 1 }));
     renderPage();
     const approveBtn = await screen.findByRole("button", { name: /승인 및 발송/ });
     fireEvent.click(approveBtn);
@@ -277,14 +299,24 @@ describe("EventReview", () => {
   });
 
   it("특보 무시 확인 후 대시보드로 이동한다", async () => {
-    mocks.callSend.mockResolvedValue({ ok: true });
+    send.push("/api/send", () => jsonResponse({ ok: true }));
     renderPage();
     const dismissBtn = await screen.findByRole("button", { name: "특보 무시" });
     fireEvent.click(dismissBtn);
     const confirmBtn = await screen.findByRole("button", { name: "무시하기" });
     fireEvent.click(confirmBtn);
     expect(await screen.findByText("대시보드 화면")).toBeInTheDocument();
-    expect(mocks.callSend).toHaveBeenCalledWith({ mode: "dismiss", event_id: "event-1" });
+    expect(sendRequests()).toEqual([{ method: "POST", body: { mode: "dismiss", event_id: "event-1" } }]);
+  });
+
+  // 이미 승인·해제된 특보를 무시하려 하면 서버가 409를 준다(runSend).
+  it("무시가 실패하면 오류를 보여주고 대시보드로 이동하지 않는다", async () => {
+    send.push("/api/send", () => jsonResponse({ ok: false, error: "무시 가능한 상태가 아닙니다" }, 409));
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "특보 무시" }));
+    fireEvent.click(await screen.findByRole("button", { name: "무시하기" }));
+    expect(await screen.findByText(/무시 처리에 실패했습니다/)).toBeInTheDocument();
+    expect(screen.queryByText("대시보드 화면")).not.toBeInTheDocument();
   });
 
   it("임시 저장 클릭 시 저장 완료 메시지를 보여준다", async () => {

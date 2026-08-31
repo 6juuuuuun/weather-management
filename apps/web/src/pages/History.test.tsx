@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { DeptBlock } from "../lib/types";
+import { jsonResponse, makeFetchQueue } from "../test-support/fetchQueue";
 
 // 절대 날짜(예: "2026-07-16")는 History.tsx의 기본 기간 필터("최근 30일") 경계를
 // 시간이 지나며 넘어서게 되어 테스트가 저절로 실패하는 시한폭탄이 된다.
@@ -109,12 +110,26 @@ vi.mock("../auth/AuthProvider", () => ({
   useAuth: () => mocks.authState,
 }));
 
+// callSend는 목하지 않는다 — 모듈을 통째로 목하면 경로·메서드·본문이 틀려도 통과한다.
+let send: ReturnType<typeof makeFetchQueue>;
+const sendRequests = () =>
+  send.fetchMock.mock.calls
+    .filter(([path]) => path === "/api/send")
+    .map(([, init]) => ({ method: init!.method, body: JSON.parse(String(init!.body)) }));
+
 beforeEach(() => {
   mocks.authState = {
     employee: { id: "emp1", name: "김운영", role: "approver" },
     loading: false,
     isApprover: true,
   };
+  send = makeFetchQueue();
+  vi.stubGlobal("fetch", send.fetchMock);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 // vi.mock 팩토리는 파일 최상단으로 호이스팅되므로, 그 안에서 아래에 선언된
@@ -127,10 +142,6 @@ vi.mock("../lib/api/content", () => ({
 vi.mock("../lib/api/dashboard", () => ({
   siteSettings: vi.fn().mockResolvedValue(null),
   heartbeat: vi.fn().mockResolvedValue(null),
-}));
-
-vi.mock("../lib/api", () => ({
-  callSend: vi.fn(),
 }));
 
 import History from "./History";
@@ -197,6 +208,63 @@ describe("History", () => {
 
     await waitFor(() => expect(screen.queryByText("폭우")).not.toBeInTheDocument());
     expect(screen.getByText("발송 이력이 없습니다")).toBeInTheDocument();
+  });
+
+  // 재발송은 서버의 POST /api/send(mode:"resend")를 탄다. event_id가 아니라
+  // message_id를 보내야 서버가 messages를 갱신한다 — 여기가 어긋나면 조용히 실패한다.
+  it("빠른 재발송은 POST /api/send에 { mode: 'resend', message_id, content }를 보낸다", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    send.push("/api/send", () => jsonResponse({ ok: true, dispatch_id: 9, repeat_no: 4, fail_count: 0 }));
+    render(
+      <MemoryRouter>
+        <History />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("폭우")).toBeInTheDocument());
+    fireEvent.click(screen.getAllByText("재발송")[0]!);
+
+    await waitFor(() => expect(sendRequests()).toHaveLength(1));
+    const [req] = sendRequests();
+    expect(req!.method).toBe("POST");
+    expect(req!.body.mode).toBe("resend");
+    expect(req!.body.message_id).toBe("m1");
+    expect(req!.body.content).toEqual(content);
+  });
+
+  // 재발송도 alert_recipients 게이트를 탄다 — 거부는 예외로 온다. catch가 없으면
+  // 모달이 "재발송 중…"에 묶인 채 아무 설명도 나오지 않는다.
+  // 재발송도 alert_recipients 게이트를 탄다 — 거부는 예외로 온다. catch가 없으면
+  // 모달이 "재발송 중…"에 묶인 채 아무 설명도 나오지 않는다.
+  it("수정 후 재발송이 거부되면 모달에 사유를 보여주고 버튼을 다시 쓸 수 있게 둔다", async () => {
+    send.push("/api/send", () => jsonResponse({ ok: false, error: "권한이 없습니다" }, 403));
+    render(
+      <MemoryRouter>
+        <History />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("폭우")).toBeInTheDocument());
+    screen.getByText("리조트 · 1명").closest("tr")?.click();
+    fireEvent.click(await screen.findByRole("button", { name: "수정 후 재발송" }));
+    // 목록 행에도 같은 이름의 버튼이 있으므로 모달 안에서만 찾는다.
+    const modal = screen.getByRole("dialog");
+    fireEvent.click(within(modal).getByRole("button", { name: "재발송" }));
+    expect(await screen.findByText("권한이 없습니다")).toBeInTheDocument();
+    expect(within(modal).getByRole("button", { name: "재발송" })).not.toBeDisabled();
+  });
+
+  // 빠른 재발송은 모달을 열지 않는다 — sendError를 모달 안에서만 그리면 이 경로의
+  // 실패가 화면에 전혀 남지 않아 사용자는 발송된 줄 안다.
+  it("빠른 재발송이 실패하면 목록 화면에 사유를 보여준다", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    send.push("/api/send", () => jsonResponse({ ok: false, error: "권한이 없습니다" }, 403));
+    render(
+      <MemoryRouter>
+        <History />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("폭우")).toBeInTheDocument());
+    fireEvent.click(screen.getAllByText("재발송")[0]!);
+    expect(await screen.findByText("권한이 없습니다")).toBeInTheDocument();
   });
 
   it("role이 approver여도 Alert 수신자가 아니면 재발송 버튼이 보이지 않는다", async () => {

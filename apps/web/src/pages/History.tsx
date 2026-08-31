@@ -8,7 +8,7 @@ import { EmptyState } from "../components/EmptyState";
 import { useAuth } from "../auth/AuthProvider";
 import { ApiError } from "../lib/api/client";
 import { dispatches as fetchDispatches } from "../lib/api/content";
-import { callSend } from "../lib/api";
+import { callSend } from "../lib/api/send";
 import type { DeptBlock, DispatchResult, Grade, Kind } from "../lib/types";
 import "./History.css";
 
@@ -415,6 +415,11 @@ export default function History() {
       <p className="history-footnote">
         ⓘ 행 클릭 시 발송 당시 원본 메시지가 열립니다 · 재발송과 수정 발송은 Alert 수신자 권한입니다
       </p>
+
+      {/* 목록의 빠른 재발송은 모달을 열지 않는다. sendError를 모달 안에서만 그리면
+          그 경로의 실패(예: alert_recipients가 아니어서 403)는 화면에 아무 흔적도
+          남기지 않는다 — 사용자는 재발송이 된 줄 안다. 모달이 닫혀 있을 때는 여기 띄운다. */}
+      {!selected && sendError && <p className="history-error">{sendError}</p>}
 
       {selected && (
         <Modal

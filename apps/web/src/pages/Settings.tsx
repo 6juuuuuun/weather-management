@@ -7,7 +7,7 @@ import { siteSettings as fetchSiteSettings, saveSiteSettings, heartbeat as fetch
 import type { HeartbeatRow, SiteSettingsRow } from "../lib/api/dashboard";
 import { alertSettings as fetchAlertSettings, saveAlertSettings } from "../lib/api/org";
 import { ApiError } from "../lib/api/client";
-import { callSend } from "../lib/api";
+import { callSend } from "../lib/api/send";
 import type { AlertSetting, Kind } from "../lib/types";
 import "./Settings.css";
 
