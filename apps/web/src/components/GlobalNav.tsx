@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
-import { supabase } from "../lib/supabase";
+import { siteSettings, heartbeat } from "../lib/api/dashboard";
 import type { EmpRole } from "../lib/types";
 import { ROLE_LABEL } from "../lib/roles";
 import "./components.css";
@@ -31,13 +31,10 @@ export function GlobalNav() {
   useEffect(() => {
     let active = true;
     (async () => {
-      const [siteRes, heartbeatRes] = await Promise.all([
-        supabase.from("site_settings").select("site_name").eq("id", 1).single(),
-        supabase.from("heartbeats").select("last_run_at").eq("name", "weather-tick").single(),
-      ]);
+      const [site, hb] = await Promise.all([siteSettings(), heartbeat("weather-tick")]);
       if (!active) return;
-      setSiteName(siteRes.data?.site_name ?? null);
-      setLastRunAt(heartbeatRes.data?.last_run_at ?? null);
+      setSiteName(site?.site_name ?? null);
+      setLastRunAt(hb?.last_run_at ?? null);
     })();
     return () => {
       active = false;

@@ -2,15 +2,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
-// 대시보드는 한 번에 여러 테이블을 Promise.all로 조회한다. 체인 모양이 테이블마다 달라
-// (select→eq→order→limit→maybeSingle, select→gte→eq, …) 개별 스텁을 쓰면 금방 깨진다.
-// 어떤 메서드를 불러도 자기 자신을 돌려주고 await 시 결과를 내놓는 프록시로 받아,
-// 호출된 체인을 테이블별로 기록해 검증에 쓴다.
-type Call = { table: string; chain: string[]; args: unknown[][] };
-
+// Dashboard는 이제 supabase 체인이 아니라 이름 있는 api 함수(lib/api/*)를 부른다.
+// 각 함수를 개별 vi.fn()으로 목하고, 호출 인자를 기록해 "어떤 조회를 했는지"를 검증한다.
 const mocks = vi.hoisted(() => ({
-  calls: [] as { table: string; chain: string[]; args: unknown[][] }[],
-  dataFor: (_table: string, _chain: string[]): unknown => null,
+  latestObservation: vi.fn(),
+  observationsSinceCalls: [] as string[],
+  observationsSinceImpl: (_iso: string): unknown[] => [],
+  openEvents: vi.fn(),
+  criteria: vi.fn(),
+  siteSettings: vi.fn(),
+  heartbeat: vi.fn(),
+  listDepartments: vi.fn(),
+  alertRecipients: vi.fn(),
+  guidelines: vi.fn(),
+  dispatches: vi.fn(),
   authState: {
     employee: { id: "emp1", name: "김운영", role: "admin", department_id: "d1" },
     loading: false,
@@ -20,30 +25,26 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../auth/AuthProvider", () => ({ useAuth: () => mocks.authState }));
 
-vi.mock("../lib/supabase", () => ({
-  supabase: {
-    from: (table: string) => {
-      const call: Call = { table, chain: [], args: [] };
-      mocks.calls.push(call);
-      const proxy: Record<string, unknown> = new Proxy(
-        {},
-        {
-          get(_t, prop: string) {
-            if (prop === "then") {
-              return (resolve: (v: unknown) => void) =>
-                resolve({ data: mocks.dataFor(table, call.chain), error: null });
-            }
-            return (...args: unknown[]) => {
-              call.chain.push(prop);
-              call.args.push(args);
-              return proxy;
-            };
-          },
-        },
-      ) as Record<string, unknown>;
-      return proxy;
-    },
+vi.mock("../lib/api/dashboard", () => ({
+  latestObservation: (...args: unknown[]) => mocks.latestObservation(...args),
+  observationsSince: (iso: string) => {
+    mocks.observationsSinceCalls.push(iso);
+    return Promise.resolve(mocks.observationsSinceImpl(iso));
   },
+  openEvents: (...args: unknown[]) => mocks.openEvents(...args),
+  criteria: (...args: unknown[]) => mocks.criteria(...args),
+  siteSettings: (...args: unknown[]) => mocks.siteSettings(...args),
+  heartbeat: (...args: unknown[]) => mocks.heartbeat(...args),
+}));
+
+vi.mock("../lib/api/org", () => ({
+  listDepartments: (...args: unknown[]) => mocks.listDepartments(...args),
+  alertRecipients: (...args: unknown[]) => mocks.alertRecipients(...args),
+}));
+
+vi.mock("../lib/api/content", () => ({
+  guidelines: (...args: unknown[]) => mocks.guidelines(...args),
+  dispatches: (...args: unknown[]) => mocks.dispatches(...args),
 }));
 
 import Dashboard, { toBoardProps } from "./Dashboard";
@@ -75,34 +76,27 @@ function renderAt(search: string) {
 }
 
 beforeEach(() => {
-  mocks.calls = [];
   vi.useRealTimers();
-  mocks.dataFor = (table, chain) => {
-    if (table === "weather_observations") {
-      // 누적 조회(gte 포함)는 배열, 최신 1건 조회는 단건
-      return chain.includes("gte") ? [{ snow_new_cm: 0 }] : validObs;
-    }
-    return chain.includes("maybeSingle") || chain.includes("single") ? null : [];
-  };
+  mocks.observationsSinceCalls = [];
+  mocks.latestObservation.mockReset().mockResolvedValue(validObs);
+  mocks.observationsSinceImpl = () => [{ snow_new_cm: 0 }];
+  mocks.openEvents.mockReset().mockResolvedValue([]);
+  mocks.criteria.mockReset().mockResolvedValue([]);
+  mocks.siteSettings.mockReset().mockResolvedValue(null);
+  mocks.heartbeat.mockReset().mockResolvedValue(null);
+  mocks.listDepartments.mockReset().mockResolvedValue([]);
+  mocks.alertRecipients.mockReset().mockResolvedValue([]);
+  mocks.guidelines.mockReset().mockResolvedValue([]);
+  mocks.dispatches.mockReset().mockResolvedValue([]);
 });
 
 describe("Dashboard 관측 카드", () => {
-  // 회귀: 예전에는 결측 여부를 보지 않고 '가장 최근 행'을 읽었다. 기상청이 한 번만 실패해도
-  // 빈 행이 최신이 되어 전 카드가 비었는데, 상단 "마지막 수집 N분 전"은 heartbeat 기준이라
-  // 최신으로 표시돼 "방금 수집했다는데 값이 없다"는 모순이 생겼다.
-  it("최신 관측 조회 시 결측 행을 제외한다", async () => {
+  // 결측 행 제외는 이제 서버(dashboard.ts)가 항상 보장한다(/observations/latest는 항상
+  // missing=false만 조회) — 클라이언트가 검증할 것은 latestObservation()을 실제로 불러
+  // 썼는지다.
+  it("최신 관측을 latestObservation()으로 조회한다", async () => {
     renderDashboard();
-    await waitFor(() => expect(mocks.calls.length).toBeGreaterThan(0));
-
-    const latestObs = mocks.calls.find(
-      (c) => c.table === "weather_observations" && c.chain.includes("maybeSingle"),
-    );
-    expect(latestObs, "최신 관측 단건 조회가 있어야 한다").toBeDefined();
-
-    const eqArgs = latestObs!.chain
-      .map((m, i) => (m === "eq" ? latestObs!.args[i] : null))
-      .filter(Boolean) as unknown[][];
-    expect(eqArgs).toContainEqual(["missing", false]);
+    await waitFor(() => expect(mocks.latestObservation).toHaveBeenCalled());
   });
 
   it("관측 시각을 함께 표시해 값이 언제 기준인지 알 수 있다", async () => {
@@ -114,12 +108,7 @@ describe("Dashboard 관측 카드", () => {
   // 관측 시각을 '현재로부터 상대'로 잡으면 타이머를 건드리지 않고 같은 것을 검증할 수 있다.
   function obsMinutesAgo(min: number) {
     const iso = new Date(Date.now() - min * 60_000).toISOString();
-    mocks.dataFor = (table, chain) => {
-      if (table === "weather_observations") {
-        return chain.includes("gte") ? [{ snow_new_cm: 0 }] : { ...validObs, observed_at: iso };
-      }
-      return chain.includes("maybeSingle") || chain.includes("single") ? null : [];
-    };
+    mocks.latestObservation.mockResolvedValue({ ...validObs, observed_at: iso });
   }
 
   // 관측은 매시 1회이므로 100분을 넘겼다면 그 뒤로 최소 한 번은 수집에 실패했다는 뜻이다.
@@ -140,15 +129,8 @@ describe("Dashboard 관측 카드", () => {
 describe("Dashboard 보드 모드", () => {
   it("최근 24시간 관측 이력을 조회한다", async () => {
     renderAt("?board=1");
-    await waitFor(() => expect(mocks.calls.length).toBeGreaterThan(0));
-    const history = mocks.calls.find(
-      (c) => c.table === "weather_observations" && c.chain.includes("gte") && c.chain.includes("order"),
-    );
-    expect(history, "이력 조회가 있어야 한다").toBeDefined();
-    const eqArgs = history!.chain
-      .map((m, i) => (m === "eq" ? history!.args[i] : null))
-      .filter(Boolean) as unknown[][];
-    expect(eqArgs).toContainEqual(["missing", false]);
+    // snowToday(자정 이후)용 1건 + 보드 이력(24시간)용 1건, 총 2건의 observationsSince 호출.
+    await waitFor(() => expect(mocks.observationsSinceCalls.length).toBe(2));
   });
 
   it("board=1이면 조작 요소를 렌더링하지 않는다", async () => {
@@ -166,13 +148,10 @@ describe("Dashboard 보드 모드", () => {
 
   // F1: 이력 쿼리는 월보드 전용이다. 일반 대시보드가 쓰지도 않는 요청을
   // 30초 폴링에 얹지 않기 위해 boardMode일 때만 조회해야 한다.
-  it("보드 모드가 아니면 이력을 조회하지 않는다", async () => {
+  it("보드 모드가 아니면 이력을 조회하지 않는다 — snowToday용 1건만 호출된다", async () => {
     renderAt("");
-    await waitFor(() => expect(mocks.calls.length).toBeGreaterThan(0));
-    const history = mocks.calls.find(
-      (c) => c.table === "weather_observations" && c.chain.includes("gte") && c.chain.includes("order"),
-    );
-    expect(history).toBeUndefined();
+    await waitFor(() => expect(mocks.observationsSinceCalls.length).toBeGreaterThan(0));
+    expect(mocks.observationsSinceCalls.length).toBe(1);
   });
 
   // F2: clock은 렌더 시점(new Date())이 아니라 컴포넌트가 별도 타이머로 넘긴
@@ -207,21 +186,13 @@ describe("Dashboard 보드 모드", () => {
 });
 
 describe("Dashboard 하단 티커", () => {
-  // 기준이 설정된 지표가 있어야 티커에 항목이 생긴다. 기본 픽스처는 weather_criteria를
+  // 기준이 설정된 지표가 있어야 티커에 항목이 생긴다. 기본 픽스처는 criteria를
   // 빈 배열로 주므로 threshold가 전부 0(미설정)이고, 그러면 티커는 아무것도 렌더하지 않는다.
   function withCriteria() {
-    mocks.dataFor = (table, chain) => {
-      if (table === "weather_observations") {
-        return chain.includes("gte") ? [{ snow_new_cm: 0 }] : validObs;
-      }
-      if (table === "weather_criteria") {
-        return [
-          { kind: "rain", grade: "watch", threshold: { rain_mm_per_hr: 20 } },
-          { kind: "heat", grade: "watch", threshold: { temp_c: 33, feels_c: 33 } },
-        ];
-      }
-      return chain.includes("maybeSingle") || chain.includes("single") ? null : [];
-    };
+    mocks.criteria.mockResolvedValue([
+      { kind: "rain", grade: "watch", threshold: { rain_mm_per_hr: 20 } },
+      { kind: "heat", grade: "watch", threshold: { temp_c: 33, feels_c: 33 } },
+    ]);
   }
 
   it("일반 대시보드에도 티커가 뜨고, 화면 하단에 고정된다", async () => {

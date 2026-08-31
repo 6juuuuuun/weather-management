@@ -4,10 +4,14 @@ import { AppLayout } from "../components/AppLayout";
 import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { useAuth } from "../auth/AuthProvider";
-import { supabase } from "../lib/supabase";
+import { latestObservation, observationsSince, openEvents, criteria as fetchCriteria, siteSettings } from "../lib/api/dashboard";
+import type { CriteriaRow, ObservationRow } from "../lib/api/dashboard";
+import { listDepartments, alertRecipients } from "../lib/api/org";
+import { guidelines as fetchGuidelines, dispatches as fetchDispatches } from "../lib/api/content";
+import type { DispatchRow } from "../lib/api/content";
 import { computeSetupChecklist } from "../lib/setup";
 import type { SetupChecklist } from "../lib/setup";
-import type { Dispatch, Kind, WeatherCriteria, WeatherEvent, WeatherObservation } from "../lib/types";
+import type { Kind, WeatherEvent } from "../lib/types";
 import { DashboardBoard, toTickerItems } from "./DashboardBoard";
 import type { BoardEvent, BoardMetric } from "./DashboardBoard";
 import { BoardTicker } from "../components/BoardTicker";
@@ -17,19 +21,11 @@ const POLL_MS = 30_000;
 
 const KIND_LABEL: Record<Kind, string> = { rain: "폭우", snow: "폭설", wind: "강풍", heat: "폭염" };
 
-type DispatchRow = Dispatch & {
-  weather_events: { kind: Kind; grade: "watch" | "warning" } | null;
-  messages: { content: { department_name: string; selected: boolean }[] } | null;
-};
-
-type ObservationPoint = Pick<
-  WeatherObservation,
-  "observed_at" | "rain_mm_per_hr" | "temp_c" | "feels_c" | "wind_ms"
->;
+type ObservationPoint = Pick<ObservationRow, "observed_at" | "rain_mm_per_hr" | "temp_c" | "feels_c" | "wind_ms">;
 
 type DashboardData = {
-  observation: WeatherObservation | null;
-  criteria: WeatherCriteria[];
+  observation: ObservationRow | null;
+  criteria: CriteriaRow[];
   openEvents: WeatherEvent[];
   dispatches: DispatchRow[];
   snowToday: number | null; // 판정 엔진과 동일: 당일(KST) snow_new_cm 합산, 관측 없으면 null
@@ -73,7 +69,7 @@ function kstMidnightISO(now: Date): string {
   return midnightKst.toISOString();
 }
 
-function criteriaFor(criteria: WeatherCriteria[], kind: Kind) {
+function criteriaFor(criteria: CriteriaRow[], kind: Kind) {
   const watch = criteria.find((c) => c.kind === kind && c.grade === "watch");
   const warning = criteria.find((c) => c.kind === kind && c.grade === "warning");
   return { watch, warning };
@@ -93,7 +89,8 @@ function gradeBySingleValue(
 function dispatchScope(row: DispatchRow): { label: string; failCount: number; total: number } {
   const results = row.results ?? [];
   const failCount = results.filter((r) => !r.ok).length;
-  const blocks = row.messages?.content ?? [];
+  // 발송 시점 스냅샷(content) 우선, 스냅샷 이전 이력은 message_content로 폴백 — History.tsx와 동일 규칙.
+  const blocks = row.content ?? row.message_content ?? [];
   const selected = blocks.filter((b) => b.selected);
   let label = "";
   if (selected.length === 0) label = "-";
@@ -116,83 +113,58 @@ export default function Dashboard() {
   const load = useCallback(async () => {
     const isAdmin = employee?.role === "admin";
 
-    const [obsRes, eventsRes, dispatchesRes, criteriaRes, siteRes, snowTodayRes, historyRes] = await Promise.all([
+    const [obs, openEventRows, dispatchRows, criteriaRows, site, snowTodayRows, historyRows] = await Promise.all([
       // 결측 행(기상청 조회 실패로 기록되는 빈 행)을 제외하고 마지막 '유효' 관측을 읽는다.
-      // 제외하지 않으면 기상청이 한 번만 삐끗해도 전 카드가 빈 값이 되는데, 상단의
-      // "마지막 수집 N분 전"은 heartbeat(함수 실행 여부) 기준이라 그대로 최신으로 표시돼
-      // "방금 수집했다는데 값이 없다"는 모순이 생긴다. 바로 아래 적설 누적 쿼리도 같은 기준이다.
-      supabase
-        .from("weather_observations")
-        .select("*")
-        .eq("missing", false)
-        .order("observed_at", { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-      supabase
-        .from("weather_events")
-        .select("*")
-        .in("status", ["PENDING_APPROVAL", "ACTIVE"])
-        .order("detected_at", { ascending: false }),
-      supabase
-        .from("dispatches")
-        .select("*, weather_events(kind,grade), messages(content)")
-        .order("sent_at", { ascending: false })
-        .limit(5),
-      supabase.from("weather_criteria").select("*"),
-      supabase.from("site_settings").select("*").eq("id", 1).maybeSingle(),
+      // 이 필터는 서버(dashboard.ts)가 항상 적용한다 — 제외하지 않으면 기상청이 한 번만
+      // 삐끗해도 전 카드가 빈 값이 되는데, 상단의 "마지막 수집 N분 전"은 heartbeat(함수
+      // 실행 여부) 기준이라 그대로 최신으로 표시돼 "방금 수집했다는데 값이 없다"는
+      // 모순이 생긴다. 바로 아래 적설 누적 조회도 같은 기준이다.
+      latestObservation(),
+      openEvents(),
+      fetchDispatches({ limit: 5 }),
+      fetchCriteria(),
+      siteSettings(),
       // 판정 엔진(todayAccums)과 동일 기준: KST 자정 이후 시간 신적설 합산
-      supabase
-        .from("weather_observations")
-        .select("snow_new_cm")
-        .gte("observed_at", kstMidnightISO(new Date()))
-        .eq("missing", false),
+      observationsSince(kstMidnightISO(new Date())),
       // 이력은 월보드 차트 전용이다. 일반 대시보드는 쓰지 않으므로 조회하지 않는다 —
       // 운영 화면의 30초 폴링에 쓰지도 않는 요청을 얹지 않기 위해서다.
-      boardMode
-        ? supabase
-            .from("weather_observations")
-            .select("observed_at, rain_mm_per_hr, temp_c, feels_c, wind_ms")
-            .eq("missing", false)
-            .gte("observed_at", new Date(Date.now() - 24 * 3600_000).toISOString())
-            .order("observed_at", { ascending: true })
-        : Promise.resolve({ data: [] as ObservationPoint[], error: null }),
+      boardMode ? observationsSince(new Date(Date.now() - 24 * 3600_000).toISOString()) : Promise.resolve([]),
     ]);
 
-    const snowRows = snowTodayRes.data ?? [];
     const snowToday =
-      snowRows.length === 0
+      snowTodayRows.length === 0
         ? null
-        : snowRows.reduce((acc, r) => acc + Number(r.snow_new_cm ?? 0), 0);
+        : snowTodayRows.reduce((acc, r) => acc + Number(r.snow_new_cm ?? 0), 0);
 
-    setSiteName(siteRes.data?.site_name ?? "곤지암");
+    setSiteName(site?.site_name ?? "곤지암");
     setData({
-      observation: (obsRes.data as WeatherObservation | null) ?? null,
-      criteria: (criteriaRes.data as WeatherCriteria[] | null) ?? [],
-      openEvents: (eventsRes.data as WeatherEvent[] | null) ?? [],
-      dispatches: (dispatchesRes.data as unknown as DispatchRow[] | null) ?? [],
+      observation: obs,
+      criteria: criteriaRows,
+      openEvents: openEventRows,
+      dispatches: dispatchRows,
       snowToday,
-      history: (historyRes.data as ObservationPoint[] | null) ?? [],
+      history: historyRows,
     });
 
     if (isAdmin) {
-      const [deptRes, guidelineRes, alertRes] = await Promise.all([
-        supabase.from("departments").select("id,parent_id"),
-        supabase.from("action_guidelines").select("department_id"),
-        supabase.from("alert_recipients").select("employee_id"),
+      // departments API는 id/name만 내려준다(parent_id/sort_order 없음) — 부서 계층을
+      // 알 수 없어 "리프 부서"를 가릴 수 없다. 모든 부서를 리프로 취급한다(report 참고).
+      const [depts, guidelineRows, alertRecipientRows] = await Promise.all([
+        listDepartments(),
+        fetchGuidelines(),
+        alertRecipients(),
       ]);
-      const depts = deptRes.data ?? [];
-      const parentIds = new Set(depts.map((d) => d.parent_id).filter(Boolean));
-      const leafIds = new Set(depts.filter((d) => !parentIds.has(d.id)).map((d) => d.id));
+      const leafIds = new Set(depts.map((d) => d.id));
       const guidelineDeptIds = new Set(
-        (guidelineRes.data ?? []).map((g) => g.department_id).filter((id) => leafIds.has(id)),
+        guidelineRows.map((g) => g.department_id).filter((id) => leafIds.has(id)),
       );
 
       const checklist = computeSetupChecklist({
-        site: !!siteRes.data,
-        criteria: (criteriaRes.data?.length ?? 0) >= 8,
+        site: !!site,
+        criteria: criteriaRows.length >= 8,
         deptCount: leafIds.size,
         guidelineDeptCount: guidelineDeptIds.size,
-        alertRecipientCount: (alertRes.data ?? []).length,
+        alertRecipientCount: alertRecipientRows.length,
       });
       setSetup(checklist);
       setSetupDetail({ missingDeptCount: Math.max(0, leafIds.size - guidelineDeptIds.size) });
@@ -571,8 +543,8 @@ export default function Dashboard() {
               <p className="event-row-line">발송 이력이 없습니다.</p>
             ) : (
               data.dispatches.map((d) => {
-                const kind = d.weather_events?.kind;
-                const grade = d.weather_events?.grade;
+                const kind = d.kind;
+                const grade = d.grade;
                 const scope = dispatchScope(d);
                 return (
                   <div className="dispatch-row" key={d.id}>
