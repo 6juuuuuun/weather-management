@@ -119,17 +119,6 @@
   stroke: var(--canvas);
 }
 
-.login-cta-ghost {
-  margin-top: 32px;
-  background: var(--canvas);
-  color: var(--primary);
-  border: 1px solid var(--primary);
-}
-
-.login-cta-ghost:hover {
-  background: var(--parchment);
-}
-
 .login-error {
   margin-top: 16px;
   font-family: var(--font-ui);
@@ -139,13 +128,17 @@
   color: var(--danger);
 }
 
-.login-fineprint {
-  margin-top: 24px;
+.login-signup-link {
+  margin-top: 20px;
   font-family: var(--font-ui);
-  font-weight: 300;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--ink-muted-48);
+  font-weight: 400;
+  font-size: 14px;
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.login-signup-link:hover {
+  text-decoration: underline;
 }
 
 @media (max-width: 420px) {

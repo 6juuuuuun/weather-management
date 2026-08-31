@@ -1,7 +1,8 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { RequireRole } from "./auth/RequireRole";
 import Login from "./pages/Login";
-import AuthCallback from "./pages/AuthCallback";
+import Signup from "./pages/Signup";
+import ChangePassword from "./pages/ChangePassword";
 import Dashboard from "./pages/Dashboard";
 import Criteria from "./pages/Criteria";
 import Guidelines from "./pages/Guidelines";
@@ -16,7 +17,8 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
-      <Route path="/auth/callback" element={<AuthCallback />} />
+      <Route path="/signup" element={<Signup />} />
+      <Route path="/change-password" element={<ChangePassword />} />
 
       <Route
         path="/"

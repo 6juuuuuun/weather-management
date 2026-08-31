@@ -1,72 +1,104 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import Login from "./Login";
+import { ApiError } from "../lib/api/client";
 
-const mocks = vi.hoisted(() => ({ requestMagicLink: vi.fn() }));
-vi.mock("../lib/api", () => ({ requestMagicLink: mocks.requestMagicLink }));
+const mocks = vi.hoisted(() => ({ login: vi.fn() }));
+vi.mock("../auth/AuthProvider", () => ({ useAuth: () => ({ login: mocks.login }) }));
+
+function renderLogin() {
+  return render(
+    <MemoryRouter initialEntries={["/login"]}>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/change-password" element={<p>비밀번호 변경 화면</p>} />
+        <Route path="/" element={<p>홈 화면</p>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+function fillAndSubmit(email: string, password: string) {
+  fireEvent.change(screen.getByLabelText("이메일"), { target: { value: email } });
+  fireEvent.change(screen.getByLabelText("비밀번호"), { target: { value: password } });
+  fireEvent.click(screen.getByRole("button", { name: "로그인" }));
+}
 
 describe("Login", () => {
   beforeEach(() => {
-    mocks.requestMagicLink.mockReset().mockResolvedValue({ ok: true });
+    mocks.login.mockReset().mockResolvedValue({ mustChangePassword: false });
   });
 
-  it("이메일 입력 히어로를 렌더링한다", () => {
-    render(<Login />);
+  it("이메일·비밀번호 입력 폼과 가입 신청 링크를 렌더링한다", () => {
+    renderLogin();
     expect(screen.getByRole("heading", { name: "날씨경영" })).toBeInTheDocument();
-    expect(screen.getByLabelText("카카오워크에 등록된 회사 이메일")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "로그인 링크 받기" })).toBeInTheDocument();
+    expect(screen.getByLabelText("이메일")).toBeInTheDocument();
+    expect(screen.getByLabelText("비밀번호")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "로그인" })).toBeInTheDocument();
+    const signupLink = screen.getByRole("link", { name: "계정이 없으신가요? 가입 신청" });
+    expect(signupLink).toHaveAttribute("href", "/signup");
   });
 
-  it("이메일 제출 시 로그인 링크를 요청하고 안내 화면으로 전환한다", async () => {
-    render(<Login />);
-    fireEvent.change(screen.getByLabelText("카카오워크에 등록된 회사 이메일"), {
-      target: { value: "a@t.co" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "로그인 링크 받기" }));
+  it("이메일·비밀번호로 로그인을 요청하고 성공하면 홈으로 이동한다", async () => {
+    renderLogin();
+    fillAndSubmit("a@gonjiam.com", "password12345");
 
-    await waitFor(() => expect(mocks.requestMagicLink).toHaveBeenCalledWith("a@t.co"));
-    expect(await screen.findByText(/카카오워크 앱을 확인해 주세요/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "다시 보내기" })).toBeInTheDocument();
+    await waitFor(() => expect(mocks.login).toHaveBeenCalledWith("a@gonjiam.com", "password12345"));
+    expect(await screen.findByText("홈 화면")).toBeInTheDocument();
   });
 
-  it("다시 보내기를 누르면 동일 이메일로 재요청한다", async () => {
-    render(<Login />);
-    fireEvent.change(screen.getByLabelText("카카오워크에 등록된 회사 이메일"), {
-      target: { value: "a@t.co" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "로그인 링크 받기" }));
-    await screen.findByRole("button", { name: "다시 보내기" });
+  // 임시 비밀번호로 로그인한 세션은 비밀번호부터 바꿔야 한다(server/src/auth/middleware.ts가
+  // 이 상태에서 대부분의 /api/*를 403으로 막는다) — 화면이 그 경로로 곧장 보내야 한다.
+  it("must_change_password가 참이면 비밀번호 변경 화면으로 이동한다", async () => {
+    mocks.login.mockResolvedValue({ mustChangePassword: true });
+    renderLogin();
+    fillAndSubmit("a@gonjiam.com", "temp-password-1");
 
-    fireEvent.click(screen.getByRole("button", { name: "다시 보내기" }));
-    await waitFor(() => expect(mocks.requestMagicLink).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("비밀번호 변경 화면")).toBeInTheDocument();
   });
 
-  // 회귀: 예전에는 finally에서 무조건 안내 화면으로 넘어가, 요청이 실패해도
-  // "카카오워크 앱을 확인해 주세요"가 떴다. 오지 않을 DM을 기다리게 되는 실패다.
-  it("요청이 실패하면 안내 화면으로 넘어가지 않고 오류를 표시한다", async () => {
-    mocks.requestMagicLink.mockRejectedValue(new Error("Failed to send a request to the Edge Function"));
-    render(<Login />);
-    fireEvent.change(screen.getByLabelText("카카오워크에 등록된 회사 이메일"), {
-      target: { value: "a@t.co" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "로그인 링크 받기" }));
+  // 서버 문구가 아니라 상태 코드로 직접 분기해 고정 문구를 보여준다는 것을 증명하려면
+  // 서버가 실제로 보내는 문구와 다른 raw 메시지를 던져야 한다 — e.message를 그대로
+  // 보여주기만 해도 우연히 통과하는 테스트가 되지 않도록 한다.
+  it("403이면 서버 문구와 무관하게 계정을 쓸 수 없다는 고정 문구를 보여주고 화면을 벗어나지 않는다", async () => {
+    mocks.login.mockRejectedValue(new ApiError(403, "Forbidden"));
+    renderLogin();
+    fillAndSubmit("a@gonjiam.com", "password12345");
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/링크를 보내지 못했습니다/);
-    expect(screen.queryByText(/카카오워크 앱을 확인해 주세요/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "로그인 링크 받기" })).toBeEnabled();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "사용할 수 없는 계정입니다. 관리자에게 문의해 주세요",
+    );
+    expect(screen.queryByText("홈 화면")).not.toBeInTheDocument();
   });
 
-  it("실패 후 재시도가 성공하면 오류가 사라지고 안내 화면으로 전환한다", async () => {
-    mocks.requestMagicLink.mockRejectedValueOnce(new Error("네트워크 오류"));
-    render(<Login />);
-    fireEvent.change(screen.getByLabelText("카카오워크에 등록된 회사 이메일"), {
-      target: { value: "a@t.co" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "로그인 링크 받기" }));
+  it("423이면 서버 문구와 무관하게 잠시 후 다시 시도하라는 고정 문구를 보여준다", async () => {
+    mocks.login.mockRejectedValue(new ApiError(423, "Locked"));
+    renderLogin();
+    fillAndSubmit("a@gonjiam.com", "wrong-password");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("잠시 후 다시 시도해 주세요");
+  });
+
+  // 계정 존재 여부를 감추기 위해 서버가 401에 이미 사람이 읽을 수 있는 문구를 준다
+  // (server/src/auth/routes.ts: "로그인할 수 없습니다"). 그 문구를 그대로 보여준다.
+  it("401이면 서버가 준 문구를 그대로 보여준다", async () => {
+    mocks.login.mockRejectedValue(new ApiError(401, "로그인할 수 없습니다"));
+    renderLogin();
+    fillAndSubmit("a@gonjiam.com", "wrong-password");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("로그인할 수 없습니다");
+  });
+
+  // 회귀: 예전 로그인 화면은 catch가 없어 실패해도 성공 화면을 보여줬다. 여기서는
+  // 실패 후 버튼이 다시 눌릴 수 있는 상태(spinner에 걸리지 않음)까지 함께 확인한다.
+  it("로그인이 실패하면 홈으로 이동하지 않고 버튼이 다시 활성화된다", async () => {
+    mocks.login.mockRejectedValue(new Error("네트워크 오류"));
+    renderLogin();
+    fillAndSubmit("a@gonjiam.com", "password12345");
+
     await screen.findByRole("alert");
-
-    fireEvent.click(screen.getByRole("button", { name: "로그인 링크 받기" }));
-    expect(await screen.findByText(/카카오워크 앱을 확인해 주세요/)).toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("홈 화면")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "로그인" })).toBeEnabled();
   });
 });
