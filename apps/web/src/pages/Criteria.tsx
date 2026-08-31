@@ -178,8 +178,8 @@ export default function Criteria() {
       })),
     );
     try {
-      // 서버(dashboard.ts)에는 아직 weather_criteria 저장 엔드포인트가 없다 — 이 호출은
-      // 그 엔드포인트가 생기기 전까지 404로 실패한다. task-8-report.md 참고.
+      // PUT /api/criteria — (kind,grade) 기준 upsert. 배치 하나라도 kind/grade가
+      // 잘못되면 서버가 아무것도 쓰지 않고 400을 돌려준다.
       await saveCriteria(rows);
       setShowSuccess(true);
       setTimeout(() => setShowSuccess(false), 3000);

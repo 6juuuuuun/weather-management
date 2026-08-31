@@ -29,10 +29,10 @@ export type MessageRow = {
 
 export const messagesOf = (eventId: string) => apiGet<MessageRow[]>(`/api/messages?event_id=${encodeURIComponent(eventId)}`);
 
-// 서버(content.ts)에 messages 갱신 엔드포인트가 없다 — GET만 있다. EventReview.tsx의
-// "임시 저장"은 이 호출이 404로 실패한다 — task-8-report.md 참고.
+// w_approver 정책이 alert_recipients 등록 여부로 판정한다(role이 아니다) — 그
+// 정책에 안 걸리면 서버가 403을, 메시지 자체가 없으면 404를 돌려준다.
 export const saveDraftMessage = (id: string, content: DeptBlock[]) =>
-  apiSend<null>("PATCH", `/api/messages/${encodeURIComponent(id)}`, { content });
+  apiSend<MessageRow>("PATCH", `/api/messages/${encodeURIComponent(id)}`, { content });
 
 // dispatches — History.tsx/Dashboard.tsx. weather_events(kind,grade,detected_at)와
 // messages.content(message_content, 스냅샷 없는 옛 이력의 폴백)를 서버가 이미 조인해 내려준다.

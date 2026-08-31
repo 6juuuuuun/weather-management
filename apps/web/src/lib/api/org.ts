@@ -2,10 +2,7 @@
 import { apiGet, apiSend } from "./client";
 import type { AlertSetting, EmpRole } from "../types";
 
-// departments 테이블에는 parent_id/sort_order도 있지만 org.ts는 id/name만 select하고
-// insert/update도 name만 받는다 — 부서 계층(상위/하위)은 이 API로 다룰 수 없다.
-// DeptModal.tsx/Employees.tsx/Guidelines.tsx가 쓰던 트리 구조가 평면 목록으로 바뀐 이유.
-export type DepartmentRow = { id: string; name: string };
+export type DepartmentRow = { id: string; parent_id: string | null; name: string; sort_order: number };
 
 // EMP_COLS 그대로. employees 테이블에는 phone도 있다(브리프에는 없던 필드).
 export type EmployeeRow = {
@@ -35,7 +32,12 @@ export type AlertRecipientRow = { employee_id: string; name: string; role: EmpRo
 export type AlertSettingRow = AlertSetting;
 
 export const listDepartments = () => apiGet<DepartmentRow[]>("/api/departments");
-export const createDepartment = (name: string) => apiSend<DepartmentRow>("POST", "/api/departments", { name });
+export const createDepartment = (name: string, opts?: { parentId?: string | null; sortOrder?: number }) =>
+  apiSend<DepartmentRow>("POST", "/api/departments", {
+    name,
+    parent_id: opts?.parentId ?? null,
+    sort_order: opts?.sortOrder,
+  });
 export const renameDepartment = (id: string, name: string) =>
   apiSend<DepartmentRow>("PATCH", `/api/departments/${encodeURIComponent(id)}`, { name });
 export const deleteDepartment = (id: string) => apiSend<null>("DELETE", `/api/departments/${encodeURIComponent(id)}`);
@@ -50,9 +52,9 @@ export const updateEmployee = (
 ) => apiSend<EmployeeRow>("PATCH", `/api/employees/${encodeURIComponent(id)}`, patch);
 export const deleteEmployee = (id: string) => apiSend<null>("DELETE", `/api/employees/${encodeURIComponent(id)}`);
 
-// 서버(org.ts)에 직원 "생성" 엔드포인트가 없다 — 가입은 /api/auth/signup 전용이고,
-// 관리자는 기존 직원을 고치거나(PATCH) 지울(DELETE) 수만 있다. Employees.tsx의
-// "직원 추가"는 이 호출이 404로 실패한다 — task-8-report.md 참고.
+// 계정(로그인) 없이 관리자가 미리 등록하는 직원 행이다 — 가입(/api/auth/signup)과는
+// 별개다. 이메일이 나중에 실제로 가입하면 auth_user_id가 그 계정으로 이어붙는다
+// (auth/routes.ts의 signup upsert).
 export const createEmployee = (body: {
   name: string;
   email: string;

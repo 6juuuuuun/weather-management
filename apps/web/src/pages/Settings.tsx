@@ -4,7 +4,7 @@ import { Toggle } from "../components/Toggle";
 import { Button } from "../components/Button";
 import { useAuth } from "../auth/AuthProvider";
 import { siteSettings as fetchSiteSettings, saveSiteSettings, heartbeat as fetchHeartbeat } from "../lib/api/dashboard";
-import type { SiteSettingsRow } from "../lib/api/dashboard";
+import type { HeartbeatRow, SiteSettingsRow } from "../lib/api/dashboard";
 import { alertSettings as fetchAlertSettings, saveAlertSettings } from "../lib/api/org";
 import { ApiError } from "../lib/api/client";
 import { callSend } from "../lib/api";
@@ -126,26 +126,13 @@ function minutesAgo(isoDate: string): string {
 
 type ToastState = { kind: "ok" | "error"; message: string } | null;
 
-// site_settings 실제 테이블에는 address/remind_interval_min/resolve_notice/updated_at도
-// 있지만 GET /api/site-settings는 id/site_name/nx/ny만 내려준다(dashboard.ts) — 나머지
-// 필드는 이 화면이 로컬로만 들고 있고, 저장 엔드포인트도 없다. task-8-report.md 참고.
-type EditableSiteSettings = SiteSettingsRow & {
-  address: string;
-  remind_interval_min: number;
-  resolve_notice: boolean;
-};
-
-// db/migrations/0001_schema.sql의 site_settings 기본값 — API가 못 내려주는 필드의
-// 자리표시자로만 쓴다(실제 저장된 값과 다를 수 있다).
-const SITE_DEFAULTS = { address: "경기도 광주시 도척면 도척윗로 278", remind_interval_min: 30, resolve_notice: true };
-
 export default function Settings() {
   const { employee } = useAuth();
   const isAdmin = employee?.role === "admin";
 
   const [alertSettings, setAlertSettings] = useState<Record<Kind, AlertSetting> | null>(null);
-  const [siteSettings, setSiteSettings] = useState<EditableSiteSettings | null>(null);
-  const [weatherHeartbeat, setWeatherHeartbeat] = useState<{ name: string; last_run_at: string } | null>(null);
+  const [siteSettings, setSiteSettings] = useState<SiteSettingsRow | null>(null);
+  const [weatherHeartbeat, setWeatherHeartbeat] = useState<HeartbeatRow | null>(null);
   const [missing24h] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -167,7 +154,7 @@ export default function Settings() {
       const map = {} as Record<Kind, AlertSetting>;
       for (const row of alertRows) map[row.kind] = row;
       setAlertSettings(map);
-      setSiteSettings(site ? { ...site, ...SITE_DEFAULTS } : null);
+      setSiteSettings(site);
       setWeatherHeartbeat(hb);
       setLoading(false);
     })();
@@ -189,7 +176,7 @@ export default function Settings() {
     });
   }
 
-  function updateSite(patch: Partial<EditableSiteSettings>) {
+  function updateSite(patch: Partial<SiteSettingsRow>) {
     setSiteSettings((prev) => (prev ? { ...prev, ...patch } : prev));
   }
 
@@ -211,8 +198,8 @@ export default function Settings() {
           };
         }),
       );
-      // 서버(dashboard.ts)에는 아직 site_settings 저장 엔드포인트가 없다 — 이 호출은
-      // 그 엔드포인트가 생기기 전까지 404로 실패한다. task-8-report.md 참고.
+      // PATCH /api/site-settings — update만 가능하다(insert 정책 없음). 화면이
+      // 편집하는 5개 필드만 보낸다.
       await saveSiteSettings({
         address: siteSettings.address,
         nx: siteSettings.nx,
@@ -440,12 +427,9 @@ export default function Settings() {
             </h2>
             <div className="settings-heartbeat-row">
               <span>기상청 API</span>
-              {/* GET /api/heartbeats/:name은 name/last_run_at만 내려준다(ok/note 없음) —
-                  행이 있으면 "정상"으로 본다. 실제 성공/실패 여부는 이 API로 구분할 수 없다
-                  (task-8-report.md 참고). */}
-              <span className={`settings-heartbeat-value ${weatherHeartbeat ? "ok" : "fail"}`}>
+              <span className={`settings-heartbeat-value ${weatherHeartbeat?.ok ? "ok" : "fail"}`}>
                 <span className="settings-heartbeat-dot" aria-hidden="true" />
-                {weatherHeartbeat ? "정상" : "정보 없음"}
+                {weatherHeartbeat ? (weatherHeartbeat.ok ? "정상" : "오류") : "정보 없음"}
                 {weatherHeartbeat && ` · 마지막 수집 ${minutesAgo(weatherHeartbeat.last_run_at)}`}
               </span>
             </div>

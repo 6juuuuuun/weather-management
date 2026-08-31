@@ -2,7 +2,8 @@
 import { apiGet, apiSend } from "./client";
 import type { WeatherEvent } from "../types";
 
-// dashboard.ts의 OBS_COLS는 id를 내려주지 않는다 — 단건/구간 조회 모두 이 형태다.
+// dashboard.ts의 OBS_COLS는 id를 내려주지 않는다 — /latest, /observations?since=는
+// 이 형태다. 단건(/observations/:id)만 id를 추가로 포함한다(ObservationDetail).
 export type ObservationRow = {
   observed_at: string;
   rain_mm_per_hr: number | null;
@@ -13,29 +14,35 @@ export type ObservationRow = {
   missing: boolean;
 };
 
+export type ObservationDetail = ObservationRow & { id: number };
+
 // weather_criteria는 kind+grade가 기본키다. dashboard.ts는 updated_at을 select하지 않는다.
 export type CriteriaRow = { kind: WeatherEvent["kind"]; grade: WeatherEvent["grade"]; threshold: Record<string, number> };
 
-// site_settings 실제 테이블에는 address/remind_interval_min/resolve_notice/updated_at도 있지만
-// dashboard.ts는 id/site_name/nx/ny만 select한다 — Settings.tsx가 쓰는 나머지 필드는
-// 이 엔드포인트로는 얻을 수 없다(report 참고).
-export type SiteSettingsRow = { id: number; site_name: string; nx: number; ny: number };
+export type SiteSettingsRow = {
+  id: number;
+  site_name: string;
+  address: string;
+  nx: number;
+  ny: number;
+  remind_interval_min: number;
+  resolve_notice: boolean;
+  updated_at: string;
+};
 
-// heartbeats 테이블에는 ok/note도 있지만 dashboard.ts는 name/last_run_at만 select한다.
-export type HeartbeatRow = { name: string; last_run_at: string };
+export type HeartbeatRow = { name: string; last_run_at: string; ok: boolean; note: string | null };
 
 export const latestObservation = () => apiGet<ObservationRow | null>("/api/observations/latest");
 export const observationsSince = (iso: string) =>
   apiGet<ObservationRow[]>(`/api/observations?since=${encodeURIComponent(iso)}`);
+// 특보의 trigger_observation_id로 그 특보를 일으킨 관측 1건을 정확히 짚는다
+// (EventReview.tsx) — 근사치가 아니라 실제 id 매칭이다.
+export const observation = (id: number) => apiGet<ObservationDetail | null>(`/api/observations/${id}`);
 export const openEvents = () => apiGet<WeatherEvent[]>("/api/events/open");
 export const criteria = () => apiGet<CriteriaRow[]>("/api/criteria");
-export const siteSettings = () => apiGet<SiteSettingsRow | null>("/api/site-settings");
-export const heartbeat = (name: string) => apiGet<HeartbeatRow | null>(`/api/heartbeats/${encodeURIComponent(name)}`);
-
-// --- 아래 두 함수는 서버에 대응 엔드포인트가 없다 (dashboard.ts는 GET만 제공) ---
-// Criteria.tsx/Settings.tsx의 저장 버튼이 호출은 하되, 서버가 라우트를 추가하기 전까지는
-// 404로 실패한다. 화면은 이미 실패를 잡아 에러 배너/토스트로 보여주므로 크래시하지는
-// 않는다 — task-8-report.md의 "서버 갭" 항목 참고.
 export const saveCriteria = (rows: CriteriaRow[]) => apiSend<CriteriaRow[]>("PUT", "/api/criteria", { rows });
-export const saveSiteSettings = (patch: Record<string, unknown>) =>
-  apiSend<SiteSettingsRow>("PUT", "/api/site-settings", patch);
+export const siteSettings = () => apiGet<SiteSettingsRow | null>("/api/site-settings");
+// site_settings는 시드 1행뿐이고 admin에게 update만 허용한다 — 부분 갱신(PATCH)이다.
+export const saveSiteSettings = (patch: Partial<Omit<SiteSettingsRow, "id" | "updated_at">>) =>
+  apiSend<SiteSettingsRow>("PATCH", "/api/site-settings", patch);
+export const heartbeat = (name: string) => apiGet<HeartbeatRow | null>(`/api/heartbeats/${encodeURIComponent(name)}`);
