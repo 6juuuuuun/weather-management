@@ -31,10 +31,19 @@ export function GlobalNav() {
   useEffect(() => {
     let active = true;
     (async () => {
-      const [site, hb] = await Promise.all([siteSettings(), heartbeat("weather-tick")]);
-      if (!active) return;
-      setSiteName(site?.site_name ?? null);
-      setLastRunAt(hb?.last_run_at ?? null);
+      try {
+        const [site, hb] = await Promise.all([siteSettings(), heartbeat("weather-tick")]);
+        if (!active) return;
+        setSiteName(site?.site_name ?? null);
+        setLastRunAt(hb?.last_run_at ?? null);
+      } catch {
+        // 조용히 삼킨다. 이 조회는 네비게이션 우측의 "지점명 · 마지막 수집 N분 전"
+        // 한 줄을 채우는 게 전부고, 실패하면 siteName이 null로 남아 그 span 자체가
+        // 렌더되지 않는다 — 링크·역할 표시 등 네비게이션의 본 기능은 그대로 동작한다.
+        // 여기서 오류를 띄우면 모든 화면 상단에 배너가 겹쳐 뜨는데, 정작 각 페이지는
+        // 자기 로더에서 같은 실패를 이미 보여준다(중복이고, 이 컴포넌트에는 재시도
+        // 수단도 로딩 표시도 없다). 던지게 두면 처리되지 않은 rejection만 남는다.
+      }
     })();
     return () => {
       active = false;

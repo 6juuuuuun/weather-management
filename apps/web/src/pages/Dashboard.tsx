@@ -4,6 +4,7 @@ import { AppLayout } from "../components/AppLayout";
 import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { useAuth } from "../auth/AuthProvider";
+import { ApiError } from "../lib/api/client";
 import { latestObservation, observationsSince, openEvents, criteria as fetchCriteria, siteSettings } from "../lib/api/dashboard";
 import type { CriteriaRow, ObservationRow } from "../lib/api/dashboard";
 import { listDepartments, alertRecipients } from "../lib/api/org";
@@ -106,6 +107,7 @@ export default function Dashboard() {
   const [setup, setSetup] = useState<SetupChecklist | null>(null);
   const [setupDetail, setSetupDetail] = useState<{ missingDeptCount: number }>({ missingDeptCount: 0 });
   const [siteName, setSiteName] = useState("곤지암");
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const boardMode = searchParams.get("board") === "1";
   const [now, setNow] = useState(() => new Date());
@@ -113,63 +115,75 @@ export default function Dashboard() {
   const load = useCallback(async () => {
     const isAdmin = employee?.role === "admin";
 
-    const [obs, openEventRows, dispatchRows, criteriaRows, site, snowTodayRows, historyRows] = await Promise.all([
-      // 결측 행(기상청 조회 실패로 기록되는 빈 행)을 제외하고 마지막 '유효' 관측을 읽는다.
-      // 이 필터는 서버(dashboard.ts)가 항상 적용한다 — 제외하지 않으면 기상청이 한 번만
-      // 삐끗해도 전 카드가 빈 값이 되는데, 상단의 "마지막 수집 N분 전"은 heartbeat(함수
-      // 실행 여부) 기준이라 그대로 최신으로 표시돼 "방금 수집했다는데 값이 없다"는
-      // 모순이 생긴다. 바로 아래 적설 누적 조회도 같은 기준이다.
-      latestObservation(),
-      openEvents(),
-      fetchDispatches({ limit: 5 }),
-      fetchCriteria(),
-      siteSettings(),
-      // 판정 엔진(todayAccums)과 동일 기준: KST 자정 이후 시간 신적설 합산
-      observationsSince(kstMidnightISO(new Date())),
-      // 이력은 월보드 차트 전용이다. 일반 대시보드는 쓰지 않으므로 조회하지 않는다 —
-      // 운영 화면의 30초 폴링에 쓰지도 않는 요청을 얹지 않기 위해서다.
-      boardMode ? observationsSince(new Date(Date.now() - 24 * 3600_000).toISOString()) : Promise.resolve([]),
-    ]);
-
-    const snowToday =
-      snowTodayRows.length === 0
-        ? null
-        : snowTodayRows.reduce((acc, r) => acc + Number(r.snow_new_cm ?? 0), 0);
-
-    setSiteName(site?.site_name ?? "곤지암");
-    setData({
-      observation: obs,
-      criteria: criteriaRows,
-      openEvents: openEventRows,
-      dispatches: dispatchRows,
-      snowToday,
-      history: historyRows,
-    });
-
-    if (isAdmin) {
-      // departments API는 id/name만 내려준다(parent_id/sort_order 없음) — 부서 계층을
-      // 알 수 없어 "리프 부서"를 가릴 수 없다. 모든 부서를 리프로 취급한다(report 참고).
-      const [depts, guidelineRows, alertRecipientRows] = await Promise.all([
-        listDepartments(),
-        fetchGuidelines(),
-        alertRecipients(),
+    try {
+      const [obs, openEventRows, dispatchRows, criteriaRows, site, snowTodayRows, historyRows] = await Promise.all([
+        // 결측 행(기상청 조회 실패로 기록되는 빈 행)을 제외하고 마지막 '유효' 관측을 읽는다.
+        // 이 필터는 서버(dashboard.ts)가 항상 적용한다 — 제외하지 않으면 기상청이 한 번만
+        // 삐끗해도 전 카드가 빈 값이 되는데, 상단의 "마지막 수집 N분 전"은 heartbeat(함수
+        // 실행 여부) 기준이라 그대로 최신으로 표시돼 "방금 수집했다는데 값이 없다"는
+        // 모순이 생긴다. 바로 아래 적설 누적 조회도 같은 기준이다.
+        latestObservation(),
+        openEvents(),
+        fetchDispatches({ limit: 5 }),
+        fetchCriteria(),
+        siteSettings(),
+        // 판정 엔진(todayAccums)과 동일 기준: KST 자정 이후 시간 신적설 합산
+        observationsSince(kstMidnightISO(new Date())),
+        // 이력은 월보드 차트 전용이다. 일반 대시보드는 쓰지 않으므로 조회하지 않는다 —
+        // 운영 화면의 30초 폴링에 쓰지도 않는 요청을 얹지 않기 위해서다.
+        boardMode ? observationsSince(new Date(Date.now() - 24 * 3600_000).toISOString()) : Promise.resolve([]),
       ]);
-      const leafIds = new Set(depts.map((d) => d.id));
-      const guidelineDeptIds = new Set(
-        guidelineRows.map((g) => g.department_id).filter((id) => leafIds.has(id)),
-      );
 
-      const checklist = computeSetupChecklist({
-        site: !!site,
-        criteria: criteriaRows.length >= 8,
-        deptCount: leafIds.size,
-        guidelineDeptCount: guidelineDeptIds.size,
-        alertRecipientCount: alertRecipientRows.length,
+      const snowToday =
+        snowTodayRows.length === 0
+          ? null
+          : snowTodayRows.reduce((acc, r) => acc + Number(r.snow_new_cm ?? 0), 0);
+
+      setSiteName(site?.site_name ?? "곤지암");
+      setData({
+        observation: obs,
+        criteria: criteriaRows,
+        openEvents: openEventRows,
+        dispatches: dispatchRows,
+        snowToday,
+        history: historyRows,
       });
-      setSetup(checklist);
-      setSetupDetail({ missingDeptCount: Math.max(0, leafIds.size - guidelineDeptIds.size) });
-    } else {
-      setSetup(null);
+
+      if (isAdmin) {
+        const [depts, guidelineRows, alertRecipientRows] = await Promise.all([
+          listDepartments(),
+          fetchGuidelines(),
+          alertRecipients(),
+        ]);
+        // 지침(action_guidelines)은 리프 부서에만 단다. 모든 부서를 리프로 세면
+        // 시드 기준 deptCount가 12가 아니라 16이 되어 guidelineDeptCount >= deptCount가
+        // 영원히 참이 될 수 없다 — 리프 12곳을 다 채워도 체크리스트가 4/5에 멈춘다.
+        const parentIds = new Set(depts.map((d) => d.parent_id).filter(Boolean));
+        const leafIds = new Set(depts.filter((d) => !parentIds.has(d.id)).map((d) => d.id));
+        const guidelineDeptIds = new Set(
+          guidelineRows.map((g) => g.department_id).filter((id) => leafIds.has(id)),
+        );
+
+        const checklist = computeSetupChecklist({
+          site: !!site,
+          criteria: criteriaRows.length >= 8,
+          deptCount: leafIds.size,
+          guidelineDeptCount: guidelineDeptIds.size,
+          alertRecipientCount: alertRecipientRows.length,
+        });
+        setSetup(checklist);
+        setSetupDetail({ missingDeptCount: Math.max(0, leafIds.size - guidelineDeptIds.size) });
+      } else {
+        setSetup(null);
+      }
+
+      setLoadError(null);
+    } catch (err) {
+      // 이 화면은 30초마다 다시 부른다. 일시 오류에 setData(null)을 하면 벽걸이
+      // 화면이 주기적으로 깜빡이며 비워지고, 마지막으로 알던 값조차 사라진다 —
+      // 이미 받아 둔 데이터는 그대로 두고 오류만 덧붙인다. 첫 로드가 실패하면
+      // data가 null이라 카드가 전부 "-"인데, 그때 이 문구가 이유를 말해 준다.
+      setLoadError(err instanceof ApiError ? err.message : "대시보드를 불러오지 못했습니다");
     }
   }, [employee?.role, boardMode]);
 
@@ -249,6 +263,8 @@ export default function Dashboard() {
       <p className="dash-desc">실시간 날씨 모니터링과 특보 현황</p>
 
       <div className="dash-stack">
+        {loadError && <div className="dash-error">데이터를 불러오지 못했습니다: {loadError}</div>}
+
         {employee?.role === "staff" && employee.department_id === null && (
           <div className="dept-banner">
             부서가 아직 지정되지 않았습니다. 관리자에게 부서 지정을 요청해 주세요.

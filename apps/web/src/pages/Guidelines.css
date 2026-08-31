@@ -13,6 +13,13 @@
   color: var(--ink-muted-48);
 }
 
+.guidelines-error {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--danger);
+}
+
 .guidelines-kind-tabs {
   display: flex;
   flex-wrap: wrap;

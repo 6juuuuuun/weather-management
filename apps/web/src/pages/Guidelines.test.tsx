@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { ApiError } from "../lib/api/client";
 import Guidelines from "./Guidelines";
 import type { Employee } from "../lib/types";
 
@@ -76,6 +77,22 @@ beforeEach(() => {
 });
 
 describe("Guidelines", () => {
+  // 새 API 클라이언트는 HTTP 오류에 throw한다(supabase-js는 resolve했다). 로더에
+  // try/catch가 없으면 setLoading(false)에 닿지 못해 "불러오는 중…"이 영구히 남는다.
+  it("조회가 실패하면 불러오는 중에 멈추지 않고 오류를 보여준다", async () => {
+    mocks.authState.employee = adminEmployee();
+    mocks.listDepartments.mockRejectedValue(new ApiError(401, "로그인이 필요합니다"));
+
+    render(
+      <MemoryRouter>
+        <Guidelines />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/로그인이 필요합니다/)).toBeInTheDocument();
+    expect(screen.queryByText("불러오는 중…")).not.toBeInTheDocument();
+  });
+
   it("부서가 0행이면 빈 상태와 admin CTA를 보여준다", async () => {
     mocks.authState.employee = adminEmployee();
 

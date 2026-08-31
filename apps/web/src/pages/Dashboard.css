@@ -42,6 +42,18 @@
 }
 
 /* ---------- 부서 미지정 안내 배너 ---------- */
+/* 폴링 실패를 알리는 줄. 기존 데이터는 지우지 않고 이 문구만 덧붙인다 —
+   화면이 비지 않으므로 카드 위에 얇게 얹는다. */
+.dash-error {
+  padding: 12px 28px;
+  background: var(--pearl);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--danger);
+}
+
 .dept-banner {
   padding: 16px 28px;
   background: var(--pearl);

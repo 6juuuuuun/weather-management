@@ -66,6 +66,7 @@ export default function Guidelines() {
   const isAdmin = employee?.role === "admin";
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [departments, setDepartments] = useState<DepartmentRow[]>([]);
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
   const [recipients, setRecipients] = useState<RecipientRow[]>([]);
@@ -91,18 +92,28 @@ export default function Guidelines() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [depts, emps, recs, guides] = await Promise.all([
-        listDepartments(),
-        listEmployees(),
-        listRecipients(),
-        fetchGuidelines(),
-      ]);
-      if (cancelled) return;
-      setDepartments(depts);
-      setEmployees(emps);
-      setRecipients(recs);
-      setGuidelines(guides);
-      setLoading(false);
+      setLoadError(null);
+      try {
+        const [depts, emps, recs, guides] = await Promise.all([
+          listDepartments(),
+          listEmployees(),
+          listRecipients(),
+          fetchGuidelines(),
+        ]);
+        if (cancelled) return;
+        setDepartments(depts);
+        setEmployees(emps);
+        setRecipients(recs);
+        setGuidelines(guides);
+      } catch (err) {
+        // supabase-js는 HTTP 오류에 reject하지 않아 항상 setLoading(false)에 닿았다.
+        // 새 클라이언트는 던지므로 catch/finally 없이는 세션 만료(401) 한 번에
+        // "불러오는 중…"이 영구히 남는다.
+        if (cancelled) return;
+        setLoadError(err instanceof ApiError ? err.message : "행동 지침을 불러오지 못했습니다");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     })();
     return () => {
       cancelled = true;
@@ -251,6 +262,8 @@ export default function Guidelines() {
 
       {loading ? (
         <p className="guidelines-loading">불러오는 중…</p>
+      ) : loadError ? (
+        <p className="guidelines-error">행동 지침을 불러오지 못했습니다: {loadError}</p>
       ) : departments.length === 0 ? (
         <EmptyState
           icon={<DeptIcon />}

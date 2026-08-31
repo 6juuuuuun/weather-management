@@ -66,7 +66,7 @@ describe("API 클라이언트", () => {
         }),
       ),
     );
-    const err = await apiGet("/api/departments").catch((e) => e);
+    const err = (await apiGet("/api/departments").catch((e) => e)) as ApiError;
     expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(403);
     expect(err.body?.must_change_password).toBe(true);
@@ -79,14 +79,14 @@ describe("API 클라이언트", () => {
       "fetch",
       vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "권한이 없습니다" }), { status: 403 })),
     );
-    const err = await apiGet("/api/departments").catch((e) => e);
+    const err = (await apiGet("/api/departments").catch((e) => e)) as ApiError;
     expect(err.status).toBe(403);
     expect(err.body?.must_change_password).toBeUndefined();
   });
 
   it("오류 본문이 JSON이 아니면 body는 null이다", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<html>Not Found</html>", { status: 404 })));
-    const err = await apiGet("/api/nope").catch((e) => e);
+    const err = (await apiGet("/api/nope").catch((e) => e)) as ApiError;
     expect(err.body).toBeNull();
   });
 

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 // Dashboard는 이제 supabase 체인이 아니라 이름 있는 api 함수(lib/api/*)를 부른다.
@@ -47,6 +47,7 @@ vi.mock("../lib/api/content", () => ({
   dispatches: (...args: unknown[]) => mocks.dispatches(...args),
 }));
 
+import { ApiError } from "../lib/api/client";
 import Dashboard, { toBoardProps } from "./Dashboard";
 
 const validObs = {
@@ -123,6 +124,93 @@ describe("Dashboard 관측 카드", () => {
     renderDashboard();
     await screen.findByText(/관측 기준/);
     expect(screen.queryByText(/값이 갱신되지 않았습니다/)).not.toBeInTheDocument();
+  });
+});
+
+// 항목 1·3(2라운드): 로더가 던지면 화면이 멈추고, 리프 부서 판정이 틀리면
+// 셋업 체크리스트가 영원히 완료되지 않는다. 둘 다 화면 테스트가 lib/api를 통째로
+// 목하는 탓에 오래 눈에 띄지 않았다.
+describe("Dashboard 초기 로드 실패", () => {
+  it("조회가 실패하면 오류를 표시한다", async () => {
+    mocks.latestObservation.mockRejectedValue(new ApiError(401, "로그인이 필요합니다"));
+    renderDashboard();
+    expect(await screen.findByText(/로그인이 필요합니다/)).toBeInTheDocument();
+  });
+
+  // 30초 폴링 중 일시 오류가 기존 데이터를 지우면 벽걸이 화면이 주기적으로
+  // 비워진다 — 마지막으로 알던 값은 남아 있어야 한다.
+  it("폴링 중 실패해도 이미 받아 둔 관측을 지우지 않는다", async () => {
+    // 폴링 setInterval을 잡으려면 render보다 먼저 가짜 타이머를 깔아야 한다.
+    // shouldAdvanceTime을 켜야 findByText(waitFor)가 그대로 동작한다.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderDashboard();
+      // 첫 로드는 성공 — 관측 카드가 채워진다.
+      expect(await screen.findByText(/관측 기준/)).toBeInTheDocument();
+
+      // 이후 폴링이 실패하도록 바꾸고 30초 주기를 넘긴다.
+      mocks.latestObservation.mockRejectedValue(new ApiError(503, "일시적인 오류입니다"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(31_000);
+      });
+
+      // 폴링이 실제로 실패했는지 먼저 확인한다 — 이게 없으면 아래 단언이
+      // "애초에 폴링이 안 돌았다"로도 통과해 아무것도 증명하지 못한다.
+      expect(screen.getByText(/일시적인 오류입니다/)).toBeInTheDocument();
+      // 그럼에도 마지막으로 알던 관측은 남아 있어야 한다.
+      expect(screen.getByText(/관측 기준/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("Dashboard 셋업 체크리스트", () => {
+  // 지침(action_guidelines)은 리프 부서에만 단다. 모든 부서를 리프로 세면
+  // deptCount가 부풀려져 guidelineDeptCount >= deptCount가 영원히 참이 될 수 없고,
+  // 리프를 다 채워도 "지침 미작성 N곳"이 상시 표시된다.
+  it("상위 부서를 리프로 세지 않는다 — 리프 지침을 다 채우면 미작성 0곳이다", async () => {
+    // 루트 2개 + 각 자식 1개 = 리프 2곳.
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "root2", parent_id: null, name: "사업지원", sort_order: 2 },
+      { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
+      { id: "leaf2", parent_id: "root2", name: "시설", sort_order: 1 },
+    ]);
+    // 리프 2곳에만 지침이 있다.
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf1", kind: "rain", grade: "watch" },
+      { department_id: "leaf2", kind: "rain", grade: "watch" },
+    ]);
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    mocks.alertRecipients.mockResolvedValue([{ employee_id: "e1", name: "김승인", role: "approver" }]);
+
+    const { container } = renderDashboard();
+    // 5개 항목이 모두 충족되면 스트립 자체가 사라진다(setup.done < setup.total일 때만 렌더).
+    await waitFor(() => expect(mocks.guidelines).toHaveBeenCalled());
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeNull());
+  });
+
+  // 위 테스트가 "항상 스트립이 없다"로 통과하지 않도록, 리프 하나가 비면
+  // 실제로 스트립이 뜨는 것을 함께 고정한다.
+  it("리프 부서 지침이 빠지면 체크리스트가 남는다", async () => {
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
+      { id: "leaf2", parent_id: "root1", name: "시설", sort_order: 2 },
+    ]);
+    mocks.guidelines.mockResolvedValue([{ department_id: "leaf1", kind: "rain", grade: "watch" }]);
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    mocks.alertRecipients.mockResolvedValue([{ employee_id: "e1", name: "김승인", role: "approver" }]);
+
+    const { container } = renderDashboard();
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
   });
 });
 
