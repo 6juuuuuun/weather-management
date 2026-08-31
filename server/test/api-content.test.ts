@@ -354,6 +354,34 @@ describe("발송 이력", () => {
     expect(res.body[0].message_content).toEqual(messageContent);
   });
 
+  // History.tsx(apps/web)는 `.eq("is_test", false)`로 테스트 발송을 아예 조회하지
+  // 않는다 — "그때 누구에게 보냈나"를 확인하는 화면이라 테스트 발송이 실제
+  // 발송처럼 섞이면 안 된다. 기본 호출(파라미터 없음)이 이 동작을 그대로
+  // 유지하는지 확인한다: 실제 발송 1건 + 테스트 발송 1건을 만들고, 기본
+  // 조회에는 실제 발송만 잡히는지, include_test=true를 주면 둘 다 잡히는지 본다.
+  it("기본 조회는 테스트 발송을 제외하고, include_test=true면 포함한다", async () => {
+    const { eventId, messageId } = await makeEventAndMessage();
+    await withService(async (q) => {
+      await q.query(
+        `insert into dispatches (message_id, event_id, sent_at, repeat_no, results, is_test)
+         values ($1, $2, now() - interval '2 hours', 1, '[]', false),
+                ($1, $2, now() - interval '1 hours', 1, '[]', true)`,
+        [messageId, eventId],
+      );
+    });
+    const agent = await agentAs("staff", "t@gonjiam.com");
+
+    const defaultRes = await agent.get("/api/dispatches");
+    expect(defaultRes.status).toBe(200);
+    // is_test 필터가 빠지면 두 건 다 나와 길이가 2가 된다.
+    expect(defaultRes.body).toHaveLength(1);
+    expect(defaultRes.body[0].is_test).toBe(false);
+
+    const includeRes = await agent.get("/api/dispatches").query({ include_test: "true" });
+    expect(includeRes.status).toBe(200);
+    expect(includeRes.body).toHaveLength(2);
+  });
+
   it("로그인하지 않으면 401이다", async () => {
     expect((await request(app).get("/api/dispatches")).status).toBe(401);
   });

@@ -131,6 +131,11 @@ contentRouter.get("/messages", async (req, res) => {
 // 두 개를 조인해 함께 내려준다. message_content로 이름을 구분해 dispatches.content
 // (스냅샷, null일 수 있음)와 섞이지 않게 한다 — 폴백 판단은 화면 쪽이 그대로 한다.
 // event_id·message_id 둘 다 not null 외래키라 참조 행이 항상 존재하므로 inner join.
+//
+// History.tsx는 `.eq("is_test", false)`로 테스트 발송을 아예 조회하지 않는다 —
+// "그때 누구에게 보냈나"를 확인하는 화면이라 테스트 발송이 실제 발송처럼 섞이면
+// 안 된다. 이 엔드포인트도 기본은 제외하고, include_test=true를 명시할 때만
+// 포함한다 — 기본값을 제외로 둬야 화면이 지금 동작을 그대로 유지한다.
 contentRouter.get("/dispatches", async (req, res) => {
   const rawLimit = Number(req.query.limit ?? 100);
   const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 100, 1), 500);
@@ -138,6 +143,7 @@ contentRouter.get("/dispatches", async (req, res) => {
   if (since !== null && Number.isNaN(Date.parse(since))) {
     return res.status(400).json({ error: "since 형식이 올바르지 않습니다" });
   }
+  const includeTest = String(req.query.include_test ?? "") === "true";
   const rows = await withUser(req.user!.accountId, async (q) => {
     const { rows } = await q.query(
       `select d.id, d.message_id, d.event_id, d.sent_at, d.channel, d.repeat_no, d.is_test, d.results, d.content,
@@ -147,9 +153,10 @@ contentRouter.get("/dispatches", async (req, res) => {
          join weather_events we on we.id = d.event_id
          join messages m on m.id = d.message_id
         where ($1::timestamptz is null or d.sent_at >= $1::timestamptz)
+          and ($3 or d.is_test = false)
         order by d.sent_at desc
         limit $2`,
-      [since, limit],
+      [since, limit, includeTest],
     );
     return rows;
   });

@@ -22,14 +22,13 @@ beforeEach(async () => {
     // 안전하게 지울 수 있다. 지우지 않으면 "열린 특보만 돌려준다" 테스트가 이전
     // 실행이 남긴 행까지 세어 통계가 어긋난다.
     await q.query("delete from weather_events");
-    // "특보 기준을 돌려준다" 테스트가 withService로 rain/warning을 심는데,
-    // withService는 커밋한다 — 지우지 않으면 그 값이 테스트 종료 후에도 DB에
-    // 영구히 남고, 실제 시드값(rain/warning=50)을 20으로 덮어써 버린다.
-    // db/seed.sql이 있는 실제 환경이라면 그다음 seed 재적용이
-    // "duplicate key" 없이도 값이 계속 20으로 남는, 조용히 틀린 상태가 된다.
-    await q.query("delete from weather_criteria");
-    // 하트비트도 같은 이유로 지운다 — upsert라 행이 늘진 않지만, 테스트가 찍은
-    // 시각이 실제 수집기가 남긴 값을 영구히 덮어쓴 채로 남는다.
+    // weather_criteria는 지우지 않는다 — db/seed.sql이 (kind,grade) 8개 조합
+    // 전부를 소유(기본키라 테스트가 자기 행을 따로 만들 여지가 없음)하므로,
+    // 지우면 시드를 지우는 것과 같다. 아래 "특보 기준을 돌려준다" 테스트는
+    // 자기 행을 심는 대신 시드가 이미 심어 둔 값을 그대로 검증한다.
+    // 하트비트는 시드 소유가 아니라(upsert 대상일 뿐 seed.sql이 채우지 않음)
+    // 그대로 지운다 — 테스트가 찍은 시각이 실제 수집기 값을 영구히 덮어쓴 채로
+    // 남는 걸 막는다.
     await q.query("delete from heartbeats");
   });
 });
@@ -124,21 +123,20 @@ describe("기준·설정 조회", () => {
     expect((await request(app).get("/api/criteria")).status).toBe(401);
   });
 
-  it("특보 기준을 돌려준다", async () => {
-    await withService((q) =>
-      q.query(
-        `insert into weather_criteria (kind, grade, threshold) values
-         ('rain', 'warning', '{"rain_mm_per_hr":20}')
-         on conflict (kind, grade) do update set threshold = excluded.threshold`,
-      ),
-    );
+  // weather_criteria는 시드가 (kind,grade) 8개 조합을 전부 소유한다(기본키라
+  // 테스트가 자기 행을 따로 만들 여지가 없다) — 이 테스트는 그 시드 값 중
+  // 하나(rain/warning)를 그대로 기대값으로 쓴다(db/seed.sql). 전체 8개가 다
+  // 오는지도 함께 확인해, beforeEach가 이 테이블을 지우는 회귀(리뷰에서 실제로
+  // 발견됨)가 재발하면 길이 검사부터 깨지게 한다.
+  it("특보 기준을 돌려준다 (시드 값)", async () => {
     const agent = await loggedIn();
     const res = await agent.get("/api/criteria");
     expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(8);
     expect(res.body).toContainEqual({
       kind: "rain",
       grade: "warning",
-      threshold: { rain_mm_per_hr: 20 },
+      threshold: { rain_mm_per_hr: 50 },
     });
   });
 
