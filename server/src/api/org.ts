@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { UUID, withUser } from "../db.ts";
+import { UUID, withUser, withService } from "../db.ts";
 import { requireAuth, requireAdmin } from "../auth/middleware.ts";
 
 export const orgRouter = Router();
@@ -89,6 +89,40 @@ orgRouter.delete("/departments/:id", requireAdmin, async (req, res) => {
 // 직원
 // ---------------------------------------------------------------------------
 
+// employees 목록에 계정(auth_accounts) 상태를 덧붙인다(수정 라운드 1 · 리뷰 F3).
+// 서버에 이 필드가 없어서 Employees.tsx가 "비활성화됨"을 서버 진실이 아니라 세션
+// 로컬 상태로만 흉내 냈고, 관리자 B가 새로고침하면(또는 A가 자기 화면을 새로 고쳐도)
+// 방금 비활성화한 계정이 다시 "사용 중"으로 보였다 — 정보 없음이 아니라 반대 사실을
+// 적극적으로 주장하는 결함이었다.
+//
+// auth_accounts는 RLS가 켜져 있고 app_user 경로(withUser)에는 정책이 하나도 없어
+// 항상 0행이 돈다(db/migrations/0011_auth_rls.sql) — 세션 해시·비밀번호 해시가 그
+// 경로로 노출되면 안 되기 때문에 의도적으로 그렇게 막아 둔 것이다. 그래서 employees
+// 조회 자체는 지금처럼 withUser로 하되, 계정 상태만 auth/routes.ts의 다른 모든
+// auth_accounts 접근과 같은 통로(withService)로 따로 읽어 애플리케이션 레벨에서
+// 합친다 — select 목록에 status만 두고 password_hash 등 민감한 컬럼은 건드리지 않는다.
+// 계정이 아직 없는(사전 등록만 된) 직원은 auth_user_id가 null이라 조회 대상에서
+// 빠지고 account_status가 null로 내려간다 — 화면이 "미가입"과 "비활성"을 구분할 수 있다.
+async function withAccountStatus<T extends { auth_user_id: string | null }>(
+  rows: T[],
+): Promise<(T & { account_status: string | null })[]> {
+  const accountIds = [...new Set(rows.map((r) => r.auth_user_id).filter((id): id is string => id !== null))];
+  if (accountIds.length === 0) {
+    return rows.map((r) => ({ ...r, account_status: null }));
+  }
+  const statusById = await withService(async (q) => {
+    const { rows: accRows } = await q.query(
+      "select id, status from auth_accounts where id = any($1::uuid[])",
+      [accountIds],
+    );
+    return new Map<string, string>(accRows.map((a: { id: string; status: string }) => [a.id, a.status]));
+  });
+  return rows.map((r) => ({
+    ...r,
+    account_status: r.auth_user_id ? (statusById.get(r.auth_user_id) ?? null) : null,
+  }));
+}
+
 // role은 콤마로 여러 값을 받는다(Criteria.tsx가 admin,approver만 뽑아 쓰는 것과
 // Employees.tsx가 전체를 쓰는 것을 한 엔드포인트로 합친다). 비어 있으면 필터 없이
 // 전체를 돌려준다 — $1::text[] is null 분기로 한 질의 안에서 처리한다.
@@ -104,7 +138,7 @@ orgRouter.get("/employees", async (req, res) => {
     );
     return rows;
   });
-  res.json(rows);
+  res.json(await withAccountStatus(rows));
 });
 
 // 부분 갱신이다. 화면에는 이름·역할·부서·전화를 모두 바꾸는 폼 말고도

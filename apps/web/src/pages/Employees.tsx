@@ -57,11 +57,12 @@ export default function Employees() {
   const [form, setForm] = useState<EmployeeFormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
-  // 계정(auth_accounts) 상태다. GET /api/employees는 employees 컬럼만 내려주고
-  // auth_accounts.status는 포함하지 않는다 — 서버가 그 값을 화면에 내려줄 방법이
-  // 아직 없어서, 이 화면에서 비활성화한 계정만 세션 동안 흐리게 표시한다(새로고침하면
-  // 초기화된다). accountId(=employees.auth_user_id) 기준으로 추적한다.
-  const [disabledAccountIds, setDisabledAccountIds] = useState<Set<string>>(new Set());
+  // 계정(auth_accounts) 상태는 이제 서버 진실이다 — GET /api/employees가
+  // account_status를 함께 내려준다(server/src/api/org.ts의 withAccountStatus,
+  // 수정 라운드 1 · 리뷰 F3). 예전에는 이 화면이 로컬 Set으로만 흉내 내서, 다른
+  // 관리자가 새로고침하거나 이 관리자 자신이 새로고침해도 방금 비활성화한 계정이
+  // 다시 "사용 중"으로 보였다 — 그래서 이제 로컬 상태를 두지 않고 employees 배열의
+  // account_status를 그대로 읽는다.
   const [accountBusyId, setAccountBusyId] = useState<string | null>(null);
   const [tempPasswordModal, setTempPasswordModal] = useState<{ name: string; password: string } | null>(null);
 
@@ -229,14 +230,23 @@ export default function Employees() {
       await loadAll();
     } catch (err) {
       setToast({ kind: "error", message: err instanceof ApiError ? err.message : "역할 변경에 실패했습니다" });
+      // 리뷰 F7: <select value={e.role}>은 React 상태로 통제되지만, 네이티브 select는
+      // 사용자가 고른 순간 스스로 표시값을 먼저 바꾼다. 실패 후 아무 setState도 없으면
+      // 이 행이 다시 렌더되지 않아 React가 그 값을 되돌릴 기회가 없다 — 관리자는
+      // 화면에 남은 "승인자"를 보고 실제로 권한이 올라간 줄 알게 된다. 성공 때와
+      // 마찬가지로 서버 값을 다시 읽어와 강제로 되돌린다.
+      await loadAll();
     }
   }
 
   // 퇴사자를 막는 유일한 수단이다. 서버가 비활성화와 동시에 남아 있는 세션도 끊는다.
+  // 성공 뒤 loadAll()로 다시 불러와 화면 값이 항상 서버 진실을 따르게 한다 —
+  // changeRole과 같은 이유(리뷰 F7): 로컬 상태만 낙관적으로 바꾸면 실패했을 때도
+  // 화면에 새 값이 남을 수 있다.
   async function toggleAccountStatus(e: EmployeeRow) {
     const accountId = e.auth_user_id;
     if (!accountId) return;
-    const disabling = !disabledAccountIds.has(accountId);
+    const disabling = e.account_status !== "disabled";
     const ok = window.confirm(
       disabling
         ? `${e.name} 님의 로그인 계정을 비활성화하시겠습니까?\n로그인할 수 없게 되고, 남아 있는 세션도 모두 끊깁니다.`
@@ -246,13 +256,8 @@ export default function Employees() {
     setAccountBusyId(e.id);
     try {
       await setAccountStatus(accountId, disabling ? "disabled" : "active");
-      setDisabledAccountIds((prev) => {
-        const next = new Set(prev);
-        if (disabling) next.add(accountId);
-        else next.delete(accountId);
-        return next;
-      });
       setToast({ kind: "ok", message: disabling ? "계정을 비활성화했습니다" : "계정을 다시 활성화했습니다" });
+      await loadAll();
     } catch (err) {
       setToast({ kind: "error", message: err instanceof ApiError ? err.message : "계정 상태 변경에 실패했습니다" });
     } finally {
@@ -382,7 +387,7 @@ export default function Employees() {
                 const unassigned = e.department_id === null;
                 const accountId = e.auth_user_id;
                 const isSelf = accountId !== null && accountId === me?.auth_user_id;
-                const disabled = accountId !== null && disabledAccountIds.has(accountId);
+                const disabled = e.account_status === "disabled";
                 return (
                   <tr key={e.id} className={disabled ? "employees-row-disabled" : undefined}>
                     <td>

@@ -15,6 +15,11 @@ export type EmployeeRow = {
   role: EmpRole;
   phone: string | null;
   created_at: string;
+  // GET /employees에서만 채워진다(server/src/api/org.ts의 withAccountStatus) — 계정이
+  // 아예 없는(사전 등록만 된) 직원은 null, PATCH/POST /employees 응답에는 이 필드
+  // 자체가 없다(옵셔널로 둔 이유). 수정 라운드 1 · 리뷰 F3: 이 필드가 없어서 화면이
+  // "비활성화됨"을 세션 로컬 상태로만 흉내 냈고, 새로고침하면 거짓으로 "사용 중"이 됐다.
+  account_status?: "active" | "disabled" | null;
 };
 
 // GET /recipients, /alert-recipients 모두 평면 형태다 — 예전의

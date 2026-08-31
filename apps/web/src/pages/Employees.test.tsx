@@ -60,6 +60,7 @@ const target = {
   role: "staff" as const,
   phone: null,
   created_at: "2026-02-01T00:00:00Z",
+  account_status: "active" as const,
 };
 
 const unregistered = {
@@ -72,6 +73,7 @@ const unregistered = {
   role: "staff" as const,
   phone: null,
   created_at: "2026-02-01T00:00:00Z",
+  account_status: null,
 };
 
 function renderPage() {
@@ -157,10 +159,39 @@ describe("Employees 계정 관리", () => {
     await waitFor(() => expect(mocks.updateEmployee).toHaveBeenCalledWith("emp-1", { role: "approver" }));
   });
 
+  // 리뷰 F7: select는 <select value={e.role}>로 React 상태에 묶여 있지만, 네이티브
+  // select 엘리먼트는 change 이벤트가 발생하는 즉시 스스로 표시값을 바꾼다. 실패
+  // 처리에서 다시 렌더를 트리거하지 않으면 그 값이 그대로 남아, 토스트는 실패를
+  // 말해도 셀에는 사용자가 고른 새 역할(승인자)이 남는다 — 관리자는 권한을 준
+  // 줄 안다(브리프가 "이것이 실제 관문"이라 못 박은 지점).
+  it("역할 변경이 실패하면 select가 서버의 실제 값(원래 역할)으로 되돌아간다", async () => {
+    mocks.updateEmployee.mockRejectedValue(new ApiError(403, "권한이 없습니다"));
+    renderPage();
+    const roleSelect = await screen.findByLabelText("홍길동 역할");
+    fireEvent.change(roleSelect, { target: { value: "approver" } });
+
+    expect(await screen.findByText("권한이 없습니다")).toBeInTheDocument();
+    // loadAll()이 다시 불려 listEmployees가 재호출되는지(=서버 값을 다시 읽는지)까지
+    // 함께 확인한다 — 재호출 없이 select만 우연히 원상태처럼 보이는 거짓 통과를 막는다.
+    await waitFor(() => expect(mocks.listEmployees).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(roleSelect).toHaveValue("staff"));
+  });
+
   // 퇴사자를 막는 유일한 수단이다. 서버 호출 없이 화면 상태만 바꾸면 실제로는
   // 계정이 살아 있는데 관리자만 비활성화됐다고 믿게 된다.
-  it("계정을 비활성화하면 setAccountStatus를 부르고 목록에서 흐리게 표시한다", async () => {
+  it("계정을 비활성화하면 setAccountStatus를 부르고, 다시 불러온 목록에서 흐리게 표시한다", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
+    // 수정 라운드 1 · 리뷰 F3: 비활성화 표시는 이제 로컬 상태가 아니라 서버가 다시
+    // 내려주는 account_status를 그대로 읽는다 — 그래서 이 목이 "요청이 실제로
+    // 서버 상태를 바꿨고, 화면이 그걸 다시 불러왔다"를 흉내 낸다. loadAll()을 부르지
+    // 않으면(또는 setAccountStatus를 부르지 않으면) 이 목의 상태가 안 바뀌어 아래
+    // 단언이 실패한다.
+    let currentStatus: "active" | "disabled" = "active";
+    mocks.listEmployees.mockImplementation(() => Promise.resolve([{ ...target, account_status: currentStatus }]));
+    mocks.setAccountStatus.mockImplementation(async (_id: string, status: "active" | "disabled") => {
+      currentStatus = status;
+      return { ok: true };
+    });
     renderPage();
     const disableBtn = await screen.findByRole("button", { name: "비활성화" });
     fireEvent.click(disableBtn);

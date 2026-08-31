@@ -257,6 +257,35 @@ describe("직원", () => {
     expect(roles).toEqual(["admin", "approver"]);
   });
 
+  // 수정 라운드 1 · 리뷰 F3: GET /api/employees가 auth_accounts.status를 함께
+  // 내려줘야 Employees.tsx가 비활성화된 계정을 서버 진실로(세션 로컬 상태가 아니라)
+  // 표시할 수 있다. 계정이 있는 직원과 사전 등록만 된(계정 없는) 직원을 함께 두고
+  // 셋을 구분한다.
+  it("계정 상태(account_status)를 함께 내려주고, 계정이 없는 직원은 null이다", async () => {
+    const admin = await agentAs("admin", "acct-status-admin@gonjiam.com");
+    await agentAs("staff", "acct-status-target@gonjiam.com");
+    const targetAccountId = await withService(async (q) => {
+      const { rows } = await q.query("select id from auth_accounts where email = $1", [
+        "acct-status-target@gonjiam.com",
+      ]);
+      return rows[0].id;
+    });
+    // 계정 없이 사전 등록만 된 직원(POST /employees, auth_user_id는 null로 남는다).
+    await admin.post("/api/employees").send({ name: "미가입자", email: "acct-status-pending@gonjiam.com" });
+
+    const beforeRes = await admin.get("/api/employees");
+    const beforeTarget = beforeRes.body.find((e: any) => e.email === "acct-status-target@gonjiam.com");
+    const pending = beforeRes.body.find((e: any) => e.email === "acct-status-pending@gonjiam.com");
+    expect(beforeTarget.account_status).toBe("active");
+    expect(pending.account_status).toBeNull();
+
+    await admin.patch(`/api/admin/users/${targetAccountId}/status`).send({ status: "disabled" });
+
+    const afterRes = await admin.get("/api/employees");
+    const afterTarget = afterRes.body.find((e: any) => e.email === "acct-status-target@gonjiam.com");
+    expect(afterTarget.account_status).toBe("disabled");
+  });
+
   it("일반 직원은 직원 정보를 바꿀 수 없다", async () => {
     const staff = await agentAs("staff", "emp-patch-staff@gonjiam.com");
     const targetId = await withService(async (q) => {
