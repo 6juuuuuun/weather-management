@@ -4,6 +4,8 @@ import { authRouter, adminUserRouter } from "./auth/routes.ts";
 import { dashboardRouter } from "./api/dashboard.ts";
 import { orgRouter } from "./api/org.ts";
 import { contentRouter } from "./api/content.ts";
+import { requireAuth } from "./auth/middleware.ts";
+import { runSend } from "./jobs/send.ts";
 
 export const app = express();
 app.use(express.json());
@@ -16,6 +18,19 @@ app.use("/api/admin/users", adminUserRouter);
 app.use("/api", dashboardRouter);
 app.use("/api", orgRouter);
 app.use("/api", contentRouter);
+
+// 화면이 부르던 supabase functions.invoke("send")를 대신한다.
+// 권한 검사(알림 수신자만 승인, 테스트 발송은 관리자만)는 runSend 안에 그대로 있다 —
+// 여기서 다시 판정하지 않는다. 계정은 있지만 직원 행이 아직 없는 세션은 발송 주체가
+// 될 수 없으므로 여기서 막는다.
+// runSend는 거부 사유별 상태 코드(403 권한 / 400 잘못된 요청 / 409 상태 충돌 /
+// 404 없음)를 결과에 실어 준다. 원본 Edge Function이 쓰던 코드를 그대로 유지하려고
+// 그 값을 쓰고, 없으면 403으로 떨어뜨린다.
+app.post("/api/send", requireAuth, async (req, res) => {
+  if (!req.user!.employeeId) return res.status(403).json({ error: "직원 정보가 없습니다" });
+  const out = await runSend(req.body, req.user!.employeeId);
+  res.status(out.ok ? 200 : (out.status ?? 403)).json(out);
+});
 
 // 라우터 등록 순서: 기능 라우터 → /api 404 폴백 → 정적 서빙 → 에러 핸들러.
 // 이후 태스크가 기능 라우터와 정적 파일 서빙을 이 사이에 끼워 넣는다. 폴백이
