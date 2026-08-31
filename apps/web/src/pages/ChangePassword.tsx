@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { changePassword } from "../lib/api/auth";
+import { useAuth } from "../auth/AuthProvider";
 import { ApiError } from "../lib/api/client";
 import "./Signup.css";
 
@@ -13,6 +13,7 @@ const MIN_PASSWORD = 10;
 // — 그래서 이 화면은 RequireRole로 감싸지 않는다(직원 정보 조회 자체가 막혀 있다).
 export default function ChangePassword() {
   const navigate = useNavigate();
+  const { changePassword } = useAuth();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -27,6 +28,10 @@ export default function ChangePassword() {
     }
     setBusy(true);
     try {
+      // AuthProvider.changePassword가 서버 호출 뒤 refresh()까지 마친다 — 그래서
+      // navigate("/")할 때는 컨텍스트가 이미 authenticated 상태다. 예전에는 이 화면이
+      // 서버만 부르고 navigate만 해서, RequireRole이 여전히 must-change-password로
+      // 보고 있는 컨텍스트를 보고 다시 /login으로 돌려보냈다(리뷰 F1).
       await changePassword(current, next);
       navigate("/", { replace: true });
     } catch (err) {
