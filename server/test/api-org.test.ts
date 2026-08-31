@@ -124,6 +124,87 @@ describe("부서", () => {
     expect(res.status).toBe(404);
   });
 
+  // Employees.tsx/Guidelines.tsx/DeptModal.tsx가 부서 트리(상위·하위)를 그리는 데
+  // parent_id/sort_order가 필요하다 — 컬럼은 있는데 예전에는 select에서 빠져 있었다.
+  it("목록 조회가 parent_id·sort_order도 함께 돌려준다", async () => {
+    const parentId = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into departments (name, sort_order) values ($1, 3) returning id",
+        [`${DEPT_PREFIX}상위`],
+      );
+      return rows[0].id;
+    });
+    const childId = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into departments (name, parent_id, sort_order) values ($1, $2, 1) returning id",
+        [`${DEPT_PREFIX}하위`, parentId],
+      );
+      return rows[0].id;
+    });
+
+    const agent = await agentAs("staff", "dept-tree-staff@gonjiam.com");
+    const res = await agent.get("/api/departments");
+    expect(res.status).toBe(200);
+    const parentRow = res.body.find((d: any) => d.id === parentId);
+    const childRow = res.body.find((d: any) => d.id === childId);
+    expect(parentRow).toEqual(
+      expect.objectContaining({ id: parentId, name: `${DEPT_PREFIX}상위`, parent_id: null, sort_order: 3 }),
+    );
+    expect(childRow).toEqual(
+      expect.objectContaining({ id: childId, name: `${DEPT_PREFIX}하위`, parent_id: parentId, sort_order: 1 }),
+    );
+  });
+
+  it("관리자는 parent_id를 지정해 하위 부서를 만들 수 있다", async () => {
+    const admin = await agentAs("admin", "dept-child-admin@gonjiam.com");
+    const parentId = await withService(async (q) => {
+      const { rows } = await q.query("insert into departments (name) values ($1) returning id", [
+        `${DEPT_PREFIX}부모`,
+      ]);
+      return rows[0].id;
+    });
+
+    const res = await admin.post("/api/departments").send({
+      name: `${DEPT_PREFIX}자식`,
+      parent_id: parentId,
+      sort_order: 2,
+    });
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual(
+      expect.objectContaining({ name: `${DEPT_PREFIX}자식`, parent_id: parentId, sort_order: 2 }),
+    );
+
+    const row = await withService(async (q) => {
+      const { rows } = await q.query("select parent_id, sort_order from departments where id = $1", [
+        res.body.id,
+      ]);
+      return rows[0];
+    });
+    expect(row.parent_id).toBe(parentId);
+    expect(row.sort_order).toBe(2);
+  });
+
+  it("parent_id 형식이 잘못되면 400이고, 실존하지 않는 parent_id면 400이다", async () => {
+    const admin = await agentAs("admin", "dept-badparent-admin@gonjiam.com");
+    const bad = await admin.post("/api/departments").send({ name: `${DEPT_PREFIX}나쁜형식`, parent_id: "nope" });
+    expect(bad.status).toBe(400);
+
+    const ghost = await admin.post("/api/departments").send({
+      name: `${DEPT_PREFIX}유령부모`,
+      parent_id: "00000000-0000-0000-0000-000000000000",
+    });
+    expect(ghost.status).toBe(400);
+
+    const count = await withService(async (q) => {
+      const { rows } = await q.query(
+        "select count(*)::int as n from departments where name in ($1, $2)",
+        [`${DEPT_PREFIX}나쁜형식`, `${DEPT_PREFIX}유령부모`],
+      );
+      return rows[0].n;
+    });
+    expect(count).toBe(0);
+  });
+
   it("관리자는 부서를 삭제할 수 있고, 일반 직원은 삭제할 수 없다", async () => {
     const [keepId, deleteTargetId] = await withService(async (q) => {
       const { rows } = await q.query(
@@ -270,6 +351,69 @@ describe("직원", () => {
       return rows[0].role;
     });
     expect(role).toBe("staff");
+  });
+
+  it("관리자는 직원을 미리 등록할 수 있고, 일반 직원은 할 수 없다", async () => {
+    const staff = await agentAs("staff", "emp-create-staff@gonjiam.com");
+    const denied = await staff.post("/api/employees").send({
+      name: "가로챈직원",
+      email: "emp-create-blocked@gonjiam.com",
+      role: "staff",
+    });
+    expect(denied.status).toBe(403);
+
+    const admin = await agentAs("admin", "emp-create-admin@gonjiam.com");
+    const res = await admin.post("/api/employees").send({
+      name: "사전등록",
+      email: "emp-create-target@gonjiam.com",
+      role: "staff",
+    });
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual(
+      expect.objectContaining({ name: "사전등록", email: "emp-create-target@gonjiam.com", role: "staff" }),
+    );
+    // 계정 없이 미리 등록된 행이라 auth_user_id는 아직 없어야 한다.
+    expect(res.body.auth_user_id).toBeNull();
+
+    const count = await withService(async (q) => {
+      const { rows } = await q.query("select count(*)::int as n from employees where email = $1", [
+        "emp-create-blocked@gonjiam.com",
+      ]);
+      return rows[0].n;
+    });
+    // 403이 실제 게이트에서 났는지 — 거부된 요청은 행을 만들지 않았어야 한다.
+    expect(count).toBe(0);
+  });
+
+  it("이름이나 이메일이 없으면 400이다", async () => {
+    const admin = await agentAs("admin", "emp-create-empty-admin@gonjiam.com");
+    expect((await admin.post("/api/employees").send({ email: "only-email@gonjiam.com" })).status).toBe(400);
+    expect((await admin.post("/api/employees").send({ name: "이름만" })).status).toBe(400);
+  });
+
+  it("이미 등록된 이메일이면 409다", async () => {
+    const admin = await agentAs("admin", "emp-create-dup-admin@gonjiam.com");
+    const first = await admin.post("/api/employees").send({ name: "첫번째", email: "emp-dup@gonjiam.com" });
+    expect(first.status).toBe(201);
+    const second = await admin.post("/api/employees").send({ name: "두번째", email: "emp-dup@gonjiam.com" });
+    expect(second.status).toBe(409);
+  });
+
+  it("잘못된 role이면 400이고, 존재하지 않는 department_id면 400이다", async () => {
+    const admin = await agentAs("admin", "emp-create-bad-admin@gonjiam.com");
+    const badRole = await admin.post("/api/employees").send({
+      name: "나쁜역할",
+      email: "emp-badrole@gonjiam.com",
+      role: "superadmin",
+    });
+    expect(badRole.status).toBe(400);
+
+    const badDept = await admin.post("/api/employees").send({
+      name: "나쁜부서",
+      email: "emp-baddept@gonjiam.com",
+      department_id: "00000000-0000-0000-0000-000000000000",
+    });
+    expect(badDept.status).toBe(400);
   });
 
   it("관리자는 직원을 삭제할 수 있고, 일반 직원은 삭제할 수 없다", async () => {

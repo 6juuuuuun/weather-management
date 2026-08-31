@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { withUser } from "../db.ts";
+import { UUID, withUser } from "../db.ts";
 import { requireAuth, requireAdmin } from "../auth/middleware.ts";
 
 export const orgRouter = Router();
@@ -19,21 +19,46 @@ const EMP_ROLES = ["admin", "approver", "staff"] as const;
 // 부서
 // ---------------------------------------------------------------------------
 
+// parent_id/sort_order도 함께 내려준다 — 부서는 2단 계층(상위/하위)이고 화면
+// (DeptModal.tsx/Employees.tsx/Guidelines.tsx)이 그 계층으로 트리를 그린다.
+// 정렬은 그대로 이름순을 유지한다(기존 계약) — 계층 그룹핑·정렬은 화면이
+// sort_order로 직접 한다.
+const DEPT_COLS = "id, parent_id, name, sort_order";
+
 orgRouter.get("/departments", async (req, res) => {
   const rows = await withUser(req.user!.accountId, async (q) => {
-    const { rows } = await q.query("select id, name from departments order by name");
+    const { rows } = await q.query(`select ${DEPT_COLS} from departments order by name`);
     return rows;
   });
   res.json(rows);
 });
 
+// parent_id/sort_order는 선택값이다 — 최상위 부서는 그대로 parent_id 없이(= null)
+// 만든다. parent_id를 보내면 형식(UUID)과 실존 여부를 DB에 닿기 전에 검증한다
+// (content.ts의 guidelines가 department_id에 쓰는 것과 같은 이유 — 형식만 맞고
+// 실존하지 않으면 외래키 위반이 그대로 새어 500이 된다).
 orgRouter.post("/departments", requireAdmin, async (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   if (!name) return res.status(400).json({ error: "부서 이름이 필요합니다" });
+  const parentId = req.body?.parent_id ?? null;
+  if (parentId !== null && !UUID.test(String(parentId))) {
+    return res.status(400).json({ error: "parent_id 형식이 올바르지 않습니다" });
+  }
+  const sortOrder = req.body?.sort_order;
   const rows = await withUser(req.user!.accountId, async (q) => {
-    const { rows } = await q.query("insert into departments (name) values ($1) returning id, name", [name]);
+    if (parentId !== null) {
+      const { rows: parentRows } = await q.query("select id from departments where id = $1", [parentId]);
+      if (parentRows.length === 0) return null;
+    }
+    const { rows } = await q.query(
+      `insert into departments (name, parent_id, sort_order)
+       values ($1, $2, coalesce($3, 0))
+       returning ${DEPT_COLS}`,
+      [name, parentId, sortOrder ?? null],
+    );
     return rows;
   });
+  if (rows === null) return res.status(400).json({ error: `parent_id ${parentId}에 해당하는 부서가 없습니다` });
   res.status(201).json(rows[0]);
 });
 
@@ -41,10 +66,10 @@ orgRouter.patch("/departments/:id", requireAdmin, async (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   if (!name) return res.status(400).json({ error: "부서 이름이 필요합니다" });
   const rows = await withUser(req.user!.accountId, async (q) => {
-    const { rows } = await q.query("update departments set name = $2 where id = $1 returning id, name", [
-      req.params.id,
-      name,
-    ]);
+    const { rows } = await q.query(
+      `update departments set name = $2 where id = $1 returning ${DEPT_COLS}`,
+      [req.params.id, name],
+    );
     return rows;
   });
   if (rows.length === 0) return res.status(404).json({ error: "부서를 찾을 수 없습니다" });
@@ -119,6 +144,47 @@ orgRouter.delete("/employees/:id", requireAdmin, async (req, res) => {
   });
   if (rows.length === 0) return res.status(404).json({ error: "직원을 찾을 수 없습니다" });
   res.status(204).end();
+});
+
+// 가입 없이 관리자가 미리 등록하는 직원 행이다(로그인 계정은 아직 없음, auth_user_id
+// null). auth/routes.ts의 signup이 이메일 대소문자를 정규화하는 것과 같은 이유로
+// 여기서도 정규화한다 — 안 하면 같은 사람이 대소문자만 다른 이메일로 가입할 때
+// on conflict(email)이 걸리지 않아 행이 중복된다.
+orgRouter.post("/employees", requireAdmin, async (req, res) => {
+  const body = req.body ?? {};
+  const name = String(body.name ?? "").trim();
+  const email = String(body.email ?? "").trim().toLowerCase();
+  if (!name || !email) return res.status(400).json({ error: "이름과 이메일이 필요합니다" });
+  const role = body.role ?? "staff";
+  if (!EMP_ROLES.includes(role)) {
+    return res.status(400).json({ error: `role은 ${EMP_ROLES.join(", ")} 중 하나여야 합니다` });
+  }
+  const departmentId = body.department_id ?? null;
+  if (departmentId !== null && !UUID.test(String(departmentId))) {
+    return res.status(400).json({ error: "department_id 형식이 올바르지 않습니다" });
+  }
+  try {
+    const rows = await withUser(req.user!.accountId, async (q) => {
+      if (departmentId !== null) {
+        const { rows: deptRows } = await q.query("select id from departments where id = $1", [departmentId]);
+        if (deptRows.length === 0) return null;
+      }
+      const { rows } = await q.query(
+        `insert into employees (name, email, department_id, role)
+         values ($1, $2, $3, $4) returning ${EMP_COLS}`,
+        [name, email, departmentId, role],
+      );
+      return rows;
+    });
+    if (rows === null) {
+      return res.status(400).json({ error: `department_id ${departmentId}에 해당하는 부서가 없습니다` });
+    }
+    res.status(201).json(rows[0]);
+  } catch (e: any) {
+    // employees.email은 unique다 — 이미 있는 이메일로 사전 등록을 시도한 경우.
+    if (e?.code === "23505") return res.status(409).json({ error: "이미 등록된 이메일입니다" });
+    throw e;
+  }
 });
 
 // ---------------------------------------------------------------------------
