@@ -1,40 +1,42 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import Guidelines from "./Guidelines";
 import type { Employee } from "../lib/types";
 
-const { authState, tableData, fromMock } = vi.hoisted(() => {
-  const authState: { employee: Employee | null } = { employee: null };
-  const tableData: Record<string, { data: unknown; error: unknown }> = {};
-  const fromMock = vi.fn();
-  return { authState, tableData, fromMock };
-});
+const mocks = vi.hoisted(() => ({
+  authState: { employee: null as Employee | null },
+  listDepartments: vi.fn(),
+  listEmployees: vi.fn(),
+  listRecipients: vi.fn(),
+  saveRecipients: vi.fn(),
+  guidelines: vi.fn(),
+  saveGuidelines: vi.fn(),
+  siteSettings: vi.fn(),
+  heartbeat: vi.fn(),
+}));
 
 vi.mock("../auth/AuthProvider", () => ({
-  useAuth: () => ({ employee: authState.employee, loading: false, signOut: vi.fn() }),
+  useAuth: () => ({ employee: mocks.authState.employee, loading: false, signOut: vi.fn() }),
 }));
 
-vi.mock("../lib/supabase", () => ({
-  supabase: { from: fromMock },
+vi.mock("../lib/api/org", () => ({
+  listDepartments: (...args: unknown[]) => mocks.listDepartments(...args),
+  listEmployees: (...args: unknown[]) => mocks.listEmployees(...args),
+  listRecipients: (...args: unknown[]) => mocks.listRecipients(...args),
+  saveRecipients: (...args: unknown[]) => mocks.saveRecipients(...args),
 }));
 
-// 체이닝 가능한 쿼리 목: select/eq/order/upsert/delete/insert 어떤 조합으로 호출해도
-// 마지막에 await 하면 등록된 결과값으로 resolve 된다.
-function makeQuery(result: { data: unknown; error: unknown }) {
-  const promise = Promise.resolve(result);
-  return new Proxy(promise, {
-    get(target, prop, receiver) {
-      if (prop in target) {
-        const value = Reflect.get(target, prop, receiver);
-        return typeof value === "function" ? value.bind(target) : value;
-      }
-      return () => makeQuery(result);
-    },
-  });
-}
+vi.mock("../lib/api/content", () => ({
+  guidelines: (...args: unknown[]) => mocks.guidelines(...args),
+  saveGuidelines: (...args: unknown[]) => mocks.saveGuidelines(...args),
+}));
 
-fromMock.mockImplementation((table: string) => makeQuery(tableData[table] ?? { data: [], error: null }));
+// AppLayout이 항상 GlobalNav를 그리고, GlobalNav는 dashboard api를 부른다.
+vi.mock("../lib/api/dashboard", () => ({
+  siteSettings: (...args: unknown[]) => mocks.siteSettings(...args),
+  heartbeat: (...args: unknown[]) => mocks.heartbeat(...args),
+}));
 
 function adminEmployee(): Employee {
   return {
@@ -62,13 +64,20 @@ function staffEmployee(): Employee {
   };
 }
 
+beforeEach(() => {
+  mocks.listDepartments.mockReset().mockResolvedValue([]);
+  mocks.listEmployees.mockReset().mockResolvedValue([]);
+  mocks.listRecipients.mockReset().mockResolvedValue([]);
+  mocks.saveRecipients.mockReset().mockResolvedValue(null);
+  mocks.guidelines.mockReset().mockResolvedValue([]);
+  mocks.saveGuidelines.mockReset().mockResolvedValue(null);
+  mocks.siteSettings.mockReset().mockResolvedValue(null);
+  mocks.heartbeat.mockReset().mockResolvedValue(null);
+});
+
 describe("Guidelines", () => {
   it("부서가 0행이면 빈 상태와 admin CTA를 보여준다", async () => {
-    authState.employee = adminEmployee();
-    tableData.departments = { data: [], error: null };
-    tableData.employees = { data: [], error: null };
-    tableData.recipients = { data: [], error: null };
-    tableData.action_guidelines = { data: [], error: null };
+    mocks.authState.employee = adminEmployee();
 
     render(
       <MemoryRouter>
@@ -82,17 +91,13 @@ describe("Guidelines", () => {
   });
 
   it("staff는 부서 트리를 보되 저장 버튼은 숨겨진다", async () => {
-    authState.employee = staffEmployee();
-    tableData.departments = {
-      data: [
-        { id: "g1", parent_id: null, name: "리조트", sort_order: 0 },
-        { id: "l1", parent_id: "g1", name: "객실", sort_order: 0 },
-      ],
-      error: null,
-    };
-    tableData.employees = { data: [staffEmployee()], error: null };
-    tableData.recipients = { data: [{ department_id: "l1", employee_id: "staff-1" }], error: null };
-    tableData.action_guidelines = { data: [], error: null };
+    mocks.authState.employee = staffEmployee();
+    // departments API는 id/name만 내려준다(parent_id 없음) — 평면 목록.
+    mocks.listDepartments.mockResolvedValue([{ id: "l1", name: "객실" }]);
+    mocks.listEmployees.mockResolvedValue([staffEmployee()]);
+    mocks.listRecipients.mockResolvedValue([
+      { department_id: "l1", employee_id: "staff-1", name: "홍수진", role: "staff", kakaowork_user_id: null },
+    ]);
 
     render(
       <MemoryRouter>

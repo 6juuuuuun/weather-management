@@ -7,8 +7,12 @@ import { EmptyState } from "../components/EmptyState";
 import { Button } from "../components/Button";
 import { Modal } from "../components/Modal";
 import { useAuth } from "../auth/AuthProvider";
-import { supabase } from "../lib/supabase";
-import type { ActionGuideline, Department, Employee, Grade, Kind, Recipient } from "../lib/types";
+import { ApiError } from "../lib/api/client";
+import { listDepartments, listEmployees, listRecipients, saveRecipients } from "../lib/api/org";
+import type { DepartmentRow, EmployeeRow, RecipientRow } from "../lib/api/org";
+import { guidelines as fetchGuidelines, saveGuidelines } from "../lib/api/content";
+import type { GuidelineRow } from "../lib/api/content";
+import type { Grade, Kind } from "../lib/types";
 import { ROLE_LABEL } from "../lib/roles";
 import "./Guidelines.css";
 
@@ -44,8 +48,8 @@ function editBufferFor(
   deptId: string,
   grade: Grade,
   kind: Kind,
-  guidelines: ActionGuideline[],
-  recipients: Recipient[],
+  guidelines: GuidelineRow[],
+  recipients: RecipientRow[],
 ) {
   const guideline = guidelines.find(
     (g) => g.department_id === deptId && g.kind === kind && g.grade === grade,
@@ -62,15 +66,14 @@ export default function Guidelines() {
   const isAdmin = employee?.role === "admin";
 
   const [loading, setLoading] = useState(true);
-  const [departments, setDepartments] = useState<Department[]>([]);
-  const [employees, setEmployees] = useState<Employee[]>([]);
-  const [recipients, setRecipients] = useState<Recipient[]>([]);
-  const [guidelines, setGuidelines] = useState<ActionGuideline[]>([]);
+  const [departments, setDepartments] = useState<DepartmentRow[]>([]);
+  const [employees, setEmployees] = useState<EmployeeRow[]>([]);
+  const [recipients, setRecipients] = useState<RecipientRow[]>([]);
+  const [guidelines, setGuidelines] = useState<GuidelineRow[]>([]);
 
   const [kind, setKind] = useState<Kind>("rain");
   const [grade, setGrade] = useState<Grade>("watch");
   const [selectedDeptId, setSelectedDeptId] = useState<string | null>(null);
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
 
   const [staffActions, setStaffActions] = useState<string[]>([]);
   const [guestNotice, setGuestNotice] = useState("");
@@ -81,19 +84,23 @@ export default function Guidelines() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
-  // 초기 로드: 부서·직원·수신자 (부서/직원/수신자는 전 역할 조회 가능)
+  // 초기 로드: 부서·직원·수신자·지침 (전 역할 조회 가능, staff도 자기 부서 지침은 서버가 내려준다)
+  // GET /api/guidelines는 kind로 거르지 않고 전체를 내려준다 — 종류 탭을 바꿔도 다시
+  // 조회하지 않고 이미 가진 목록에서 골라 쓴다.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [deptRes, empRes, recRes] = await Promise.all([
-        supabase.from("departments").select("*").order("sort_order"),
-        supabase.from("employees").select("*"),
-        supabase.from("recipients").select("*"),
+      const [depts, emps, recs, guides] = await Promise.all([
+        listDepartments(),
+        listEmployees(),
+        listRecipients(),
+        fetchGuidelines(),
       ]);
       if (cancelled) return;
-      setDepartments(deptRes.data ?? []);
-      setEmployees(empRes.data ?? []);
-      setRecipients(recRes.data ?? []);
+      setDepartments(depts);
+      setEmployees(emps);
+      setRecipients(recs);
+      setGuidelines(guides);
       setLoading(false);
     })();
     return () => {
@@ -101,43 +108,16 @@ export default function Guidelines() {
     };
   }, []);
 
-  // 종류가 바뀔 때마다 지침 재조회 (staff는 RLS로 자기 부서 행만 내려옴 — 에러 없이 동작)
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const { data } = await supabase.from("action_guidelines").select("*").eq("kind", kind);
-      if (cancelled) return;
-      setGuidelines(data ?? []);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [kind]);
+  // departments API는 id/name만 내려준다(parent_id/sort_order 없음) — 예전의 상위/하위
+  // 2단 트리를 만들 수 없어 평면 목록으로 대체한다. task-8-report.md 참고.
+  // 서버가 이미 이름순으로 정렬해 내려준다(org.ts: order by name).
+  const sortedDepartments = departments;
 
-  const groups = (() => {
-    const byParent = new Map<string, Department[]>();
-    const roots: Department[] = [];
-    for (const d of departments) {
-      if (d.parent_id === null) {
-        roots.push(d);
-      } else {
-        const arr = byParent.get(d.parent_id) ?? [];
-        arr.push(d);
-        byParent.set(d.parent_id, arr);
-      }
-    }
-    roots.sort((a, b) => a.sort_order - b.sort_order);
-    return roots.map((group) => ({
-      group,
-      leaves: (byParent.get(group.id) ?? []).slice().sort((a, b) => a.sort_order - b.sort_order),
-    }));
-  })();
-
-  // 부서 목록이 로드되면 첫 리프 부서를 기본 선택
+  // 부서 목록이 로드되면 첫 부서를 기본 선택
   useEffect(() => {
     if (selectedDeptId) return;
-    const firstLeaf = groups.flatMap((g) => g.leaves)[0];
-    if (firstLeaf) setSelectedDeptId(firstLeaf.id);
+    const first = sortedDepartments[0];
+    if (first) setSelectedDeptId(first.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [departments]);
 
@@ -156,16 +136,12 @@ export default function Guidelines() {
     setSaveError(null);
   }, [selectedDeptId, grade, kind, guidelines, recipients]);
 
-  function guidelineFor(deptId: string, g: Grade): ActionGuideline | undefined {
+  function guidelineFor(deptId: string, g: Grade): GuidelineRow | undefined {
     return guidelines.find((item) => item.department_id === deptId && item.grade === g);
   }
 
   function recipientCountFor(deptId: string): number {
     return recipients.filter((r) => r.department_id === deptId).length;
-  }
-
-  function toggleGroup(id: string) {
-    setCollapsedGroups((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
   function addBullet() {
@@ -204,50 +180,33 @@ export default function Guidelines() {
     try {
       const cleanedActions = staffActions.map((s) => s.trim()).filter((s) => s.length > 0);
 
-      const { error: guidelineError } = await supabase.from("action_guidelines").upsert(
+      // PUT /api/guidelines는 department_id/kind/grade를 키로 upsert한다(서버가 updated_by를
+      // current_emp_id()로 직접 채운다 — 클라이언트 값을 신뢰하지 않는다).
+      await saveGuidelines([
         {
           department_id: selectedDeptId,
           kind,
           grade,
           staff_actions: cleanedActions,
           guest_notice: guestNotice,
-          updated_by: employee.id,
-          updated_at: new Date().toISOString(),
         },
-        { onConflict: "department_id,kind,grade" },
-      );
-      if (guidelineError) throw guidelineError;
-
-      const { error: deleteError } = await supabase
-        .from("recipients")
-        .delete()
-        .eq("department_id", selectedDeptId);
-      if (deleteError) throw deleteError;
-
-      if (recipientIds.length > 0) {
-        const { error: insertError } = await supabase
-          .from("recipients")
-          .insert(recipientIds.map((employee_id) => ({ department_id: selectedDeptId, employee_id })));
-        if (insertError) throw insertError;
-      }
-
-      const [{ data: freshGuidelines }, { data: freshRecipients }] = await Promise.all([
-        supabase.from("action_guidelines").select("*").eq("kind", kind),
-        supabase.from("recipients").select("*"),
       ]);
-      setGuidelines(freshGuidelines ?? []);
-      setRecipients(freshRecipients ?? []);
+
+      // PUT /api/recipients/:departmentId는 이 부서 몫을 통째로 교체한다 —
+      // 예전의 delete-then-insert를 서버가 한 번에 해준다.
+      await saveRecipients(selectedDeptId, recipientIds);
+
+      const [freshGuidelines, freshRecipients] = await Promise.all([fetchGuidelines(), listRecipients()]);
+      setGuidelines(freshGuidelines);
+      setRecipients(freshRecipients);
     } catch (e) {
-      setSaveError(e instanceof Error ? e.message : "저장에 실패했습니다.");
+      setSaveError(e instanceof ApiError ? e.message : "저장에 실패했습니다.");
     } finally {
       setSaving(false);
     }
   }
 
   const selectedDept = departments.find((d) => d.id === selectedDeptId) ?? null;
-  const selectedGroup = selectedDept
-    ? (departments.find((d) => d.id === selectedDept.parent_id) ?? null)
-    : null;
   const currentGuideline = selectedDeptId ? guidelineFor(selectedDeptId, grade) : undefined;
   const updaterName = currentGuideline?.updated_by
     ? employees.find((e) => e.id === currentGuideline.updated_by)?.name
@@ -309,59 +268,43 @@ export default function Guidelines() {
                 </div>
               </div>
 
+              {/* departments API가 부서 계층(parent_id)을 내려주지 않아, 예전의 상위/하위
+                  2단 트리 대신 평면 목록으로 보여준다 — task-8-report.md 참고. */}
               <div className="guidelines-tree-body">
-                {groups.map(({ group, leaves }) => (
-                  <div key={group.id} className="guidelines-group">
-                    <button
-                      type="button"
-                      className="guidelines-group-toggle"
-                      onClick={() => toggleGroup(group.id)}
-                      aria-expanded={!collapsedGroups[group.id]}
-                    >
-                      <span
-                        className={`chevron ${collapsedGroups[group.id] ? "chevron-collapsed" : ""}`}
-                        aria-hidden="true"
+                <div className="guidelines-group">
+                  {sortedDepartments.map((dept) => {
+                    const watchGuideline = guidelineFor(dept.id, "watch");
+                    const warningGuideline = guidelineFor(dept.id, "warning");
+                    const count = recipientCountFor(dept.id);
+                    return (
+                      <button
+                        type="button"
+                        key={dept.id}
+                        className={`guidelines-leaf ${
+                          selectedDeptId === dept.id ? "guidelines-leaf-selected" : ""
+                        }`}
+                        onClick={() => setSelectedDeptId(dept.id)}
                       >
-                        ⌄
-                      </span>
-                      {group.name}
-                    </button>
-
-                    {!collapsedGroups[group.id] &&
-                      leaves.map((leaf) => {
-                        const watchGuideline = guidelineFor(leaf.id, "watch");
-                        const warningGuideline = guidelineFor(leaf.id, "warning");
-                        const count = recipientCountFor(leaf.id);
-                        return (
-                          <button
-                            type="button"
-                            key={leaf.id}
-                            className={`guidelines-leaf ${
-                              selectedDeptId === leaf.id ? "guidelines-leaf-selected" : ""
-                            }`}
-                            onClick={() => setSelectedDeptId(leaf.id)}
-                          >
-                            <span className="guidelines-leaf-name">{leaf.name}</span>
-                            <span className="guidelines-leaf-meta">
-                              <span
-                                className={`tree-dot ${watchGuideline ? "tree-dot-watch" : "tree-dot-empty"}`}
-                                aria-hidden="true"
-                              />
-                              <span
-                                className={`tree-dot ${warningGuideline ? "tree-dot-warning" : "tree-dot-empty"}`}
-                                aria-hidden="true"
-                              />
-                              {count > 0 ? (
-                                <span className="guidelines-count">{count}명</span>
-                              ) : (
-                                <span className="guidelines-unassigned">미지정</span>
-                              )}
-                            </span>
-                          </button>
-                        );
-                      })}
-                  </div>
-                ))}
+                        <span className="guidelines-leaf-name">{dept.name}</span>
+                        <span className="guidelines-leaf-meta">
+                          <span
+                            className={`tree-dot ${watchGuideline ? "tree-dot-watch" : "tree-dot-empty"}`}
+                            aria-hidden="true"
+                          />
+                          <span
+                            className={`tree-dot ${warningGuideline ? "tree-dot-warning" : "tree-dot-empty"}`}
+                            aria-hidden="true"
+                          />
+                          {count > 0 ? (
+                            <span className="guidelines-count">{count}명</span>
+                          ) : (
+                            <span className="guidelines-unassigned">미지정</span>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 
@@ -372,9 +315,7 @@ export default function Guidelines() {
                 <>
                   <div className="guidelines-editor-top">
                     <div>
-                      <p className="guidelines-breadcrumb">
-                        {selectedGroup ? `${selectedGroup.name} > ${selectedDept.name}` : selectedDept.name}
-                      </p>
+                      <p className="guidelines-breadcrumb">{selectedDept.name}</p>
                       <div className="guidelines-editor-title-row">
                         <h2>{KIND_LABEL[kind]} 대응 지침</h2>
                         <div className="guidelines-grade-switch">
