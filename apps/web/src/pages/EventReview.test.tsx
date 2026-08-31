@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { ApiError } from "../lib/api/client";
 import EventReview from "./EventReview";
 import type { AlertSetting, DeptBlock, Employee, WeatherEvent } from "../lib/types";
 
@@ -123,14 +124,14 @@ const baseMessage = {
   updated_by: null,
 };
 
-// dashboard.ts(OBS_COLS)는 humidity_pct를 select하지 않는다 — id는 /observations/:id
-// 전용으로 함께 내려온다(baseEvent.trigger_observation_id와 같은 값).
+// id는 /observations/:id 전용으로 함께 내려온다(baseEvent.trigger_observation_id와 같은 값).
 const baseObservationRow = {
   id: 10,
   observed_at: "2026-08-12T06:00:00+09:00",
   rain_mm_per_hr: 32.5,
   temp_c: 24,
   wind_ms: 9.2,
+  humidity_pct: 62,
   snow_new_cm: null,
   feels_c: null,
   missing: false,
@@ -202,6 +203,43 @@ afterEach(() => {
 });
 
 describe("EventReview", () => {
+  // 항목 1: setLoadError는 "찾을 수 없음" 분기 전용이라 ApiError가 그대로 새어나갔다.
+  // 그러면 setLoading(false)에 닿지 못해 화면이 "불러오는 중…"에 영구히 멈춘다.
+  it("조회가 실패하면 불러오는 중에 멈추지 않고 오류를 보여준다", async () => {
+    mocks.openEvents.mockRejectedValue(new ApiError(500, "서버 오류가 발생했습니다"));
+    renderPage();
+
+    expect(await screen.findByText("특보 정보를 불러오지 못했습니다")).toBeInTheDocument();
+    expect(screen.getByText(/서버 오류가 발생했습니다/)).toBeInTheDocument();
+    expect(screen.queryByText("불러오는 중…")).not.toBeInTheDocument();
+  });
+
+  // 일반 오류와 "목록에 없는 id"는 원인이 다르다 — 같은 문구로 뭉치면 승인자가
+  // 원인을 잘못 짚는다.
+  it("목록에 없는 특보는 '찾을 수 없음'으로 따로 알린다", async () => {
+    setupApi({ event: null });
+    renderPage();
+
+    expect(await screen.findByText("이벤트를 찾을 수 없습니다")).toBeInTheDocument();
+  });
+
+  // 항목 7: OBS_COLS에 humidity_pct가 없어 웹이 null을 강제로 채웠고, 폭염·강풍
+  // 승인 화면의 습도가 항상 "-"였다 — 승인자가 체감온도를 판단할 근거를 못 봤다.
+  it("폭염 특보 카드에 습도를 표시한다", async () => {
+    setupApi({
+      event: { ...baseEvent, kind: "heat", grade: "warning" },
+      criteriaRows: [{ kind: "heat" as const, grade: "warning" as const, threshold: { temp_c: 35 } }],
+      alertRows: [{ ...baseAlertSetting, kind: "heat" as const }],
+      observationRow: { ...baseObservationRow, temp_c: 36.2, feels_c: 39.1, humidity_pct: 62 },
+    });
+    renderPage();
+
+    const label = await screen.findByText("습도");
+    // 지표 카드는 라벨과 값을 같은 컨테이너에 담는다 — "-"가 아니라 실제 값이어야 한다.
+    const card = label.parentElement!;
+    expect(within(card).getByText("62.0")).toBeInTheDocument();
+  });
+
   it("approver에게 부서 블록·관측값·전체 선택을 렌더링한다", async () => {
     renderPage();
     expect(await screen.findByText("객실")).toBeInTheDocument();

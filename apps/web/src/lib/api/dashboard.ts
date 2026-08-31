@@ -10,6 +10,7 @@ export type ObservationRow = {
   temp_c: number | null;
   feels_c: number | null;
   wind_ms: number | null;
+  humidity_pct: number | null;
   snow_new_cm: number | null;
   missing: boolean;
 };

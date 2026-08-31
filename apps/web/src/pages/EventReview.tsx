@@ -6,6 +6,7 @@ import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { Chip } from "../components/Chip";
 import { EmptyState } from "../components/EmptyState";
+import { ApiError } from "../lib/api/client";
 import { Modal } from "../components/Modal";
 import { useAuth } from "../auth/AuthProvider";
 import { openEvents, observationsSince, observation as fetchObservation, criteria as fetchCriteria } from "../lib/api/dashboard";
@@ -40,10 +41,7 @@ const STATUS_CLASS: Record<EventStatus, string> = {
 };
 
 type NumericObsKey = "rain_mm_per_hr" | "temp_c" | "wind_ms" | "humidity_pct" | "snow_new_cm" | "feels_c";
-// dashboard.ts(OBS_COLS)는 humidity_pct를 select하지 않는다 — weather_observations
-// 테이블에는 있지만 API로는 얻을 수 없다. 강풍·폭염 카드의 "습도" 항목은 이 필드가
-// 없어 항상 "-"로 표시된다(report 참고). 타입만 맞춰 안전하게 접근한다.
-type TriggerObservation = ObservationDetail & { humidity_pct: null };
+type TriggerObservation = ObservationDetail;
 // "daily_accum"은 관측 1건의 필드가 아니라 KST 자정 이후 합산값(판정 엔진의
 // todayAccums와 동일 로직, supabase/functions/_shared/db.ts 참조)으로 별도 계산한다.
 type MetricSource = NumericObsKey | "daily_accum";
@@ -287,7 +285,7 @@ export default function EventReview() {
   const navigate = useNavigate();
 
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<{ title: string; desc: string } | null>(null);
   const [event, setEvent] = useState<WeatherEvent | null>(null);
   const [messageId, setMessageId] = useState<string | null>(null);
   const [content, setContent] = useState<DeptBlock[]>([]);
@@ -314,58 +312,69 @@ export default function EventReview() {
       setLoading(true);
       setLoadError(null);
 
-      // 서버에 특보 단건 조회(GET /events/:id) 엔드포인트가 없다 — /api/events/open은
-      // PENDING_APPROVAL·ACTIVE만 돌려주는데, 이 화면이 보여주는 상태도 그 둘뿐이라
-      // (닫힌 특보로 가는 링크는 앱 안에 없다) 목록에서 찾는 것으로 충분하다.
-      const [openEventRows, messageRows] = await Promise.all([openEvents(), messagesOf(id)]);
-      if (!active) return;
+      // 아래 "찾을 수 없음" 분기는 목록에 없는 id만 다룬다 — 조회 자체가 실패하면
+      // (401·403·5xx) ApiError가 그대로 새어나가 setLoading(false)에 닿지 못하고
+      // 화면이 "불러오는 중…"에 영구히 멈춘다. try/catch로 일반 오류도 잡는다.
+      try {
 
-      const ev = openEventRows.find((e) => e.id === id) ?? null;
-      const msg = messageRows[0] ?? null;
-      if (!ev || !msg) {
-        setLoadError("특보 이벤트를 찾을 수 없습니다.");
-        setLoading(false);
-        return;
+        // 서버에 특보 단건 조회(GET /events/:id) 엔드포인트가 없다 — /api/events/open은
+        // PENDING_APPROVAL·ACTIVE만 돌려주는데, 이 화면이 보여주는 상태도 그 둘뿐이라
+        // (닫힌 특보로 가는 링크는 앱 안에 없다) 목록에서 찾는 것으로 충분하다.
+        const [openEventRows, messageRows] = await Promise.all([openEvents(), messagesOf(id)]);
+        if (!active) return;
+
+        const ev = openEventRows.find((e) => e.id === id) ?? null;
+        const msg = messageRows[0] ?? null;
+        if (!ev || !msg) {
+          setLoadError({ title: "이벤트를 찾을 수 없습니다", desc: "특보 이벤트를 찾을 수 없습니다." });
+          return;
+        }
+
+        setEvent(ev);
+        setMessageId(msg.id);
+        setContent(msg.content ?? []);
+
+        const accumField = DAILY_ACCUM_FIELD[ev.kind];
+        const [obs, criteriaRows, alertRows, accumRows, recipientRows] = await Promise.all([
+          // GET /api/observations/:id로 트리거 관측 1건을 정확히 짚는다(근사치가 아니다).
+          ev.trigger_observation_id ? fetchObservation(ev.trigger_observation_id) : Promise.resolve(null),
+          fetchCriteria(),
+          fetchAlertSettings(),
+          accumField ? observationsSince(kstMidnightISO(new Date())) : Promise.resolve([]),
+          listRecipients(),
+        ]);
+        if (!active) return;
+
+        setObservation(obs);
+        setCriteria(criteriaRows.find((c) => c.kind === ev.kind && c.grade === ev.grade) ?? null);
+        setAlertSetting(alertRows.find((a) => a.kind === ev.kind) ?? null);
+
+        if (accumField) {
+          setDailyAccum(
+            accumRows.length === 0 ? null : accumRows.reduce((sum, r) => sum + Number(r[accumField] ?? 0), 0),
+          );
+        } else {
+          setDailyAccum(null);
+        }
+
+        const deptIds = new Set((msg.content ?? []).map((b) => b.department_id));
+        const map: Record<string, CandidateRecipient[]> = {};
+        for (const row of recipientRows) {
+          if (!deptIds.has(row.department_id)) continue;
+          const list = map[row.department_id] ?? [];
+          list.push({ employee_id: row.employee_id, name: row.name, kakaowork_user_id: row.kakaowork_user_id });
+          map[row.department_id] = list;
+        }
+        setCandidatesByDept(map);
+      } catch (err) {
+        if (!active) return;
+        setLoadError({
+          title: "특보 정보를 불러오지 못했습니다",
+          desc: err instanceof ApiError ? err.message : "잠시 후 다시 시도해 주세요.",
+        });
+      } finally {
+        if (active) setLoading(false);
       }
-
-      setEvent(ev);
-      setMessageId(msg.id);
-      setContent(msg.content ?? []);
-
-      const accumField = DAILY_ACCUM_FIELD[ev.kind];
-      const [obs, criteriaRows, alertRows, accumRows, recipientRows] = await Promise.all([
-        // GET /api/observations/:id로 트리거 관측 1건을 정확히 짚는다(근사치가 아니다).
-        ev.trigger_observation_id ? fetchObservation(ev.trigger_observation_id) : Promise.resolve(null),
-        fetchCriteria(),
-        fetchAlertSettings(),
-        accumField ? observationsSince(kstMidnightISO(new Date())) : Promise.resolve([]),
-        listRecipients(),
-      ]);
-      if (!active) return;
-
-      setObservation(obs ? { ...obs, humidity_pct: null } : null);
-      setCriteria(criteriaRows.find((c) => c.kind === ev.kind && c.grade === ev.grade) ?? null);
-      setAlertSetting(alertRows.find((a) => a.kind === ev.kind) ?? null);
-
-      if (accumField) {
-        setDailyAccum(
-          accumRows.length === 0 ? null : accumRows.reduce((sum, r) => sum + Number(r[accumField] ?? 0), 0),
-        );
-      } else {
-        setDailyAccum(null);
-      }
-
-      const deptIds = new Set((msg.content ?? []).map((b) => b.department_id));
-      const map: Record<string, CandidateRecipient[]> = {};
-      for (const row of recipientRows) {
-        if (!deptIds.has(row.department_id)) continue;
-        const list = map[row.department_id] ?? [];
-        list.push({ employee_id: row.employee_id, name: row.name, kakaowork_user_id: row.kakaowork_user_id });
-        map[row.department_id] = list;
-      }
-      setCandidatesByDept(map);
-
-      setLoading(false);
     })();
     return () => {
       active = false;
@@ -528,7 +537,7 @@ export default function EventReview() {
       {loading && <p className="review-loading">불러오는 중…</p>}
 
       {!loading && loadError && (
-        <EmptyState icon={<IconCloud />} title="이벤트를 찾을 수 없습니다" desc={loadError} />
+        <EmptyState icon={<IconCloud />} title={loadError.title} desc={loadError.desc} />
       )}
 
       {!loading && !loadError && event && (
