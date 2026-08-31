@@ -7,6 +7,7 @@ import type { AlertSetting, DeptBlock, Employee, WeatherEvent } from "../lib/typ
 const mocks = vi.hoisted(() => ({
   openEvents: vi.fn(),
   observationsSinceImpl: (_iso: string): unknown[] => [],
+  observation: vi.fn(),
   criteria: vi.fn(),
   siteSettings: vi.fn(),
   heartbeat: vi.fn(),
@@ -20,6 +21,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/api/dashboard", () => ({
   openEvents: (...args: unknown[]) => mocks.openEvents(...args),
   observationsSince: (iso: string) => Promise.resolve(mocks.observationsSinceImpl(iso)),
+  observation: (...args: unknown[]) => mocks.observation(...args),
   criteria: (...args: unknown[]) => mocks.criteria(...args),
   siteSettings: (...args: unknown[]) => mocks.siteSettings(...args),
   heartbeat: (...args: unknown[]) => mocks.heartbeat(...args),
@@ -121,9 +123,10 @@ const baseMessage = {
   updated_by: null,
 };
 
-// dashboard.ts(OBS_COLS)는 id/humidity_pct를 select하지 않는다 — 트리거 관측은
-// observationsSince로 감지 시각과 가장 가까운 행을 근사치로 골라 쓴다.
+// dashboard.ts(OBS_COLS)는 humidity_pct를 select하지 않는다 — id는 /observations/:id
+// 전용으로 함께 내려온다(baseEvent.trigger_observation_id와 같은 값).
 const baseObservationRow = {
+  id: 10,
   observed_at: "2026-08-12T06:00:00+09:00",
   rain_mm_per_hr: 32.5,
   temp_c: 24,
@@ -148,14 +151,14 @@ const baseAlertSetting: AlertSetting = {
   updated_at: "2026-01-01T00:00:00Z",
 };
 
-// weather_observations는 두 번 조회된다: ①트리거 관측 근사(구간) ②KST 자정 이후 일 누적 합산(rows).
-// EventReview의 Promise.all 배열 순서(트리거 → ... → 누적)와 일치시켜야 한다.
+// KST 자정 이후 일 누적 합산(observationsSince)용 — 트리거 관측(observation(id))과는
+// 별개 호출이다.
 const baseAccumRows = [{ rain_mm_per_hr: 32.5 }, { rain_mm_per_hr: 45.5 }]; // 합계 78.0mm
 
 function setupApi(overrides: {
   event?: WeatherEvent | null;
   message?: typeof baseMessage | null;
-  triggerRows?: unknown[];
+  observationRow?: unknown | null;
   accumRows?: unknown[];
   criteriaRows?: unknown[];
   alertRows?: AlertSetting[];
@@ -165,17 +168,13 @@ function setupApi(overrides: {
   const message = "message" in overrides ? overrides.message : baseMessage;
   mocks.openEvents.mockResolvedValue(event ? [event] : []);
   mocks.messagesOf.mockResolvedValue(message ? [message] : []);
+  mocks.observation.mockResolvedValue("observationRow" in overrides ? overrides.observationRow : baseObservationRow);
   mocks.criteria.mockResolvedValue(overrides.criteriaRows ?? [baseCriteria]);
   mocks.alertSettings.mockResolvedValue(overrides.alertRows ?? [baseAlertSetting]);
   mocks.listRecipients.mockResolvedValue(overrides.recipientRows ?? []);
 
-  const triggerRows = overrides.triggerRows ?? [baseObservationRow];
   const accumRows = overrides.accumRows ?? baseAccumRows;
-  let obsCalls = 0;
-  mocks.observationsSinceImpl = () => {
-    obsCalls += 1;
-    return obsCalls === 1 ? triggerRows : accumRows;
-  };
+  mocks.observationsSinceImpl = () => accumRows;
 }
 
 function renderPage() {

@@ -8,8 +8,8 @@ import { Chip } from "../components/Chip";
 import { EmptyState } from "../components/EmptyState";
 import { Modal } from "../components/Modal";
 import { useAuth } from "../auth/AuthProvider";
-import { openEvents, observationsSince, criteria as fetchCriteria } from "../lib/api/dashboard";
-import type { CriteriaRow, ObservationRow } from "../lib/api/dashboard";
+import { openEvents, observationsSince, observation as fetchObservation, criteria as fetchCriteria } from "../lib/api/dashboard";
+import type { CriteriaRow, ObservationDetail } from "../lib/api/dashboard";
 import { alertSettings as fetchAlertSettings, listRecipients } from "../lib/api/org";
 import { messagesOf, saveDraftMessage } from "../lib/api/content";
 import { callSend } from "../lib/api";
@@ -43,7 +43,7 @@ type NumericObsKey = "rain_mm_per_hr" | "temp_c" | "wind_ms" | "humidity_pct" | 
 // dashboard.ts(OBS_COLS)는 humidity_pct를 select하지 않는다 — weather_observations
 // 테이블에는 있지만 API로는 얻을 수 없다. 강풍·폭염 카드의 "습도" 항목은 이 필드가
 // 없어 항상 "-"로 표시된다(report 참고). 타입만 맞춰 안전하게 접근한다.
-type TriggerObservation = ObservationRow & { humidity_pct: null };
+type TriggerObservation = ObservationDetail & { humidity_pct: null };
 // "daily_accum"은 관측 1건의 필드가 아니라 KST 자정 이후 합산값(판정 엔진의
 // todayAccums와 동일 로직, supabase/functions/_shared/db.ts 참조)으로 별도 계산한다.
 type MetricSource = NumericObsKey | "daily_accum";
@@ -333,13 +333,9 @@ export default function EventReview() {
       setContent(msg.content ?? []);
 
       const accumField = DAILY_ACCUM_FIELD[ev.kind];
-      const [obsRows, criteriaRows, alertRows, accumRows, recipientRows] = await Promise.all([
-        // 서버에 관측 단건 조회(id 기준) 엔드포인트가 없다 — observationsSince로 감지
-        // 시각 앞뒤 구간을 받아 가장 가까운 시각의 관측을 트리거 관측의 근사치로 쓴다.
-        // (관측은 매시 1회이고 특보는 수집 직후 감지되므로 보통 정확히 일치한다.)
-        ev.trigger_observation_id
-          ? observationsSince(new Date(new Date(ev.detected_at).getTime() - 3 * 3600_000).toISOString())
-          : Promise.resolve([]),
+      const [obs, criteriaRows, alertRows, accumRows, recipientRows] = await Promise.all([
+        // GET /api/observations/:id로 트리거 관측 1건을 정확히 짚는다(근사치가 아니다).
+        ev.trigger_observation_id ? fetchObservation(ev.trigger_observation_id) : Promise.resolve(null),
         fetchCriteria(),
         fetchAlertSettings(),
         accumField ? observationsSince(kstMidnightISO(new Date())) : Promise.resolve([]),
@@ -347,18 +343,7 @@ export default function EventReview() {
       ]);
       if (!active) return;
 
-      if (ev.trigger_observation_id && obsRows.length > 0) {
-        const detectedMs = new Date(ev.detected_at).getTime();
-        const closest = obsRows.reduce((best, r) =>
-          Math.abs(new Date(r.observed_at).getTime() - detectedMs) <
-          Math.abs(new Date(best.observed_at).getTime() - detectedMs)
-            ? r
-            : best,
-        );
-        setObservation({ ...closest, humidity_pct: null });
-      } else {
-        setObservation(null);
-      }
+      setObservation(obs ? { ...obs, humidity_pct: null } : null);
       setCriteria(criteriaRows.find((c) => c.kind === ev.kind && c.grade === ev.grade) ?? null);
       setAlertSetting(alertRows.find((a) => a.kind === ev.kind) ?? null);
 
@@ -473,8 +458,8 @@ export default function EventReview() {
     setActionError(null);
     setBanner(null);
     try {
-      // 서버(content.ts)에 messages 갱신 엔드포인트가 없다 — GET만 있다. 이 호출은
-      // 그 엔드포인트가 생기기 전까지 404로 실패한다. task-8-report.md 참고.
+      // PATCH /api/messages/:id — w_approver 정책(alert_recipients 등록 여부)이
+      // 판정한다. 승인 권한이 없으면 403, 메시지 자체가 없으면 404가 온다.
       await saveDraftMessage(messageId, content);
       setBanner({ type: "info", text: "임시 저장되었습니다." });
     } catch {
