@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
       | "loading"
       | "anonymous"
       | "must-change-password"
+      | "no-employee"
       | "authenticated"
       | "error",
     employee: null as Employee | null,
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
     isApprover: false,
     authError: null as string | null,
     refresh: () => Promise.resolve(),
+    logout: () => Promise.resolve(),
   },
 }));
 
@@ -132,6 +134,18 @@ describe("RequireRole 상태 분기", () => {
     renderAt("/guarded");
     expect(screen.getByText("직원 정보를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "다시 시도" })).toBeInTheDocument();
+    expect(screen.queryByText("로그인 화면")).not.toBeInTheDocument();
+    expect(screen.queryByText("보호된 화면")).not.toBeInTheDocument();
+  });
+
+  // 수정 라운드 2 · 항목 3: employeeId가 없는 세션은 must-change-password와 다른 화면으로
+  // 가야 한다 — 비밀번호를 바꿔도 employeeId는 그대로 null이라 같은 화면에 다시 갇힌다.
+  it("no-employee면 /change-password가 아니라 관리자 문의 안내와 로그아웃을 보여준다", () => {
+    mocks.authState.status = "no-employee";
+    renderAt("/guarded");
+    expect(screen.getByText(/관리자에게 문의해 주세요/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "로그아웃" })).toBeInTheDocument();
+    expect(screen.queryByText("비밀번호 변경 화면")).not.toBeInTheDocument();
     expect(screen.queryByText("로그인 화면")).not.toBeInTheDocument();
     expect(screen.queryByText("보호된 화면")).not.toBeInTheDocument();
   });

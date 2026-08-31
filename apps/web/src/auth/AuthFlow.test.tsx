@@ -154,3 +154,59 @@ describe("F5 — 비밀번호 변경이 필요한 세션은 어디서 진입하�
     expect(screen.queryByText("홈 화면")).not.toBeInTheDocument();
   });
 });
+
+
+describe("항목 2 — status가 loading에 영원히 머물지 않는다", () => {
+  it("/api/auth/me가 200이지만 user가 없는 본문을 주면 백지가 아니라 오류 화면에 도달한다", async () => {
+    const { fetchMock, push } = makeFetchQueue();
+    vi.stubGlobal("fetch", fetchMock);
+
+    // 서버 계약 위반을 흉내낸다 — 실제 서버(auth/routes.ts)는 항상 { user }를 주지만,
+    // 라운드 1 리팩터로 이 접근이 어떤 try 안에도 없어서(수정 전) TypeError가 나면
+    // useEffect의 떠 있는 프로미스가 unhandled로 죽어 status가 "loading"에 영원히
+    // 머물렀다 — RequireRole이 계속 null을 반환하는 영구 백지 화면이었다.
+    push("/api/auth/me", () => jsonResponse({}));
+
+    const { container } = render(<Harness initialPath="/" />);
+
+    // 백지(빈 body)로 멈추지 않고 결국 오류 화면(재시도 버튼)에 도달해야 한다.
+    await waitFor(() => expect(screen.getByRole("button", { name: "다시 시도" })).toBeInTheDocument());
+    expect(container.textContent).not.toBe("");
+    expect(screen.queryByText("홈 화면")).not.toBeInTheDocument();
+  });
+});
+
+describe("항목 3 — 직원 행이 삭제된 계정은 /change-password가 아니라 안내 화면으로 간다", () => {
+  it("employeeId가 없으면 거짓 '비밀번호 변경' 안내 대신 관리자 문의 안내와 로그아웃을 보여준다", async () => {
+    const { fetchMock, push } = makeFetchQueue();
+    vi.stubGlobal("fetch", fetchMock);
+
+    // 관리자가 employees 행을 지워도 auth_accounts는 남는다(server/src/auth/session.ts의
+    // left join employees가 employeeId: null을 준다) — must_change_password는 거짓인데도
+    // employeeId가 없는 상태다.
+    push("/api/auth/me", () =>
+      jsonResponse({
+        user: {
+          accountId: "acc-1",
+          employeeId: null,
+          role: null,
+          email: "a@gonjiam.com",
+          mustChangePassword: false,
+        },
+      }),
+    );
+
+    render(<Harness initialPath="/" />);
+
+    // 회귀: 예전에는 이 상태가 must-change-password와 한 갈래로 묶여 /change-password로
+    // 보내졌다 — 비밀번호를 바꿔도 employeeId는 여전히 null이라 같은 화면에 다시 갇혔다.
+    expect(await screen.findByText(/관리자에게 문의해 주세요/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("현재 비밀번호")).not.toBeInTheDocument();
+
+    // 빠져나갈 수단(로그아웃)이 실제로 동작한다.
+    push("/api/auth/logout", () => jsonResponse(null, 204));
+    fireEvent.click(screen.getByRole("button", { name: "로그아웃" }));
+
+    expect(await screen.findByRole("heading", { name: "날씨경영" })).toBeInTheDocument();
+  });
+});

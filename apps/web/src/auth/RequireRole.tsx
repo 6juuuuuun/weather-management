@@ -14,7 +14,7 @@ export function RequireRole({
   requireDepartment?: boolean;
   children: ReactNode;
 }) {
-  const { status, employee, isApprover, authError, refresh } = useAuth();
+  const { status, employee, isApprover, authError, refresh, logout } = useAuth();
 
   if (status === "loading") return null;
 
@@ -36,6 +36,22 @@ export function RequireRole({
   // /login이 아니라 /change-password로 보낸다(F5) — 로그인 직후의 navigate 하나에만
   // 의존하면, 재진입 경로 전부가 그 navigate를 거치지 않는다.
   if (status === "must-change-password") return <Navigate to="/change-password" replace />;
+
+  // 계정(auth_accounts)은 있지만 연결된 직원 행이 없다(수정 라운드 2 · 항목 3) — 관리자가
+  // Employees.tsx에서 직원 행을 지워도 계정은 남는다. must-change-password와 같은 갈래로
+  // 묶으면 "비밀번호를 바꿔야 한다"는 거짓 설명과 함께 /change-password에 갇힌다 — 비밀번호를
+  // 아무리 바꿔도 employeeId는 여전히 null이라 다시 같은 화면으로 돌아오기 때문이다.
+  // "다시 시도"도 소용없으므로(같은 응답이 반복된다) error와 달리 재시도 대신 로그아웃만 준다.
+  if (status === "no-employee") {
+    return (
+      <div className="require-role-error">
+        <p>계정에 연결된 직원 정보를 찾을 수 없습니다. 관리자에게 문의해 주세요.</p>
+        <button type="button" onClick={() => logout()}>
+          로그아웃
+        </button>
+      </div>
+    );
+  }
 
   if (status === "anonymous" || !employee) return <Navigate to="/login" replace />;
   if (!roles.includes(employee.role)) return <Navigate to="/" replace />;
