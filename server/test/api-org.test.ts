@@ -422,6 +422,48 @@ describe("직원", () => {
     expect(stored).toBe("emp-dup-target@gonjiam.com");
   });
 
+  // employees.email은 가입이 이 행에 계정을 이어 붙일 때 쓰는 병합 키다(auth/routes.ts의
+  // on conflict (email)). 가입은 ALLOWED_EMAIL_DOMAINS를 강제하는데 수정 경로가 강제하지
+  // 않으면, 관리자가 사내 도메인이 아닌 주소를 박아 둘 수 있고 그 직원은 아무리 가입해도
+  // 이 행에 붙지 못한다 — 부서·역할이 유실된 별도 계정이 생기고 이 행은 유령으로 남는다.
+  it("사내 도메인이 아닌 이메일로는 바꿀 수 없다", async () => {
+    const admin = await agentAs("admin", "emp-domain-admin@gonjiam.com");
+    const targetId = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into employees (name, email, role) values ('대상','emp-domain-target@gonjiam.com','staff') returning id",
+      );
+      return rows[0].id;
+    });
+    // name을 함께 보낸다 — email만 보내면 "변경할 값이 없습니다" 400과 구분되지 않는다.
+    const res = await admin
+      .patch(`/api/employees/${targetId}`)
+      .send({ name: "새이름", email: "outsider@gmail.com" });
+    expect(res.status).toBe(400);
+
+    const stored = await withService(async (q) => {
+      const { rows } = await q.query("select name, email from employees where id = $1", [targetId]);
+      return rows[0];
+    });
+    // 400이 다른 이유로 우연히 난 게 아님을 확인한다 — 함께 보낸 name도 반영되면 안 된다.
+    expect(stored.email).toBe("emp-domain-target@gonjiam.com");
+    expect(stored.name).toBe("대상");
+  });
+
+  // 도메인 검사는 정규화(trim + toLowerCase) 뒤에 해야 한다. 정규화 전에 하면
+  // 대문자로 적은 사내 주소가 부당하게 거부된다.
+  it("대소문자·공백만 다른 사내 이메일은 정규화해 허용한다", async () => {
+    const admin = await agentAs("admin", "emp-domain-admin2@gonjiam.com");
+    const targetId = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into employees (name, email, role) values ('대상','emp-domain-target2@gonjiam.com','staff') returning id",
+      );
+      return rows[0].id;
+    });
+    const res = await admin.patch(`/api/employees/${targetId}`).send({ email: "  Emp-Domain-OK@GONJIAM.com  " });
+    expect(res.status).toBe(200);
+    expect(res.body.email).toBe("emp-domain-ok@gonjiam.com");
+  });
+
   it("빈 이메일로는 바꿀 수 없다", async () => {
     const admin = await agentAs("admin", "emp-blank-admin@gonjiam.com");
     const targetId = await withService(async (q) => {
@@ -528,6 +570,20 @@ describe("직원", () => {
       return rows[0].n;
     });
     // 403이 실제 게이트에서 났는지 — 거부된 요청은 행을 만들지 않았어야 한다.
+    expect(count).toBe(0);
+  });
+
+  // 사전 등록도 같은 병합 키를 만든다 — 여기가 열려 있으면 수정 경로만 막아도 소용없다.
+  it("사내 도메인이 아닌 이메일로는 사전 등록할 수 없다", async () => {
+    const admin = await agentAs("admin", "emp-create-domain-admin@gonjiam.com");
+    const res = await admin.post("/api/employees").send({ name: "외부인", email: "outsider@gmail.com" });
+    expect(res.status).toBe(400);
+    const count = await withService(async (q) => {
+      const { rows } = await q.query("select count(*)::int as n from employees where email = $1", [
+        "outsider@gmail.com",
+      ]);
+      return rows[0].n;
+    });
     expect(count).toBe(0);
   });
 

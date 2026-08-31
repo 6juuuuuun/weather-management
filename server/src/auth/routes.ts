@@ -3,13 +3,11 @@ import { withService, UUID } from "../db.ts";
 import { hash, verify, temporaryPassword } from "./password.ts";
 import { issue, lookup, revoke } from "./session.ts";
 import { COOKIE, requireAuth, requireAdmin } from "./middleware.ts";
+import { isAllowedEmailDomain } from "./emailDomain.ts";
 
 const MAX_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
 const MIN_PASSWORD = 10;
-
-const allowedDomains = () =>
-  (process.env.ALLOWED_EMAIL_DOMAINS ?? "").split(",").map((d) => d.trim().toLowerCase()).filter(Boolean);
 
 export const authRouter = Router();
 
@@ -23,8 +21,7 @@ authRouter.post("/signup", async (req, res) => {
   // 들어가 특보가 두 번 나가는 등 발송 대상이 어긋난다.
   const email = String(emailRaw).trim().toLowerCase();
 
-  const domain = email.split("@")[1];
-  if (!domain || !allowedDomains().includes(domain)) {
+  if (!isAllowedEmailDomain(email)) {
     return res.status(400).json({ error: "회사 이메일로만 가입할 수 있습니다" });
   }
 

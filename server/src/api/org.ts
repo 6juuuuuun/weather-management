@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { UUID, withUser, withService } from "../db.ts";
 import { requireAuth, requireAdmin } from "../auth/middleware.ts";
+import { isAllowedEmailDomain } from "../auth/emailDomain.ts";
 
 export const orgRouter = Router();
 orgRouter.use(requireAuth);
@@ -166,6 +167,11 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
   if ("email" in body) {
     const email = String(body.email ?? "").trim().toLowerCase();
     if (!email) return res.status(400).json({ error: "이메일이 비어 있습니다" });
+    // 도메인 규칙도 가입 경로와 같아야 한다. 여기가 비어 있으면 관리자가 사내 도메인이
+    // 아닌 주소를 넣을 수 있고, 그 직원은 가입해도 이 행에 병합되지 않는다.
+    if (!isAllowedEmailDomain(email)) {
+      return res.status(400).json({ error: "회사 이메일만 등록할 수 있습니다" });
+    }
     vals.push(email);
     sets.push(`email = $${vals.length}`);
   }
@@ -207,6 +213,10 @@ orgRouter.post("/employees", requireAdmin, async (req, res) => {
   const name = String(body.name ?? "").trim();
   const email = String(body.email ?? "").trim().toLowerCase();
   if (!name || !email) return res.status(400).json({ error: "이름과 이메일이 필요합니다" });
+  // 사전 등록도 같은 도메인 규칙을 받는다 — PATCH와 같은 이유다(병합 키).
+  if (!isAllowedEmailDomain(email)) {
+    return res.status(400).json({ error: "회사 이메일만 등록할 수 있습니다" });
+  }
   const role = body.role ?? "staff";
   if (!EMP_ROLES.includes(role)) {
     return res.status(400).json({ error: `role은 ${EMP_ROLES.join(", ")} 중 하나여야 합니다` });
