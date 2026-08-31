@@ -92,8 +92,10 @@ describe("Guidelines", () => {
 
   it("staff는 부서 트리를 보되 저장 버튼은 숨겨진다", async () => {
     mocks.authState.employee = staffEmployee();
-    // departments API는 id/name만 내려준다(parent_id 없음) — 평면 목록.
-    mocks.listDepartments.mockResolvedValue([{ id: "l1", name: "객실" }]);
+    mocks.listDepartments.mockResolvedValue([
+      { id: "g1", parent_id: null, name: "리조트", sort_order: 0 },
+      { id: "l1", parent_id: "g1", name: "객실", sort_order: 0 },
+    ]);
     mocks.listEmployees.mockResolvedValue([staffEmployee()]);
     mocks.listRecipients.mockResolvedValue([
       { department_id: "l1", employee_id: "staff-1", name: "홍수진", role: "staff", kakaowork_user_id: null },

@@ -77,8 +77,6 @@ export default function Employees() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  // departments API는 id/name만 내려준다(parent_id 없음) — 예전처럼 "상위 · 하위"로
-  // 묶어 보여줄 수 없어 평면 목록으로 대체한다. task-8-report.md 참고.
   const deptById = useMemo(() => {
     const map = new Map<string, DepartmentRow>();
     for (const d of departments) map.set(d.id, d);
@@ -88,14 +86,25 @@ export default function Employees() {
   const deptLabel = useMemo(() => {
     return (id: string | null): string => {
       if (!id) return "미지정";
-      return deptById.get(id)?.name ?? "미지정";
+      const dept = deptById.get(id);
+      if (!dept) return "미지정";
+      if (!dept.parent_id) return dept.name;
+      const parent = deptById.get(dept.parent_id);
+      return parent ? `${parent.name} · ${dept.name}` : dept.name;
     };
   }, [deptById]);
 
-  const deptOptions = useMemo(
-    () => departments.map((d) => ({ id: d.id, label: d.name })),
-    [departments],
-  );
+  const deptOptions = useMemo(() => {
+    const top = departments.filter((d) => !d.parent_id).sort((a, b) => a.sort_order - b.sort_order);
+    const options: { id: string; label: string }[] = [];
+    for (const t of top) {
+      options.push({ id: t.id, label: t.name });
+      for (const child of departments.filter((d) => d.parent_id === t.id).sort((a, b) => a.sort_order - b.sort_order)) {
+        options.push({ id: child.id, label: `${t.name} · ${child.name}` });
+      }
+    }
+    return options;
+  }, [departments]);
 
   const unassignedCount = useMemo(
     () => employees.filter((e) => e.department_id === null).length,
@@ -143,8 +152,8 @@ export default function Employees() {
         });
         setToast({ kind: "ok", message: "직원 정보를 수정했습니다" });
       } else {
-        // 서버에 직원 생성 엔드포인트가 없다(가입은 /api/auth/signup 전용) —
-        // 이 호출은 이 엔드포인트가 생기기 전까지 404로 실패한다. task-8-report.md 참고.
+        // 계정 없이 사전 등록만 한다 — 실제 로그인 계정은 본인이 나중에
+        // /api/auth/signup으로 만들면 이메일이 일치해 자동으로 이어붙는다.
         await createEmployee({
           name: form.name.trim(),
           email: form.email.trim(),

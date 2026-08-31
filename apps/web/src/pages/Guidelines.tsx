@@ -74,6 +74,7 @@ export default function Guidelines() {
   const [kind, setKind] = useState<Kind>("rain");
   const [grade, setGrade] = useState<Grade>("watch");
   const [selectedDeptId, setSelectedDeptId] = useState<string | null>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
 
   const [staffActions, setStaffActions] = useState<string[]>([]);
   const [guestNotice, setGuestNotice] = useState("");
@@ -108,16 +109,30 @@ export default function Guidelines() {
     };
   }, []);
 
-  // departments API는 id/name만 내려준다(parent_id/sort_order 없음) — 예전의 상위/하위
-  // 2단 트리를 만들 수 없어 평면 목록으로 대체한다. task-8-report.md 참고.
-  // 서버가 이미 이름순으로 정렬해 내려준다(org.ts: order by name).
-  const sortedDepartments = departments;
+  const groups = (() => {
+    const byParent = new Map<string, DepartmentRow[]>();
+    const roots: DepartmentRow[] = [];
+    for (const d of departments) {
+      if (d.parent_id === null) {
+        roots.push(d);
+      } else {
+        const arr = byParent.get(d.parent_id) ?? [];
+        arr.push(d);
+        byParent.set(d.parent_id, arr);
+      }
+    }
+    roots.sort((a, b) => a.sort_order - b.sort_order);
+    return roots.map((group) => ({
+      group,
+      leaves: (byParent.get(group.id) ?? []).slice().sort((a, b) => a.sort_order - b.sort_order),
+    }));
+  })();
 
-  // 부서 목록이 로드되면 첫 부서를 기본 선택
+  // 부서 목록이 로드되면 첫 리프 부서를 기본 선택
   useEffect(() => {
     if (selectedDeptId) return;
-    const first = sortedDepartments[0];
-    if (first) setSelectedDeptId(first.id);
+    const firstLeaf = groups.flatMap((g) => g.leaves)[0];
+    if (firstLeaf) setSelectedDeptId(firstLeaf.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [departments]);
 
@@ -142,6 +157,10 @@ export default function Guidelines() {
 
   function recipientCountFor(deptId: string): number {
     return recipients.filter((r) => r.department_id === deptId).length;
+  }
+
+  function toggleGroup(id: string) {
+    setCollapsedGroups((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
   function addBullet() {
@@ -207,6 +226,9 @@ export default function Guidelines() {
   }
 
   const selectedDept = departments.find((d) => d.id === selectedDeptId) ?? null;
+  const selectedGroup = selectedDept
+    ? (departments.find((d) => d.id === selectedDept.parent_id) ?? null)
+    : null;
   const currentGuideline = selectedDeptId ? guidelineFor(selectedDeptId, grade) : undefined;
   const updaterName = currentGuideline?.updated_by
     ? employees.find((e) => e.id === currentGuideline.updated_by)?.name
@@ -268,43 +290,59 @@ export default function Guidelines() {
                 </div>
               </div>
 
-              {/* departments API가 부서 계층(parent_id)을 내려주지 않아, 예전의 상위/하위
-                  2단 트리 대신 평면 목록으로 보여준다 — task-8-report.md 참고. */}
               <div className="guidelines-tree-body">
-                <div className="guidelines-group">
-                  {sortedDepartments.map((dept) => {
-                    const watchGuideline = guidelineFor(dept.id, "watch");
-                    const warningGuideline = guidelineFor(dept.id, "warning");
-                    const count = recipientCountFor(dept.id);
-                    return (
-                      <button
-                        type="button"
-                        key={dept.id}
-                        className={`guidelines-leaf ${
-                          selectedDeptId === dept.id ? "guidelines-leaf-selected" : ""
-                        }`}
-                        onClick={() => setSelectedDeptId(dept.id)}
+                {groups.map(({ group, leaves }) => (
+                  <div key={group.id} className="guidelines-group">
+                    <button
+                      type="button"
+                      className="guidelines-group-toggle"
+                      onClick={() => toggleGroup(group.id)}
+                      aria-expanded={!collapsedGroups[group.id]}
+                    >
+                      <span
+                        className={`chevron ${collapsedGroups[group.id] ? "chevron-collapsed" : ""}`}
+                        aria-hidden="true"
                       >
-                        <span className="guidelines-leaf-name">{dept.name}</span>
-                        <span className="guidelines-leaf-meta">
-                          <span
-                            className={`tree-dot ${watchGuideline ? "tree-dot-watch" : "tree-dot-empty"}`}
-                            aria-hidden="true"
-                          />
-                          <span
-                            className={`tree-dot ${warningGuideline ? "tree-dot-warning" : "tree-dot-empty"}`}
-                            aria-hidden="true"
-                          />
-                          {count > 0 ? (
-                            <span className="guidelines-count">{count}명</span>
-                          ) : (
-                            <span className="guidelines-unassigned">미지정</span>
-                          )}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+                        ⌄
+                      </span>
+                      {group.name}
+                    </button>
+
+                    {!collapsedGroups[group.id] &&
+                      leaves.map((leaf) => {
+                        const watchGuideline = guidelineFor(leaf.id, "watch");
+                        const warningGuideline = guidelineFor(leaf.id, "warning");
+                        const count = recipientCountFor(leaf.id);
+                        return (
+                          <button
+                            type="button"
+                            key={leaf.id}
+                            className={`guidelines-leaf ${
+                              selectedDeptId === leaf.id ? "guidelines-leaf-selected" : ""
+                            }`}
+                            onClick={() => setSelectedDeptId(leaf.id)}
+                          >
+                            <span className="guidelines-leaf-name">{leaf.name}</span>
+                            <span className="guidelines-leaf-meta">
+                              <span
+                                className={`tree-dot ${watchGuideline ? "tree-dot-watch" : "tree-dot-empty"}`}
+                                aria-hidden="true"
+                              />
+                              <span
+                                className={`tree-dot ${warningGuideline ? "tree-dot-warning" : "tree-dot-empty"}`}
+                                aria-hidden="true"
+                              />
+                              {count > 0 ? (
+                                <span className="guidelines-count">{count}명</span>
+                              ) : (
+                                <span className="guidelines-unassigned">미지정</span>
+                              )}
+                            </span>
+                          </button>
+                        );
+                      })}
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -315,7 +353,9 @@ export default function Guidelines() {
                 <>
                   <div className="guidelines-editor-top">
                     <div>
-                      <p className="guidelines-breadcrumb">{selectedDept.name}</p>
+                      <p className="guidelines-breadcrumb">
+                        {selectedGroup ? `${selectedGroup.name} > ${selectedDept.name}` : selectedDept.name}
+                      </p>
                       <div className="guidelines-editor-title-row">
                         <h2>{KIND_LABEL[kind]} 대응 지침</h2>
                         <div className="guidelines-grade-switch">
