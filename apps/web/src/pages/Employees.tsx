@@ -44,6 +44,7 @@ export default function Employees() {
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
   const [departments, setDepartments] = useState<DepartmentRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [search, setSearch] = useState("");
   const [deptFilter, setDeptFilter] = useState<string>("all");
@@ -58,13 +59,25 @@ export default function Employees() {
   const [deptModalOpen, setDeptModalOpen] = useState(searchParams.get("dept") === "open" && isAdmin);
   const [toast, setToast] = useState<ToastState>(null);
 
+  // 오류를 여기서 삼켜 loadError로 바꾼다 — 이 함수는 초기 로드 말고도 저장·삭제·배정
+  // 직후에 불린다. 던지게 두면 그 호출부의 catch가 로드 실패를 "저장에 실패했습니다"로
+  // 잘못 보고한다(저장은 이미 성공한 뒤다).
   async function loadAll() {
-    const [emps, depts] = await Promise.all([listEmployees(), listDepartments()]);
-    // employees API는 정렬 순서를 강제하지 않는다(org.ts: order by name) — 화면은
-    // "최근 가입 우선"을 기대했으므로 created_at 내림차순으로 다시 정렬한다.
-    setEmployees([...emps].sort((a, b) => b.created_at.localeCompare(a.created_at)));
-    setDepartments(depts);
-    setLoading(false);
+    setLoadError(null);
+    try {
+      const [emps, depts] = await Promise.all([listEmployees(), listDepartments()]);
+      // employees API는 정렬 순서를 강제하지 않는다(org.ts: order by name) — 화면은
+      // "최근 가입 우선"을 기대했으므로 created_at 내림차순으로 다시 정렬한다.
+      setEmployees([...emps].sort((a, b) => b.created_at.localeCompare(a.created_at)));
+      setDepartments(depts);
+    } catch (err) {
+      // supabase-js는 HTTP 오류에 reject하지 않아 항상 setLoading(false)에 닿았다.
+      // 새 클라이언트는 던지므로 catch/finally 없이는 세션 만료(401) 한 번에
+      // "불러오는 중…"이 영구히 남는다.
+      setLoadError(err instanceof ApiError ? err.message : "직원 목록을 불러오지 못했습니다");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -143,10 +156,13 @@ export default function Employees() {
     setSaving(true);
     try {
       if (form.id) {
-        // PATCH /api/employees/:id는 name/role/department_id/phone만 받는다 — email은
-        // 서버가 갱신 대상으로 취급하지 않는다(org.ts). 여기서 보내도 조용히 무시된다.
+        // 이메일은 가입(POST /api/auth/signup)이 이 직원 행에 계정을 이어 붙이는
+        // 병합 키다 — 보내지 않으면 관리자가 오타를 고쳤다고 믿는데 값은 버려지고,
+        // 그 직원은 가입해도 부서·역할이 유실된 별도 계정이 된다. 서버가 중복 이메일에
+        // 409를 주므로 아래 catch가 그 문구를 그대로 보여준다.
         await updateEmployee(form.id, {
           name: form.name.trim(),
+          email: form.email.trim(),
           department_id: form.department_id,
           role: form.role,
         });
@@ -276,6 +292,8 @@ export default function Employees() {
 
       {loading ? (
         <p className="employees-loading">불러오는 중…</p>
+      ) : loadError ? (
+        <p className="employees-error">직원 목록을 불러오지 못했습니다: {loadError}</p>
       ) : (
         <div className="employees-table-wrap">
           <table className="employees-table">

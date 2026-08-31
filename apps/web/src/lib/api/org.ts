@@ -48,7 +48,9 @@ export const listEmployees = (opts?: { roles?: EmpRole[] }) => {
 };
 export const updateEmployee = (
   id: string,
-  patch: Partial<Pick<EmployeeRow, "name" | "role" | "department_id" | "phone">>,
+  // email은 가입(POST /api/auth/signup)이 직원 행에 계정을 이어 붙이는 병합 키다 —
+  // 서버가 정규화해 저장하고 중복이면 409를 준다(server/src/api/org.ts).
+  patch: Partial<Pick<EmployeeRow, "name" | "email" | "role" | "department_id" | "phone">>,
 ) => apiSend<EmployeeRow>("PATCH", `/api/employees/${encodeURIComponent(id)}`, patch);
 export const deleteEmployee = (id: string) => apiSend<null>("DELETE", `/api/employees/${encodeURIComponent(id)}`);
 

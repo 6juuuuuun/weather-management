@@ -14,6 +14,13 @@
   padding: 40px 0;
 }
 
+.employees-error {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--danger);
+}
+
 .employees-filters {
   display: flex;
   align-items: center;
