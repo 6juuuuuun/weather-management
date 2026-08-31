@@ -65,7 +65,12 @@ authRouter.post("/login", async (req, res) => {
   const email = String(req.body?.email ?? "").trim().toLowerCase();
   const account = await withService(async (q) => {
     const { rows } = await q.query(
-      "select id, password_hash, status, failed_attempts, locked_until, must_change_password from auth_accounts where email = $1",
+      // 잠금 만료 여부를 Postgres가 직접 계산해 내려준다. locked_until은 Postgres
+      // 시계로 쓰이므로(now() + interval) Node의 new Date()로 비교하면 두 시계가
+      // 어긋난 만큼 판정이 틀린다 — 시계 도메인을 하나로 묶는다.
+      `select id, password_hash, status, failed_attempts, must_change_password,
+              (locked_until is not null and locked_until > now()) as is_locked
+         from auth_accounts where email = $1`,
       [email],
     );
     return rows[0] ?? null;
@@ -76,7 +81,7 @@ authRouter.post("/login", async (req, res) => {
   const deny = () => res.status(401).json({ error: "로그인할 수 없습니다" });
   if (!account) return deny();
 
-  if (account.locked_until && new Date(account.locked_until) > new Date()) {
+  if (account.is_locked) {
     return res.status(423).json({ error: "잠시 후 다시 시도해 주세요" });
   }
 

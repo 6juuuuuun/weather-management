@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import request from "supertest";
 import { app } from "../src/index.ts";
 import { withService } from "../src/db.ts";
@@ -185,6 +185,35 @@ describe("로그인", () => {
       .post("/api/auth/login")
       .send({ email: SIGNUP.email, password: SIGNUP.password });
     expect(res.status).toBe(200);
+  });
+
+  // locked_until은 Postgres 시계로 쓰인다(now() + interval). 만료 여부를 Node의
+  // new Date()로 비교하면 두 시계가 어긋난 만큼 판정이 틀린다 — 개발 환경에서
+  // 실제로 컨테이너 시계가 호스트보다 앞서 위 테스트가 조기에 423을 받은 적이 있다.
+  // 여기서는 Node 시계만 5초 뒤로 돌려 그 드리프트를 재현한다. 만료 판정이 SQL
+  // 안에 있으면(시계 도메인이 하나면) 이 조작에 영향받지 않아야 한다.
+  it("잠금 만료 판정은 Node 프로세스 시계가 어긋나도 흔들리지 않는다", async () => {
+    await request(app).post("/api/auth/signup").send(SIGNUP);
+    for (let i = 0; i < 5; i++) {
+      await request(app).post("/api/auth/login").send({ email: SIGNUP.email, password: "wrong" });
+    }
+    await withService((q) =>
+      q.query("update auth_accounts set locked_until = now() - interval '1 second' where email = $1", [
+        SIGNUP.email,
+      ]),
+    );
+
+    // Date만 가짜로 바꾼다 — 타이머까지 잡으면 supertest/pg의 I/O가 멈춘다.
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+    try {
+      vi.setSystemTime(new Date(Date.now() - 5000));
+      const res = await request(app)
+        .post("/api/auth/login")
+        .send({ email: SIGNUP.email, password: SIGNUP.password });
+      expect(res.status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
