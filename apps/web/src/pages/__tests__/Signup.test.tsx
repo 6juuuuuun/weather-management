@@ -75,6 +75,33 @@ describe("회원가입", () => {
     expect(fetchMock.mock.calls.some(([path]) => path === "/api/auth/signup")).toBe(false);
   });
 
+  // 수정 라운드 2 · 항목 1: department_id를 null로 고정해도(사용자가 고른 부서를
+  // 화면에서 버려도) 이전까지는 어떤 테스트도 잡지 못했다 — 계약 테스트(lib/api/auth)는
+  // signup() 함수 자체가 받은 값을 그대로 보내는지만 지키지, 화면이 그 함수에 실제로
+  // 무엇을 넘기는지는 지키지 않았다. 여기서는 select로 부서를 실제로 고르고, 나가는
+  // 요청 본문의 department_id가 그 값과 일치하는지 직접 단언한다.
+  it("고른 부서의 id를 그대로 department_id로 보낸다", async () => {
+    const { fetchMock, push } = makeFetchQueue();
+    vi.stubGlobal("fetch", fetchMock);
+    push("/api/departments", () => jsonResponse([{ id: "d1", parent_id: null, name: "객실", sort_order: 1 }]));
+    push("/api/auth/signup", () => jsonResponse({ ok: true }, 201));
+    renderSignup();
+
+    await screen.findByRole("option", { name: "객실" });
+    fireEvent.change(screen.getByLabelText("회사 이메일"), { target: { value: "a@gonjiam.com" } });
+    fireEvent.change(screen.getByLabelText("비밀번호"), { target: { value: "password12345" } });
+    fireEvent.change(screen.getByLabelText("이름"), { target: { value: "홍길동" } });
+    fireEvent.change(screen.getByLabelText("부서"), { target: { value: "d1" } });
+    fireEvent.click(screen.getByRole("button", { name: "가입하기" }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([path]) => path === "/api/auth/signup")).toBe(true),
+    );
+    const call = fetchMock.mock.calls.find(([path]) => path === "/api/auth/signup")!;
+    const init = call[1] as RequestInit;
+    expect(JSON.parse(init.body as string).department_id).toBe("d1");
+  });
+
   // F6: 마운트 시 부서 목록을 못 불러오면(500 등) 조용히 빈 상태로 남기지 않고
   // 오류와 재시도 수단을 보여준다. 재시도를 누르면 실제로 다시 불러온다 —
   // 부서를 못 고른 채 가입하면 department_id: null이 되어 requireDepartment
