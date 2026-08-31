@@ -133,8 +133,8 @@ export default function Settings() {
   const [alertSettings, setAlertSettings] = useState<Record<Kind, AlertSetting> | null>(null);
   const [siteSettings, setSiteSettings] = useState<SiteSettingsRow | null>(null);
   const [weatherHeartbeat, setWeatherHeartbeat] = useState<HeartbeatRow | null>(null);
-  const [missing24h] = useState<number>(0);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [sendingTest, setSendingTest] = useState(false);
   const [toast, setToast] = useState<ToastState>(null);
@@ -142,21 +142,28 @@ export default function Settings() {
   useEffect(() => {
     let active = true;
     (async () => {
-      // 서버(dashboard.ts)의 /observations 조회는 항상 missing=false만 돌려준다 —
-      // "최근 24시간 결측 횟수"를 셀 방법이 API에 없다(task-8-report.md 참고).
-      // missing24h는 항상 0으로 둔다.
-      const [alertRows, site, hb] = await Promise.all([
-        fetchAlertSettings(),
-        fetchSiteSettings(),
-        fetchHeartbeat("weather-tick"),
-      ]);
-      if (!active) return;
-      const map = {} as Record<Kind, AlertSetting>;
-      for (const row of alertRows) map[row.kind] = row;
-      setAlertSettings(map);
-      setSiteSettings(site);
-      setWeatherHeartbeat(hb);
-      setLoading(false);
+      setLoadError(null);
+      try {
+        const [alertRows, site, hb] = await Promise.all([
+          fetchAlertSettings(),
+          fetchSiteSettings(),
+          fetchHeartbeat("weather-tick"),
+        ]);
+        if (!active) return;
+        const map = {} as Record<Kind, AlertSetting>;
+        for (const row of alertRows) map[row.kind] = row;
+        setAlertSettings(map);
+        setSiteSettings(site);
+        setWeatherHeartbeat(hb);
+      } catch (err) {
+        // supabase-js는 HTTP 오류에 reject하지 않아 항상 setLoading(false)에 닿았다.
+        // 새 클라이언트는 던지므로 catch/finally 없이는 세션 만료(401) 한 번에
+        // "불러오는 중…"이 영구히 남는다.
+        if (!active) return;
+        setLoadError(err instanceof ApiError ? err.message : "알림 설정을 불러오지 못했습니다");
+      } finally {
+        if (active) setLoading(false);
+      }
     })();
     return () => {
       active = false;
@@ -232,10 +239,16 @@ export default function Settings() {
     }
   }
 
+  // 로드가 실패하면 alertSettings·siteSettings가 null로 남는다 — loadError를 함께
+  // 보지 않으면 이 가드가 "불러오는 중…"을 영구히 붙잡는다.
   if (loading || !alertSettings || !siteSettings) {
     return (
       <AppLayout title="알림 설정">
-        <p className="settings-loading">불러오는 중…</p>
+        {loadError ? (
+          <p className="settings-error">알림 설정을 불러오지 못했습니다: {loadError}</p>
+        ) : (
+          <p className="settings-loading">불러오는 중…</p>
+        )}
       </AppLayout>
     );
   }
@@ -440,11 +453,17 @@ export default function Settings() {
                 연결됨 · 봇 이름 날씨경영
               </span>
             </div>
+            {/* 서버(dashboard.ts)의 /observations 조회는 missing=false를 무조건 강제해
+                결측 행을 받을 방법 자체가 없다 — 결측 횟수를 셀 수 없다. 예전에는
+                하드코딩된 0을 초록 "정상"으로 칠했는데, 기상청 API가 밤새 실패해도
+                이 화면이 "정상"이라고 적극적으로 거짓 보고하는 셈이었다. 수집 건전성을
+                확인하러 들어오는 유일한 화면이므로, 모르는 것은 모른다고 말한다.
+                (결측 카운트 엔드포인트 신설은 이 라운드 범위 밖이다.) */}
             <div className="settings-heartbeat-row">
               <span>수집 결측</span>
-              <span className={`settings-heartbeat-value ${missing24h > 0 ? "warn" : "ok"}`}>
+              <span className="settings-heartbeat-value unknown">
                 <span className="settings-heartbeat-dot" aria-hidden="true" />
-                최근 24시간 {missing24h}회
+                확인 불가 · 집계 기능 준비 중
               </span>
             </div>
             {isAdmin && (

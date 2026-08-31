@@ -7,6 +7,13 @@
   padding: 40px 0;
 }
 
+.settings-error {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--danger);
+  padding: 40px 0;
+}
+
 .settings-intro {
   margin: 20px 0 24px;
   font-family: var(--font-ui);
@@ -351,6 +358,16 @@
 
 .settings-heartbeat-value.warn .settings-heartbeat-dot {
   background: var(--warn-strong);
+}
+
+/* 결측 횟수는 API로 알 수 없다. 초록(ok)을 쓰면 "없는 정보를 정상이라고 단언"하게
+   되므로 중립 회색으로 따로 둔다 — warn(주의)도 아니다, 나쁘다는 뜻이 아니라 모른다는 뜻이다. */
+.settings-heartbeat-value.unknown {
+  color: var(--ink-muted-48);
+}
+
+.settings-heartbeat-value.unknown .settings-heartbeat-dot {
+  background: var(--ink-muted-48);
 }
 
 .settings-test-btn {
