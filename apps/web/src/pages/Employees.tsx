@@ -9,6 +9,7 @@ import { DeptModal } from "../components/DeptModal";
 import { useAuth } from "../auth/AuthProvider";
 import { ApiError } from "../lib/api/client";
 import { listDepartments, listEmployees, updateEmployee, deleteEmployee as deleteEmployeeApi, createEmployee } from "../lib/api/org";
+import { setAccountStatus, resetPassword } from "../lib/api/auth";
 import type { DepartmentRow, EmployeeRow } from "../lib/api/org";
 import type { EmpRole } from "../lib/types";
 import { ROLE_LABEL } from "../lib/roles";
@@ -55,6 +56,14 @@ export default function Employees() {
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState<EmployeeFormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+
+  // 계정(auth_accounts) 상태다. GET /api/employees는 employees 컬럼만 내려주고
+  // auth_accounts.status는 포함하지 않는다 — 서버가 그 값을 화면에 내려줄 방법이
+  // 아직 없어서, 이 화면에서 비활성화한 계정만 세션 동안 흐리게 표시한다(새로고침하면
+  // 초기화된다). accountId(=employees.auth_user_id) 기준으로 추적한다.
+  const [disabledAccountIds, setDisabledAccountIds] = useState<Set<string>>(new Set());
+  const [accountBusyId, setAccountBusyId] = useState<string | null>(null);
+  const [tempPasswordModal, setTempPasswordModal] = useState<{ name: string; password: string } | null>(null);
 
   const [deptModalOpen, setDeptModalOpen] = useState(searchParams.get("dept") === "open" && isAdmin);
   const [toast, setToast] = useState<ToastState>(null);
@@ -211,6 +220,66 @@ export default function Employees() {
     }
   }
 
+  // 가입은 열려 있고 권한만 관리자가 준다 — 이 역할 변경이 실제 승인 권한을 여닫는
+  // 관문이다. 화면이 없으면 아무도 특보를 승인할 수 없다.
+  async function changeRole(employeeId: string, role: EmpRole) {
+    try {
+      await updateEmployee(employeeId, { role });
+      setToast({ kind: "ok", message: "역할을 변경했습니다" });
+      await loadAll();
+    } catch (err) {
+      setToast({ kind: "error", message: err instanceof ApiError ? err.message : "역할 변경에 실패했습니다" });
+    }
+  }
+
+  // 퇴사자를 막는 유일한 수단이다. 서버가 비활성화와 동시에 남아 있는 세션도 끊는다.
+  async function toggleAccountStatus(e: EmployeeRow) {
+    const accountId = e.auth_user_id;
+    if (!accountId) return;
+    const disabling = !disabledAccountIds.has(accountId);
+    const ok = window.confirm(
+      disabling
+        ? `${e.name} 님의 로그인 계정을 비활성화하시겠습니까?\n로그인할 수 없게 되고, 남아 있는 세션도 모두 끊깁니다.`
+        : `${e.name} 님의 로그인 계정을 다시 활성화하시겠습니까?`,
+    );
+    if (!ok) return;
+    setAccountBusyId(e.id);
+    try {
+      await setAccountStatus(accountId, disabling ? "disabled" : "active");
+      setDisabledAccountIds((prev) => {
+        const next = new Set(prev);
+        if (disabling) next.add(accountId);
+        else next.delete(accountId);
+        return next;
+      });
+      setToast({ kind: "ok", message: disabling ? "계정을 비활성화했습니다" : "계정을 다시 활성화했습니다" });
+    } catch (err) {
+      setToast({ kind: "error", message: err instanceof ApiError ? err.message : "계정 상태 변경에 실패했습니다" });
+    } finally {
+      setAccountBusyId(null);
+    }
+  }
+
+  // 응답의 temporary_password는 이 호출 한 번에만 내려온다 — 화면을 벗어나면 다시
+  // 볼 수 없으므로 모달로 한 번 보여주고 당사자에게 전달하도록 안내한다.
+  async function issueTempPassword(e: EmployeeRow) {
+    const accountId = e.auth_user_id;
+    if (!accountId) return;
+    const ok = window.confirm(
+      `${e.name} 님의 임시 비밀번호를 새로 발급하시겠습니까?\n기존 비밀번호는 더 이상 쓸 수 없고, 남아 있는 세션도 모두 끊깁니다.`,
+    );
+    if (!ok) return;
+    setAccountBusyId(e.id);
+    try {
+      const { temporary_password } = await resetPassword(accountId);
+      setTempPasswordModal({ name: e.name, password: temporary_password });
+    } catch (err) {
+      setToast({ kind: "error", message: err instanceof ApiError ? err.message : "임시 비밀번호 발급에 실패했습니다" });
+    } finally {
+      setAccountBusyId(null);
+    }
+  }
+
   function closeDeptModal() {
     setDeptModalOpen(false);
     if (searchParams.get("dept")) {
@@ -304,14 +373,18 @@ export default function Employees() {
                 <th>역할</th>
                 <th>이메일</th>
                 <th>카카오워크</th>
+                <th>계정</th>
                 <th aria-label="작업" />
               </tr>
             </thead>
             <tbody>
               {filtered.map((e) => {
                 const unassigned = e.department_id === null;
+                const accountId = e.auth_user_id;
+                const isSelf = accountId !== null && accountId === me?.auth_user_id;
+                const disabled = accountId !== null && disabledAccountIds.has(accountId);
                 return (
-                  <tr key={e.id}>
+                  <tr key={e.id} className={disabled ? "employees-row-disabled" : undefined}>
                     <td>
                       <div className="employees-name">{e.name}</div>
                       {isToday(e.created_at) && <div className="employees-badge-new">오늘 가입</div>}
@@ -320,11 +393,57 @@ export default function Employees() {
                       <span className={unassigned ? "employees-dept-danger" : ""}>{deptLabel(e.department_id)}</span>
                     </td>
                     <td>
-                      <span className="employees-role-tag">{ROLE_LABEL[e.role]}</span>
+                      {isAdmin ? (
+                        <select
+                          className="employees-role-select"
+                          value={e.role}
+                          aria-label={`${e.name} 역할`}
+                          onChange={(ev) => changeRole(e.id, ev.target.value as EmpRole)}
+                        >
+                          {ROLE_ORDER.map((r) => (
+                            <option key={r} value={r}>
+                              {ROLE_LABEL[r]}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="employees-role-tag">{ROLE_LABEL[e.role]}</span>
+                      )}
                     </td>
                     <td className="employees-email">{e.email}</td>
                     <td>
                       <StatusDot ok={!!e.kakaowork_user_id} label={e.kakaowork_user_id ? "연결됨" : "미연결"} />
+                    </td>
+                    <td>
+                      {!accountId ? (
+                        <span className="employees-account-none">미가입</span>
+                      ) : (
+                        <div className="employees-account-cell">
+                          <span className={disabled ? "employees-account-disabled" : "employees-account-active"}>
+                            {disabled ? "비활성화됨" : "사용 중"}
+                          </span>
+                          {isAdmin && !isSelf && (
+                            <div className="employees-account-actions">
+                              <button
+                                type="button"
+                                className="employees-account-btn"
+                                disabled={accountBusyId === e.id}
+                                onClick={() => toggleAccountStatus(e)}
+                              >
+                                {disabled ? "활성화" : "비활성화"}
+                              </button>
+                              <button
+                                type="button"
+                                className="employees-account-btn"
+                                disabled={accountBusyId === e.id}
+                                onClick={() => issueTempPassword(e)}
+                              >
+                                임시 비밀번호 발급
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </td>
                     <td className="employees-actions">
                       <div className="employees-actions-inner">
@@ -396,7 +515,7 @@ export default function Employees() {
               })}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="employees-empty">
+                  <td colSpan={7} className="employees-empty">
                     조건에 맞는 직원이 없습니다
                   </td>
                 </tr>
@@ -480,6 +599,24 @@ export default function Employees() {
             loadAll();
           }}
         />
+      )}
+
+      {tempPasswordModal && (
+        <Modal
+          title="임시 비밀번호 발급"
+          desc={`${tempPasswordModal.name} 님에게 전달할 임시 비밀번호입니다`}
+          onClose={() => setTempPasswordModal(null)}
+          footer={
+            <Button variant="primary" onClick={() => setTempPasswordModal(null)}>
+              확인
+            </Button>
+          }
+        >
+          <p className="employees-temp-password">{tempPasswordModal.password}</p>
+          <p className="employees-temp-password-warning">
+            이 화면을 벗어나면 다시 볼 수 없습니다. 지금 안전하게 당사자에게 전달하세요.
+          </p>
+        </Modal>
       )}
 
       {toast && (

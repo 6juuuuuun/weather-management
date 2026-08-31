@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   createEmployee: vi.fn(),
   siteSettings: vi.fn(),
   heartbeat: vi.fn(),
+  setAccountStatus: vi.fn(),
+  resetPassword: vi.fn(),
   authState: { employee: null as Employee | null, loading: false, isApprover: false },
 }));
 
@@ -24,6 +26,11 @@ vi.mock("../lib/api/org", () => ({
   updateEmployee: (...a: unknown[]) => mocks.updateEmployee(...a),
   deleteEmployee: (...a: unknown[]) => mocks.deleteEmployee(...a),
   createEmployee: (...a: unknown[]) => mocks.createEmployee(...a),
+}));
+
+vi.mock("../lib/api/auth", () => ({
+  setAccountStatus: (...a: unknown[]) => mocks.setAccountStatus(...a),
+  resetPassword: (...a: unknown[]) => mocks.resetPassword(...a),
 }));
 
 // AppLayout이 항상 GlobalNav를 그리고, GlobalNav는 dashboard api를 부른다.
@@ -45,9 +52,21 @@ const admin: Employee = {
 
 const target = {
   id: "emp-1",
-  auth_user_id: null,
+  auth_user_id: "u-target",
   name: "홍길동",
   email: "hong-typo@gonjiam.com",
+  kakaowork_user_id: null,
+  department_id: "d1",
+  role: "staff" as const,
+  phone: null,
+  created_at: "2026-02-01T00:00:00Z",
+};
+
+const unregistered = {
+  id: "emp-2",
+  auth_user_id: null,
+  name: "미가입자",
+  email: "pending@gonjiam.com",
   kakaowork_user_id: null,
   department_id: "d1",
   role: "staff" as const,
@@ -74,6 +93,8 @@ beforeEach(() => {
   mocks.createEmployee.mockReset().mockResolvedValue(target);
   mocks.siteSettings.mockReset().mockResolvedValue(null);
   mocks.heartbeat.mockReset().mockResolvedValue(null);
+  mocks.setAccountStatus.mockReset().mockResolvedValue({ ok: true });
+  mocks.resetPassword.mockReset().mockResolvedValue({ temporary_password: "temp-abc123" });
 });
 
 describe("Employees 초기 로드", () => {
@@ -122,5 +143,77 @@ describe("Employees 직원 수정", () => {
 
     expect(await screen.findByText("이미 등록된 이메일입니다")).toBeInTheDocument();
     expect(screen.queryByText("직원 정보를 수정했습니다")).not.toBeInTheDocument();
+  });
+});
+
+describe("Employees 계정 관리", () => {
+  // 가입은 열려 있고 권한만 관리자가 준다 — 이 역할 변경 select가 실제 승인 권한을
+  // 여닫는 관문이다. 화면이 없으면 아무도 특보를 승인할 수 없다.
+  it("역할을 바꾸면 updateEmployee에 role만 실어 보낸다", async () => {
+    renderPage();
+    const roleSelect = await screen.findByLabelText("홍길동 역할");
+    fireEvent.change(roleSelect, { target: { value: "approver" } });
+
+    await waitFor(() => expect(mocks.updateEmployee).toHaveBeenCalledWith("emp-1", { role: "approver" }));
+  });
+
+  // 퇴사자를 막는 유일한 수단이다. 서버 호출 없이 화면 상태만 바꾸면 실제로는
+  // 계정이 살아 있는데 관리자만 비활성화됐다고 믿게 된다.
+  it("계정을 비활성화하면 setAccountStatus를 부르고 목록에서 흐리게 표시한다", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+    const disableBtn = await screen.findByRole("button", { name: "비활성화" });
+    fireEvent.click(disableBtn);
+
+    await waitFor(() => expect(mocks.setAccountStatus).toHaveBeenCalledWith("u-target", "disabled"));
+    expect(await screen.findByText("비활성화됨")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "활성화" })).toBeInTheDocument();
+  });
+
+  it("확인 대화상자를 취소하면 아무 요청도 보내지 않는다", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderPage();
+    const disableBtn = await screen.findByRole("button", { name: "비활성화" });
+    fireEvent.click(disableBtn);
+
+    await waitFor(() => expect(disableBtn).toBeInTheDocument());
+    expect(mocks.setAccountStatus).not.toHaveBeenCalled();
+  });
+
+  // 응답의 temporary_password는 이 호출 한 번에만 내려온다 — 화면에 보여주지 않으면
+  // 관리자가 당사자에게 전달할 방법이 없다.
+  it("임시 비밀번호를 발급하면 응답값을 화면에 보여준다", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+    const issueBtn = await screen.findByRole("button", { name: "임시 비밀번호 발급" });
+    fireEvent.click(issueBtn);
+
+    await waitFor(() => expect(mocks.resetPassword).toHaveBeenCalledWith("u-target"));
+    expect(await screen.findByText("temp-abc123")).toBeInTheDocument();
+  });
+
+  // 계정이 없는(사전 등록만 된) 직원에게는 계정 관리 버튼을 보여줄 수 없다 — 대상 계정이
+  // 없다.
+  it("계정이 없는 직원은 미가입으로 표시하고 계정 관리 버튼을 보여주지 않는다", async () => {
+    mocks.listEmployees.mockResolvedValue([target, unregistered]);
+    renderPage();
+
+    await screen.findByText("미가입자");
+    expect(screen.getByText("미가입")).toBeInTheDocument();
+  });
+
+  // 관리자가 자기 자신을 비활성화하면 서버가 다음 요청부터 그 세션을 즉시 무효화한다
+  // (auth/session.ts의 lookup이 status='active'를 요구) — 관리자 자신을 잠글 수
+  // 있는 버튼을 보여주면 안 된다. reset-password도 서버가 자기 자신은 403으로
+  // 거부한다(auth/routes.ts).
+  it("본인 계정에는 비활성화·임시 비밀번호 버튼을 보여주지 않는다", async () => {
+    mocks.listEmployees.mockResolvedValue([admin, target]);
+    renderPage();
+
+    await screen.findByText("김운영");
+    // "홍길동"(target) 행의 버튼은 존재해야 하고, 본인(admin) 행에는 없어야 한다 —
+    // 버튼 이름만으로는 행을 구분할 수 없으므로 개수로 확인한다(직원이 1명일 때만 존재).
+    expect(screen.getAllByRole("button", { name: "비활성화" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "임시 비밀번호 발급" })).toHaveLength(1);
   });
 });

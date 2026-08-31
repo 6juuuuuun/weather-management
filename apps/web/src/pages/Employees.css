@@ -266,3 +266,89 @@
 .employees-toast-error {
   background: var(--danger-strong);
 }
+
+/* ---------- 역할 선택 ---------- */
+.employees-role-select {
+  padding: 6px 10px;
+  border-radius: var(--radius-ctl);
+  border: 1px solid var(--hairline);
+  background: var(--canvas);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink);
+}
+
+/* ---------- 계정 상태 ---------- */
+.employees-account-none {
+  font-size: 12px;
+  color: var(--ink-muted-48);
+}
+
+.employees-account-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.employees-account-active {
+  font-size: 12px;
+  color: var(--success);
+  font-weight: 600;
+}
+
+.employees-account-disabled {
+  font-size: 12px;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.employees-account-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.employees-account-btn {
+  padding: 4px 10px;
+  border-radius: 9999px;
+  border: 1px solid var(--hairline);
+  background: var(--canvas);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--ink-muted-80);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.employees-account-btn:hover {
+  background: var(--parchment);
+}
+
+.employees-account-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.employees-row-disabled {
+  opacity: 0.5;
+}
+
+.employees-temp-password {
+  margin: 12px 0;
+  padding: 14px 16px;
+  border-radius: var(--radius-ctl);
+  background: var(--parchment);
+  font-family: var(--font-mono, monospace);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: center;
+  letter-spacing: 0.5px;
+  user-select: all;
+}
+
+.employees-temp-password-warning {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}
