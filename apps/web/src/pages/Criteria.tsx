@@ -124,26 +124,37 @@ export default function Criteria() {
   useEffect(() => {
     let active = true;
     (async () => {
-      const [criteriaRows, recipientRows, candidateRows] = await Promise.all([
-        fetchCriteria(),
-        // GET /api/alert-recipients는 이제 평면 형태 { employee_id, name, role }로 온다
-        // (예전의 { employee_id, employees: {...} } 중첩이 아니다).
-        alertRecipients(),
-        listEmployees({ roles: ["admin", "approver"] }),
-      ]);
-      if (!active) return;
+      setLoading(true);
+      setErrorMsg(null);
+      try {
+        const [criteriaRows, recipientRows, candidateRows] = await Promise.all([
+          fetchCriteria(),
+          // GET /api/alert-recipients는 이제 평면 형태 { employee_id, name, role }로 온다
+          // (예전의 { employee_id, employees: {...} } 중첩이 아니다).
+          alertRecipients(),
+          listEmployees({ roles: ["admin", "approver"] }),
+        ]);
+        if (!active) return;
 
-      const next = clonePreset();
-      for (const row of criteriaRows) {
-        const kind = row.kind;
-        const grade = row.grade;
-        next[kind][grade] = row.threshold;
+        const next = clonePreset();
+        for (const row of criteriaRows) {
+          const kind = row.kind;
+          const grade = row.grade;
+          next[kind][grade] = row.threshold;
+        }
+        setCriteria(next);
+
+        setRecipients(recipientRows.map((r) => ({ id: r.employee_id, name: r.name, role: r.role })));
+        setCandidates(candidateRows.map((c) => ({ id: c.id, name: c.name, role: c.role })));
+      } catch (err) {
+        // supabase-js는 HTTP 오류에 reject하지 않고 {data:null,error}를 돌려줬다 — 옛
+        // 코드는 그래서 항상 setLoading(false)에 도달했다. 새 클라이언트는 던지므로
+        // try/catch/finally 없이는 세션 만료(401) 한 번에 "불러오는 중…"이 영구히 남는다.
+        if (!active) return;
+        setErrorMsg(err instanceof ApiError ? err.message : "특보 기준을 불러오지 못했습니다");
+      } finally {
+        if (active) setLoading(false);
       }
-      setCriteria(next);
-
-      setRecipients(recipientRows.map((r) => ({ id: r.employee_id, name: r.name, role: r.role })));
-      setCandidates(candidateRows.map((c) => ({ id: c.id, name: c.name, role: c.role })));
-      setLoading(false);
     })();
     return () => {
       active = false;
