@@ -14,6 +14,21 @@ export type LoginResult = { user: SessionUser; must_change_password: boolean };
 export const login = (email: string, password: string) =>
   apiSend<LoginResult>("POST", "/api/auth/login", { email, password });
 
+// server/src/auth/routes.ts의 authRouter.post("/signup")에 대응한다. department_id가
+// 빠지면 전원이 부서 미지정으로 가입되고 requireDepartment가 지키는 라우트가 통째로
+// 막히는데도 화면은 "가입이 완료되었습니다"를 보여준다 — 그래서 이 계약(경로·메서드·
+// 본문)에 테스트가 반드시 있어야 한다(Signup.tsx가 이 함수를 거치지 않고 apiSend를
+// 직접 부르던 것이 리뷰 F2였다).
+export type SignupBody = {
+  email: string;
+  password: string;
+  name: string;
+  department_id: string | null;
+  phone: string | null;
+};
+
+export const signup = (body: SignupBody) => apiSend<{ ok: boolean }>("POST", "/api/auth/signup", body);
+
 export const logout = () => apiSend<null>("POST", "/api/auth/logout");
 
 export const me = () => apiGet<{ user: SessionUser }>("/api/auth/me");

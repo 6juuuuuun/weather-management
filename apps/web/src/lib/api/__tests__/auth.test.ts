@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { record } from "./contract";
-import { login, logout, me, changePassword, setAccountStatus, resetPassword } from "../auth";
+import { login, logout, me, changePassword, setAccountStatus, resetPassword, signup } from "../auth";
 
 beforeEach(() => vi.restoreAllMocks());
 
@@ -16,6 +16,43 @@ describe("lib/api/auth HTTP 계약", () => {
       method: "POST",
       body: { email: "a@gonjiam.com", password: "password12345" },
     });
+  });
+
+  // 리뷰 F2: Signup.tsx가 이 모듈을 거치지 않고 apiSend를 직접 불러 계약 테스트가
+  // 하나도 없었다. 경로·메서드·department_id를 포함한 본문 전체를 단언한다 —
+  // department_id가 누락되면 전원이 부서 미지정으로 가입되고 requireDepartment
+  // 라우트가 통째로 막히는데도 화면은 성공을 보여준다.
+  it("signup은 POST /api/auth/signup에 email·password·name·department_id·phone을 보낸다", async () => {
+    const req = await record(
+      () =>
+        signup({
+          email: "a@gonjiam.com",
+          password: "password12345",
+          name: "홍길동",
+          department_id: "dept-1",
+          phone: "010-0000-0000",
+        }),
+      { ok: true },
+    );
+    expect(req).toEqual({
+      path: "/api/auth/signup",
+      method: "POST",
+      body: {
+        email: "a@gonjiam.com",
+        password: "password12345",
+        name: "홍길동",
+        department_id: "dept-1",
+        phone: "010-0000-0000",
+      },
+    });
+  });
+
+  it("signup은 부서를 선택하지 않으면 department_id를 null로 보낸다", async () => {
+    const req = await record(
+      () => signup({ email: "a@gonjiam.com", password: "password12345", name: "홍길동", department_id: null, phone: null }),
+      { ok: true },
+    );
+    expect((req.body as any).department_id).toBeNull();
   });
 
   it("logout은 POST /api/auth/logout이고 본문이 없다", async () => {

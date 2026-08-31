@@ -99,6 +99,18 @@
   color: var(--danger);
 }
 
+.signup-retry {
+  border: none;
+  background: none;
+  padding: 0;
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .signup > a {
   margin-top: 8px;
   font-family: var(--font-ui);

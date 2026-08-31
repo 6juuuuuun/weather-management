@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { apiSend, ApiError } from "../lib/api/client";
+import { ApiError } from "../lib/api/client";
+import { signup } from "../lib/api/auth";
 import { listDepartments } from "../lib/api/org";
 import "./Signup.css";
 
@@ -13,26 +14,29 @@ export default function Signup() {
   const [departmentId, setDepartmentId] = useState("");
   const [phone, setPhone] = useState("");
   const [depts, setDepts] = useState<{ id: string; name: string }[]>([]);
+  const [deptsError, setDeptsError] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
-  const deptsRequested = useRef(false);
 
-  // 부서 목록은 로그인 없이도 필요하다. 실패해도 가입 자체는 막지 않는다. 마운트 시
-  // 곧바로 불러오지 않고 select를 처음 여는 시점(포커스)에 불러온다 — 이름·이메일만
-  // 입력하고 부서를 건드리지 않는 사람에게는 불필요한 요청이기도 하고, 이미 끝난
-  // 입력 검증(예: 비밀번호 길이 미달)만으로 아무 네트워크 요청도 나가지 않아야 하는
-  // 경우와 부서 목록 요청이 뒤섞이는 것도 피한다.
-  function loadDeptsOnce() {
-    if (deptsRequested.current) return;
-    deptsRequested.current = true;
+  // 부서 목록은 로그인 없이도 필요하다. 마운트 시 곧바로 불러온다(리뷰 컨트롤러 판단,
+  // task-9-fix1-brief.md 항목 6) — select를 처음 여는 시점까지 지연시켰던 이전 버전은
+  // 네이티브 드롭다운이 열리는 순간과 응답 도착이 경합해, 첫 클릭에는 목록이 비어
+  // 보이고 닫았다 다시 열어야 채워지는 창을 만들었다. 실패해도 가입 자체는 막지
+  // 않지만, 조용히 삼키지 않고 눈에 보이는 오류와 재시도 수단을 준다 — 부서를 못
+  // 고른 채 가입하면 department_id: null이 되어 requireDepartment 라우트가 막힌다.
+  function loadDepts() {
+    setDeptsError(false);
     listDepartments()
       // 응답이 배열이 아니면(예상 밖의 응답 포함) 조용히 빈 목록으로 둔다 — select가
-      // 배열이 아닌 값에 .map을 호출해 화면 전체가 무너지는 것보다 "부서 선택
-      // 불가"가 훨씬 안전한 실패다.
+      // 배열이 아닌 값에 .map을 호출해 화면 전체가 무너지는 것보다 안전한 실패다.
       .then((rows) => setDepts(Array.isArray(rows) ? rows : []))
-      .catch(() => setDepts([]));
+      .catch(() => setDeptsError(true));
   }
+
+  useEffect(() => {
+    loadDepts();
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -43,8 +47,12 @@ export default function Signup() {
     }
     setBusy(true);
     try {
-      await apiSend("POST", "/api/auth/signup", {
-        email, password, name, department_id: departmentId || null, phone: phone || null,
+      await signup({
+        email,
+        password,
+        name,
+        department_id: departmentId || null,
+        phone: phone || null,
       });
       setDone(true);
     } catch (err) {
@@ -79,15 +87,18 @@ export default function Signup() {
         <input id="name" value={name} onChange={(e) => setName(e.target.value)} required />
 
         <label htmlFor="department">부서</label>
-        <select
-          id="department"
-          value={departmentId}
-          onFocus={loadDeptsOnce}
-          onChange={(e) => setDepartmentId(e.target.value)}
-        >
+        <select id="department" value={departmentId} onChange={(e) => setDepartmentId(e.target.value)}>
           <option value="">선택하지 않음</option>
           {depts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select>
+        {deptsError && (
+          <p className="signup-error">
+            부서 목록을 불러오지 못했습니다.{" "}
+            <button type="button" className="signup-retry" onClick={loadDepts}>
+              다시 시도
+            </button>
+          </p>
+        )}
 
         <label htmlFor="phone">휴대폰 번호</label>
         <input id="phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="010-0000-0000" />
