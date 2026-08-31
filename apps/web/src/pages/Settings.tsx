@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AppLayout } from "../components/AppLayout";
 import { Toggle } from "../components/Toggle";
 import { Button } from "../components/Button";
 import { useAuth } from "../auth/AuthProvider";
-import { supabase } from "../lib/supabase";
+import { siteSettings as fetchSiteSettings, saveSiteSettings, heartbeat as fetchHeartbeat } from "../lib/api/dashboard";
+import type { SiteSettingsRow } from "../lib/api/dashboard";
+import { alertSettings as fetchAlertSettings, saveAlertSettings } from "../lib/api/org";
+import { ApiError } from "../lib/api/client";
 import { callSend } from "../lib/api";
-import type { AlertSetting, Heartbeat, Kind, SiteSettings } from "../lib/types";
+import type { AlertSetting, Kind } from "../lib/types";
 import "./Settings.css";
 
 const KIND_ORDER: Kind[] = ["rain", "snow", "wind", "heat"];
@@ -123,14 +126,27 @@ function minutesAgo(isoDate: string): string {
 
 type ToastState = { kind: "ok" | "error"; message: string } | null;
 
+// site_settings 실제 테이블에는 address/remind_interval_min/resolve_notice/updated_at도
+// 있지만 GET /api/site-settings는 id/site_name/nx/ny만 내려준다(dashboard.ts) — 나머지
+// 필드는 이 화면이 로컬로만 들고 있고, 저장 엔드포인트도 없다. task-8-report.md 참고.
+type EditableSiteSettings = SiteSettingsRow & {
+  address: string;
+  remind_interval_min: number;
+  resolve_notice: boolean;
+};
+
+// db/migrations/0001_schema.sql의 site_settings 기본값 — API가 못 내려주는 필드의
+// 자리표시자로만 쓴다(실제 저장된 값과 다를 수 있다).
+const SITE_DEFAULTS = { address: "경기도 광주시 도척면 도척윗로 278", remind_interval_min: 30, resolve_notice: true };
+
 export default function Settings() {
   const { employee } = useAuth();
   const isAdmin = employee?.role === "admin";
 
   const [alertSettings, setAlertSettings] = useState<Record<Kind, AlertSetting> | null>(null);
-  const [siteSettings, setSiteSettings] = useState<SiteSettings | null>(null);
-  const [heartbeats, setHeartbeats] = useState<Heartbeat[]>([]);
-  const [missing24h, setMissing24h] = useState<number>(0);
+  const [siteSettings, setSiteSettings] = useState<EditableSiteSettings | null>(null);
+  const [weatherHeartbeat, setWeatherHeartbeat] = useState<{ name: string; last_run_at: string } | null>(null);
+  const [missing24h] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [sendingTest, setSendingTest] = useState(false);
@@ -139,26 +155,20 @@ export default function Settings() {
   useEffect(() => {
     let active = true;
     (async () => {
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const [alertsRes, siteRes, heartbeatsRes, missingRes] = await Promise.all([
-        supabase.from("alert_settings").select("*"),
-        supabase.from("site_settings").select("*").eq("id", 1).single(),
-        supabase.from("heartbeats").select("*"),
-        supabase
-          .from("weather_observations")
-          .select("id", { count: "exact", head: true })
-          .eq("missing", true)
-          .gte("observed_at", since),
+      // 서버(dashboard.ts)의 /observations 조회는 항상 missing=false만 돌려준다 —
+      // "최근 24시간 결측 횟수"를 셀 방법이 API에 없다(task-8-report.md 참고).
+      // missing24h는 항상 0으로 둔다.
+      const [alertRows, site, hb] = await Promise.all([
+        fetchAlertSettings(),
+        fetchSiteSettings(),
+        fetchHeartbeat("weather-tick"),
       ]);
       if (!active) return;
       const map = {} as Record<Kind, AlertSetting>;
-      for (const row of (alertsRes.data as AlertSetting[] | null) ?? []) {
-        map[row.kind] = row;
-      }
+      for (const row of alertRows) map[row.kind] = row;
       setAlertSettings(map);
-      setSiteSettings((siteRes.data as SiteSettings | null) ?? null);
-      setHeartbeats((heartbeatsRes.data as Heartbeat[] | null) ?? []);
-      setMissing24h(missingRes.count ?? 0);
+      setSiteSettings(site ? { ...site, ...SITE_DEFAULTS } : null);
+      setWeatherHeartbeat(hb);
       setLoading(false);
     })();
     return () => {
@@ -172,11 +182,6 @@ export default function Settings() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  const weatherHeartbeat = useMemo(
-    () => heartbeats.find((h) => h.name === "weather-tick") ?? null,
-    [heartbeats],
-  );
-
   function updateAlert(kind: Kind, patch: Partial<AlertSetting>) {
     setAlertSettings((prev) => {
       if (!prev) return prev;
@@ -184,7 +189,7 @@ export default function Settings() {
     });
   }
 
-  function updateSite(patch: Partial<SiteSettings>) {
+  function updateSite(patch: Partial<EditableSiteSettings>) {
     setSiteSettings((prev) => (prev ? { ...prev, ...patch } : prev));
   }
 
@@ -192,42 +197,33 @@ export default function Settings() {
     if (!alertSettings || !siteSettings) return;
     setSaving(true);
     try {
-      const now = new Date().toISOString();
-      // alert_settings는 시드로 4행이 항상 존재하므로 upsert(insert 권한 필요) 대신
-      // kind별 update를 사용한다 — RLS는 admin에게 update만 허용하고 insert는 막혀 있다.
-      const alertResults = await Promise.all(
+      // PUT /api/alert-settings는 kind별 update를 서버가 한 번에 처리한다(org.ts) —
+      // alert_settings는 시드로 4행이 항상 존재하고 RLS가 admin에게 update만 허용한다.
+      await saveAlertSettings(
         KIND_ORDER.map((kind) => {
           const s = alertSettings[kind];
-          return supabase
-            .from("alert_settings")
-            .update({
-              enabled: s.enabled,
-              repeat_policy: s.repeat_policy,
-              repeat_accum_threshold: s.repeat_accum_threshold,
-              heat_repeat_basis: s.heat_repeat_basis,
-              updated_at: now,
-            })
-            .eq("kind", kind);
+          return {
+            kind,
+            enabled: s.enabled,
+            repeat_policy: s.repeat_policy,
+            repeat_accum_threshold: s.repeat_accum_threshold,
+            heat_repeat_basis: s.heat_repeat_basis,
+          };
         }),
       );
-      const siteRes = await supabase
-        .from("site_settings")
-        .update({
-          address: siteSettings.address,
-          nx: siteSettings.nx,
-          ny: siteSettings.ny,
-          remind_interval_min: siteSettings.remind_interval_min,
-          resolve_notice: siteSettings.resolve_notice,
-          updated_at: now,
-        })
-        .eq("id", 1);
-      const firstAlertError = alertResults.find((r) => r.error)?.error;
-      if (firstAlertError || siteRes.error) {
-        throw firstAlertError ?? siteRes.error;
-      }
+      // 서버(dashboard.ts)에는 아직 site_settings 저장 엔드포인트가 없다 — 이 호출은
+      // 그 엔드포인트가 생기기 전까지 404로 실패한다. task-8-report.md 참고.
+      await saveSiteSettings({
+        address: siteSettings.address,
+        nx: siteSettings.nx,
+        ny: siteSettings.ny,
+        remind_interval_min: siteSettings.remind_interval_min,
+        resolve_notice: siteSettings.resolve_notice,
+      });
       setToast({ kind: "ok", message: "변경사항이 저장되었습니다" });
     } catch (err) {
-      setToast({ kind: "error", message: `저장 실패: ${(err as Error).message ?? "알 수 없는 오류"}` });
+      const message = err instanceof ApiError ? err.message : "알 수 없는 오류";
+      setToast({ kind: "error", message: `저장 실패: ${message}` });
     } finally {
       setSaving(false);
     }
@@ -444,9 +440,12 @@ export default function Settings() {
             </h2>
             <div className="settings-heartbeat-row">
               <span>기상청 API</span>
-              <span className={`settings-heartbeat-value ${weatherHeartbeat?.ok ? "ok" : "fail"}`}>
+              {/* GET /api/heartbeats/:name은 name/last_run_at만 내려준다(ok/note 없음) —
+                  행이 있으면 "정상"으로 본다. 실제 성공/실패 여부는 이 API로 구분할 수 없다
+                  (task-8-report.md 참고). */}
+              <span className={`settings-heartbeat-value ${weatherHeartbeat ? "ok" : "fail"}`}>
                 <span className="settings-heartbeat-dot" aria-hidden="true" />
-                {weatherHeartbeat ? (weatherHeartbeat.ok ? "정상" : "오류") : "정보 없음"}
+                {weatherHeartbeat ? "정상" : "정보 없음"}
                 {weatherHeartbeat && ` · 마지막 수집 ${minutesAgo(weatherHeartbeat.last_run_at)}`}
               </span>
             </div>
