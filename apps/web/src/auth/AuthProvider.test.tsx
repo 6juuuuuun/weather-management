@@ -1,15 +1,42 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { act, render, waitFor } from "@testing-library/react";
+import type { MutableRefObject } from "react";
+import { AuthProvider, useAuth } from "./AuthProvider";
 import type { Employee } from "../lib/types";
 
-// employees/alert_recipients 조회 순서·타이밍을 테스트가 직접 통제하기 위해
-// resolve를 나중에 호출할 수 있는 deferred promise를 큐에 담아 소비시킨다.
+beforeEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status });
+}
+
+// 경로별로 응답을 하나씩 소비하는 큐. AuthProvider가 같은 경로(/api/auth/me 등)를
+// 재인증마다 다시 부르므로, 테스트가 각 호출의 응답 타이밍을 직접 통제하려면
+// 경로마다 별도 대기열이 필요하다.
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((r) => {
     resolve = r;
   });
   return { promise, resolve };
+}
+
+function makeFetchMock() {
+  const queues = new Map<string, Promise<Response>[]>();
+  const push = (path: string, promise: Promise<Response>) => {
+    const q = queues.get(path) ?? [];
+    q.push(promise);
+    queues.set(path, q);
+  };
+  const fetchMock = vi.fn((path: string) => {
+    const q = queues.get(path);
+    if (!q || q.length === 0) throw new Error(`no mock response queued for ${path}`);
+    return q.shift()!;
+  });
+  return { fetchMock, push };
 }
 
 const empA: Employee = {
@@ -34,45 +61,24 @@ const empB: Employee = {
   created_at: "2026-01-01T00:00:00Z",
 };
 
-const mocks = vi.hoisted(() => ({
-  authChangeCb: null as null | (() => void),
-  userQueue: [] as Promise<{ data: { user: { id: string } | null } }>[],
-  empQueue: [] as Promise<{ data: Employee | null }>[],
-  recipQueue: [] as Promise<{ data: unknown }>[],
-}));
-
-vi.mock("../lib/supabase", () => ({
-  supabase: {
-    auth: {
-      getUser: () => mocks.userQueue.shift(),
-      onAuthStateChange: (cb: () => void) => {
-        mocks.authChangeCb = cb;
-        return { data: { subscription: { unsubscribe: () => {} } } };
-      },
-      signOut: () => Promise.resolve(),
-    },
-    from: (table: string) => {
-      if (table === "employees") {
-        return { select: () => ({ eq: () => ({ single: () => mocks.empQueue.shift() }) }) };
-      }
-      if (table === "alert_recipients") {
-        return { select: () => ({ eq: () => ({ maybeSingle: () => mocks.recipQueue.shift() }) }) };
-      }
-      throw new Error(`unexpected table: ${table}`);
-    },
-  },
-}));
-
-import { AuthProvider, useAuth } from "./AuthProvider";
-
 type Snapshot = { employeeId: string | null; isApprover: boolean };
+type LoginFn = (email: string, password: string) => Promise<{ mustChangePassword: boolean }>;
 
-function Recorder({ log }: { log: Snapshot[] }) {
-  const { employee, isApprover } = useAuth();
+function Recorder({ log, loginRef }: { log: Snapshot[]; loginRef: MutableRefObject<LoginFn | null> }) {
+  const { employee, isApprover, login } = useAuth();
+  loginRef.current = login;
   // 매 렌더마다 당시 값 조합을 기록한다 — 최종 상태가 아니라 "중간에 어떤 조합이
   // 실제로 화면에 커밋됐는가"를 검증하는 것이 이 테스트의 목적이다.
   log.push({ employeeId: employee?.id ?? null, isApprover });
   return null;
+}
+
+function Harness({ log, loginRef }: { log: Snapshot[]; loginRef: MutableRefObject<LoginFn | null> }) {
+  return (
+    <AuthProvider>
+      <Recorder log={log} loginRef={loginRef} />
+    </AuthProvider>
+  );
 }
 
 async function flushMicrotasks() {
@@ -86,53 +92,89 @@ async function flushMicrotasks() {
 
 describe("AuthProvider — employee/isApprover 원자성", () => {
   it("재인증 도중 새 employee가 이전 isApprover와 짝지어지는 렌더가 없다", async () => {
+    const { fetchMock, push } = makeFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
     const log: Snapshot[] = [];
+    const loginRef: MutableRefObject<LoginFn | null> = { current: null };
 
-    // 1회차(마운트): user A → employees A → alert_recipients: A는 수신자(isApprover=true)
-    const userA = deferred<{ data: { user: { id: string } | null } }>();
-    const empAResp = deferred<{ data: Employee | null }>();
-    const recipAResp = deferred<{ data: unknown }>();
-    mocks.userQueue.push(userA.promise);
-    mocks.empQueue.push(empAResp.promise);
-    mocks.recipQueue.push(recipAResp.promise);
+    // 1회차(마운트): /api/auth/me → A, /api/employees → [A], /api/alert-recipients → A는 수신자.
+    const meA = deferred<Response>();
+    const empsA = deferred<Response>();
+    const recipsA = deferred<Response>();
+    push("/api/auth/me", meA.promise);
+    push("/api/employees", empsA.promise);
+    push("/api/alert-recipients", recipsA.promise);
 
-    render(
-      <AuthProvider>
-        <Recorder log={log} />
-      </AuthProvider>,
-    );
+    render(<Harness log={log} loginRef={loginRef} />);
 
     await act(async () => {
-      userA.resolve({ data: { user: { id: "u-a" } } });
+      meA.resolve(
+        jsonResponse({
+          user: {
+            accountId: "acc-a",
+            employeeId: "emp-a",
+            role: "approver",
+            email: "a@example.com",
+            mustChangePassword: false,
+          },
+        }),
+      );
     });
     await act(async () => {
-      empAResp.resolve({ data: empA });
+      empsA.resolve(jsonResponse([empA]));
     });
     await act(async () => {
-      recipAResp.resolve({ data: { employee_id: empA.id } });
+      recipsA.resolve(jsonResponse([{ employee_id: "emp-a", name: "A", role: "approver" }]));
     });
 
     await waitFor(() =>
       expect(log[log.length - 1]).toEqual({ employeeId: "emp-a", isApprover: true }),
     );
 
-    // 2회차(재인증, onAuthStateChange 재호출): user B(비수신자)로 전환.
+    // 2회차(재인증): login()을 다시 호출해 B(비수신자)로 전환한다.
     // employees 조회는 먼저 응답시키고 alert_recipients는 일부러 늦게 응답시켜서,
     // 그 사이에 "새 employee(B) + 이전 isApprover(true)" 조합이 커밋되는지 관찰한다.
-    const userB = deferred<{ data: { user: { id: string } | null } }>();
-    const empBResp = deferred<{ data: Employee | null }>();
-    const recipBResp = deferred<{ data: unknown }>();
-    mocks.userQueue.push(userB.promise);
-    mocks.empQueue.push(empBResp.promise);
-    mocks.recipQueue.push(recipBResp.promise);
+    const loginB = deferred<Response>();
+    const meB = deferred<Response>();
+    const empsB = deferred<Response>();
+    const recipsB = deferred<Response>();
+    push("/api/auth/login", loginB.promise);
+    push("/api/auth/me", meB.promise);
+    push("/api/employees", empsB.promise);
+    push("/api/alert-recipients", recipsB.promise);
 
+    let loginPromise!: Promise<unknown>;
     await act(async () => {
-      mocks.authChangeCb?.();
-      userB.resolve({ data: { user: { id: "u-b" } } });
+      loginPromise = loginRef.current!("b@example.com", "password12345");
+      loginB.resolve(
+        jsonResponse({
+          user: {
+            accountId: "acc-b",
+            employeeId: "emp-b",
+            role: "approver",
+            email: "b@example.com",
+            mustChangePassword: false,
+          },
+          must_change_password: false,
+        }),
+      );
     });
-
     await act(async () => {
-      empBResp.resolve({ data: empB });
+      meB.resolve(
+        jsonResponse({
+          user: {
+            accountId: "acc-b",
+            employeeId: "emp-b",
+            role: "approver",
+            email: "b@example.com",
+            mustChangePassword: false,
+          },
+        }),
+      );
+    });
+    await act(async () => {
+      empsB.resolve(jsonResponse([empA, empB]));
     });
     // alert_recipients는 아직 응답하지 않았다. 여기서 큐잉된 마이크로태스크를
     // 모두 흘려보내도 "emp-b + isApprover:true" 조합의 렌더가 나오면 안 된다 —
@@ -144,7 +186,10 @@ describe("AuthProvider — employee/isApprover 원자성", () => {
     expect(log[log.length - 1]).toEqual({ employeeId: "emp-a", isApprover: true });
 
     await act(async () => {
-      recipBResp.resolve({ data: null });
+      recipsB.resolve(jsonResponse([]));
+    });
+    await act(async () => {
+      await loginPromise;
     });
 
     await waitFor(() =>
