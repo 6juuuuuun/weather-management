@@ -49,8 +49,10 @@ const dispatchRow = {
   is_test: false,
   results: [{ employee_id: "e1", name: "홍수진", ok: true }],
   content,
-  messages: { content: staleMessagesContent },
-  weather_events: { kind: "rain", grade: "watch", detected_at },
+  message_content: staleMessagesContent,
+  kind: "rain" as const,
+  grade: "watch" as const,
+  detected_at,
 };
 
 // content 스냅샷 컬럼이 없던(0004 이전) 과거 이력 — messages.content로 폴백되어야 함
@@ -89,8 +91,10 @@ const legacyDispatchRow = {
     { employee_id: "e4", name: "박은비", ok: false, error: "미연결" },
   ],
   content: null,
-  messages: { content: legacyContent },
-  weather_events: { kind: "snow", grade: "warning", detected_at: legacyDetectedAt },
+  message_content: legacyContent,
+  kind: "snow" as const,
+  grade: "warning" as const,
+  detected_at: legacyDetectedAt,
 };
 
 const mocks = vi.hoisted(() => ({
@@ -113,19 +117,16 @@ beforeEach(() => {
   };
 });
 
-vi.mock("../lib/supabase", () => ({
-  supabase: {
-    from: () => ({
-      select: () => ({
-        eq: () => ({
-          single: () => Promise.resolve({ data: null, error: null }),
-          order: () => ({
-            limit: () => Promise.resolve({ data: [dispatchRow, legacyDispatchRow], error: null }),
-          }),
-        }),
-      }),
-    }),
-  },
+// vi.mock 팩토리는 파일 최상단으로 호이스팅되므로, 그 안에서 아래에 선언된
+// dispatchRow/legacyDispatchRow를 직접 참조할 수 없다 — 팩토리 안에서 지연 평가한다.
+vi.mock("../lib/api/content", () => ({
+  dispatches: vi.fn(() => Promise.resolve([dispatchRow, legacyDispatchRow])),
+}));
+
+// AppLayout이 항상 GlobalNav를 그리고, GlobalNav는 dashboard api를 부른다.
+vi.mock("../lib/api/dashboard", () => ({
+  siteSettings: vi.fn().mockResolvedValue(null),
+  heartbeat: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("../lib/api", () => ({

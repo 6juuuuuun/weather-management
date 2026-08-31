@@ -6,7 +6,8 @@ import { Button } from "../components/Button";
 import { StatusDot } from "../components/StatusDot";
 import { EmptyState } from "../components/EmptyState";
 import { useAuth } from "../auth/AuthProvider";
-import { supabase } from "../lib/supabase";
+import { ApiError } from "../lib/api/client";
+import { dispatches as fetchDispatches } from "../lib/api/content";
 import { callSend } from "../lib/api";
 import type { DeptBlock, DispatchResult, Grade, Kind } from "../lib/types";
 import "./History.css";
@@ -46,20 +47,6 @@ type DispatchRow = {
   grade: Grade;
   detected_at: string;
   content: DeptBlock[];
-};
-
-type RawDispatch = {
-  id: number;
-  message_id: string;
-  event_id: string;
-  sent_at: string;
-  channel: string;
-  repeat_no: number;
-  is_test: boolean;
-  results: DispatchResult[];
-  content: DeptBlock[] | null;
-  messages: { content: DeptBlock[] } | null;
-  weather_events: { kind: Kind; grade: Grade; detected_at: string } | null;
 };
 
 function pad2(n: number): string {
@@ -125,23 +112,12 @@ export default function History() {
   async function load() {
     setLoading(true);
     setLoadError(null);
-    const { data, error } = await supabase
-      .from("dispatches")
-      .select(
-        "id,message_id,event_id,sent_at,channel,repeat_no,is_test,results,content,messages(content),weather_events(kind,grade,detected_at)",
-      )
-      .eq("is_test", false)
-      .order("sent_at", { ascending: false })
-      .limit(500);
-    if (error) {
-      setLoadError(error.message);
-      setRows([]);
-      setLoading(false);
-      return;
-    }
-    const mapped = ((data ?? []) as unknown as RawDispatch[])
-      .filter((d) => d.weather_events && d.messages)
-      .map((d) => ({
+    try {
+      // GET /api/dispatches는 include_test를 안 보내면(기본값) 테스트 발송을 이미 제외한다 —
+      // 예전의 .eq("is_test", false)와 같은 기본값이므로 클라이언트에서 다시 거르지 않는다.
+      // weather_events(kind/grade/detected_at)와 message_content(스냅샷 폴백)도 서버가 조인해 내려준다.
+      const data = await fetchDispatches({ limit: 500 });
+      const mapped = data.map((d) => ({
         id: d.id,
         message_id: d.message_id,
         event_id: d.event_id,
@@ -149,15 +125,20 @@ export default function History() {
         channel: d.channel,
         repeat_no: d.repeat_no,
         is_test: d.is_test,
-        results: d.results ?? [],
-        kind: d.weather_events!.kind,
-        grade: d.weather_events!.grade,
-        detected_at: d.weather_events!.detected_at,
-        // 발송 시점 스냅샷 우선, 스냅샷 이전(0004 마이그레이션 이전) 이력은 messages.content로 폴백
-        content: d.content ?? d.messages!.content ?? [],
+        results: d.results,
+        kind: d.kind,
+        grade: d.grade,
+        detected_at: d.detected_at,
+        // 발송 시점 스냅샷 우선, 스냅샷 이전(0004 마이그레이션 이전) 이력은 message_content로 폴백
+        content: d.content ?? d.message_content ?? [],
       }));
-    setRows(mapped);
-    setLoading(false);
+      setRows(mapped);
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : "발송 이력을 불러오지 못했습니다");
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {

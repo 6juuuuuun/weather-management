@@ -2,16 +2,37 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import EventReview from "./EventReview";
-import type { AlertSetting, DeptBlock, Employee, Message, WeatherCriteria, WeatherEvent, WeatherObservation } from "../lib/types";
+import type { AlertSetting, DeptBlock, Employee, WeatherEvent } from "../lib/types";
 
 const mocks = vi.hoisted(() => ({
-  fromImpl: (_table: string): any => ({ then: (resolve: any) => resolve({ data: null, error: null }) }),
+  openEvents: vi.fn(),
+  observationsSinceImpl: (_iso: string): unknown[] => [],
+  criteria: vi.fn(),
+  siteSettings: vi.fn(),
+  heartbeat: vi.fn(),
+  alertSettings: vi.fn(),
+  listRecipients: vi.fn(),
+  messagesOf: vi.fn(),
   callSend: vi.fn(),
   authState: { employee: null as Employee | null, loading: false, isApprover: false },
 }));
 
-vi.mock("../lib/supabase", () => ({
-  supabase: { from: (table: string) => mocks.fromImpl(table) },
+vi.mock("../lib/api/dashboard", () => ({
+  openEvents: (...args: unknown[]) => mocks.openEvents(...args),
+  observationsSince: (iso: string) => Promise.resolve(mocks.observationsSinceImpl(iso)),
+  criteria: (...args: unknown[]) => mocks.criteria(...args),
+  siteSettings: (...args: unknown[]) => mocks.siteSettings(...args),
+  heartbeat: (...args: unknown[]) => mocks.heartbeat(...args),
+}));
+
+vi.mock("../lib/api/org", () => ({
+  alertSettings: (...args: unknown[]) => mocks.alertSettings(...args),
+  listRecipients: (...args: unknown[]) => mocks.listRecipients(...args),
+}));
+
+vi.mock("../lib/api/content", () => ({
+  messagesOf: (...args: unknown[]) => mocks.messagesOf(...args),
+  saveDraftMessage: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("../lib/api", () => ({
@@ -91,33 +112,31 @@ const baseEvent: WeatherEvent = {
   repeat_count: 0,
 };
 
-const baseMessage: Message = {
+const baseMessage = {
   id: "msg-1",
   event_id: "event-1",
-  status: "draft",
+  status: "draft" as const,
   content,
   updated_at: "2026-08-12T06:00:00Z",
   updated_by: null,
 };
 
-const baseObservation: WeatherObservation = {
-  id: 10,
+// dashboard.ts(OBS_COLS)는 id/humidity_pct를 select하지 않는다 — 트리거 관측은
+// observationsSince로 감지 시각과 가장 가까운 행을 근사치로 골라 쓴다.
+const baseObservationRow = {
   observed_at: "2026-08-12T06:00:00+09:00",
   rain_mm_per_hr: 32.5,
   temp_c: 24,
   wind_ms: 9.2,
-  humidity_pct: 88,
   snow_new_cm: null,
   feels_c: null,
-  raw: null,
   missing: false,
 };
 
-const baseCriteria: WeatherCriteria = {
-  kind: "rain",
-  grade: "watch",
+const baseCriteria = {
+  kind: "rain" as const,
+  grade: "watch" as const,
   threshold: { rain_mm_per_hr: 20 },
-  updated_at: "2026-01-01T00:00:00Z",
 };
 
 const baseAlertSetting: AlertSetting = {
@@ -129,42 +148,33 @@ const baseAlertSetting: AlertSetting = {
   updated_at: "2026-01-01T00:00:00Z",
 };
 
-function makeQuery(result: { data: unknown; error?: unknown }) {
-  const q: any = {
-    select: () => q,
-    eq: () => q,
-    in: () => q,
-    gte: () => q,
-    order: () => q,
-    update: () => q,
-    single: () => q,
-    then: (resolve: any, reject: any) => Promise.resolve(result).then(resolve, reject),
-  };
-  return q;
-}
-
-// weather_observations는 두 번 조회된다: ①트리거 관측 1건(single) ②KST 자정 이후 일 누적 합산(rows).
-// 호출 순서는 EventReview의 Promise.all 배열 순서와 일치시켜야 한다.
+// weather_observations는 두 번 조회된다: ①트리거 관측 근사(구간) ②KST 자정 이후 일 누적 합산(rows).
+// EventReview의 Promise.all 배열 순서(트리거 → ... → 누적)와 일치시켜야 한다.
 const baseAccumRows = [{ rain_mm_per_hr: 32.5 }, { rain_mm_per_hr: 45.5 }]; // 합계 78.0mm
 
-function setupSupabase(overrides: Partial<Record<string, { data: unknown; error?: unknown }>> = {}) {
-  const table: Record<string, { data: unknown; error?: unknown }> = {
-    weather_events: { data: baseEvent, error: null },
-    messages: { data: baseMessage, error: null },
-    weather_observations: { data: baseObservation, error: null },
-    weather_observations_accum: { data: baseAccumRows, error: null },
-    weather_criteria: { data: baseCriteria, error: null },
-    alert_settings: { data: baseAlertSetting, error: null },
-    recipients: { data: [], error: null },
-    ...overrides,
-  };
+function setupApi(overrides: {
+  event?: WeatherEvent | null;
+  message?: typeof baseMessage | null;
+  triggerRows?: unknown[];
+  accumRows?: unknown[];
+  criteriaRows?: unknown[];
+  alertRows?: AlertSetting[];
+  recipientRows?: unknown[];
+} = {}) {
+  const event = "event" in overrides ? overrides.event : baseEvent;
+  const message = "message" in overrides ? overrides.message : baseMessage;
+  mocks.openEvents.mockResolvedValue(event ? [event] : []);
+  mocks.messagesOf.mockResolvedValue(message ? [message] : []);
+  mocks.criteria.mockResolvedValue(overrides.criteriaRows ?? [baseCriteria]);
+  mocks.alertSettings.mockResolvedValue(overrides.alertRows ?? [baseAlertSetting]);
+  mocks.listRecipients.mockResolvedValue(overrides.recipientRows ?? []);
+
+  const triggerRows = overrides.triggerRows ?? [baseObservationRow];
+  const accumRows = overrides.accumRows ?? baseAccumRows;
   let obsCalls = 0;
-  mocks.fromImpl = (t: string) => {
-    if (t === "weather_observations") {
-      obsCalls += 1;
-      return makeQuery(obsCalls === 1 ? table.weather_observations : table.weather_observations_accum);
-    }
-    return makeQuery(table[t] ?? { data: null, error: null });
+  mocks.observationsSinceImpl = () => {
+    obsCalls += 1;
+    return obsCalls === 1 ? triggerRows : accumRows;
   };
 }
 
@@ -182,8 +192,10 @@ function renderPage() {
 
 beforeEach(() => {
   mocks.callSend.mockReset();
+  mocks.siteSettings.mockReset().mockResolvedValue(null);
+  mocks.heartbeat.mockReset().mockResolvedValue(null);
   mocks.authState = { employee: approver, loading: false, isApprover: true };
-  setupSupabase();
+  setupApi();
 });
 
 afterEach(() => {
@@ -246,7 +258,7 @@ describe("EventReview", () => {
   });
 
   it("PENDING_APPROVAL이 아니면 읽기 전용과 상태 태그를 보여준다", async () => {
-    setupSupabase({ weather_events: { data: { ...baseEvent, status: "ACTIVE" }, error: null } });
+    setupApi({ event: { ...baseEvent, status: "ACTIVE" } });
     renderPage();
     expect(await screen.findByText("발송 완료")).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "전체 선택" })).not.toBeInTheDocument();
@@ -302,14 +314,14 @@ describe("EventReview", () => {
   });
 
   it("이벤트를 찾을 수 없으면 빈 상태를 보여준다", async () => {
-    setupSupabase({ weather_events: { data: null, error: { message: "not found" } } });
+    setupApi({ event: null });
     renderPage();
     expect(await screen.findByText("이벤트를 찾을 수 없습니다")).toBeInTheDocument();
   });
 
   it("Alert 수신자가 아니면 승인 및 발송 버튼이 보이지 않는다", async () => {
     mocks.authState = { employee: { ...approver, role: "approver" }, loading: false, isApprover: false };
-    setupSupabase();
+    setupApi();
     renderPage();
     expect(await screen.findByText("현재 화면은 읽기 전용입니다.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /승인 및 발송/ })).not.toBeInTheDocument();
@@ -317,7 +329,7 @@ describe("EventReview", () => {
 
   it("역할이 admin이어도 Alert 수신자면 승인 및 발송 버튼이 보인다", async () => {
     mocks.authState = { employee: { ...approver, role: "admin" }, loading: false, isApprover: true };
-    setupSupabase();
+    setupApi();
     renderPage();
     expect(await screen.findByRole("button", { name: /승인 및 발송/ })).toBeInTheDocument();
   });

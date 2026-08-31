@@ -8,19 +8,12 @@ import { Chip } from "../components/Chip";
 import { EmptyState } from "../components/EmptyState";
 import { Modal } from "../components/Modal";
 import { useAuth } from "../auth/AuthProvider";
-import { supabase } from "../lib/supabase";
+import { openEvents, observationsSince, criteria as fetchCriteria } from "../lib/api/dashboard";
+import type { CriteriaRow, ObservationRow } from "../lib/api/dashboard";
+import { alertSettings as fetchAlertSettings, listRecipients } from "../lib/api/org";
+import { messagesOf, saveDraftMessage } from "../lib/api/content";
 import { callSend } from "../lib/api";
-import type {
-  AlertSetting,
-  DeptBlock,
-  EventStatus,
-  Grade,
-  Kind,
-  Message,
-  WeatherCriteria,
-  WeatherEvent,
-  WeatherObservation,
-} from "../lib/types";
+import type { AlertSetting, DeptBlock, EventStatus, Grade, Kind, WeatherEvent } from "../lib/types";
 import "./EventReview.css";
 
 type CandidateRecipient = { employee_id: string; name: string; kakaowork_user_id: string | null };
@@ -47,6 +40,10 @@ const STATUS_CLASS: Record<EventStatus, string> = {
 };
 
 type NumericObsKey = "rain_mm_per_hr" | "temp_c" | "wind_ms" | "humidity_pct" | "snow_new_cm" | "feels_c";
+// dashboard.ts(OBS_COLS)는 humidity_pct를 select하지 않는다 — weather_observations
+// 테이블에는 있지만 API로는 얻을 수 없다. 강풍·폭염 카드의 "습도" 항목은 이 필드가
+// 없어 항상 "-"로 표시된다(report 참고). 타입만 맞춰 안전하게 접근한다.
+type TriggerObservation = ObservationRow & { humidity_pct: null };
 // "daily_accum"은 관측 1건의 필드가 아니라 KST 자정 이후 합산값(판정 엔진의
 // todayAccums와 동일 로직, supabase/functions/_shared/db.ts 참조)으로 별도 계산한다.
 type MetricSource = NumericObsKey | "daily_accum";
@@ -294,9 +291,9 @@ export default function EventReview() {
   const [event, setEvent] = useState<WeatherEvent | null>(null);
   const [messageId, setMessageId] = useState<string | null>(null);
   const [content, setContent] = useState<DeptBlock[]>([]);
-  const [observation, setObservation] = useState<WeatherObservation | null>(null);
+  const [observation, setObservation] = useState<TriggerObservation | null>(null);
   const [dailyAccum, setDailyAccum] = useState<number | null>(null);
-  const [criteria, setCriteria] = useState<WeatherCriteria | null>(null);
+  const [criteria, setCriteria] = useState<CriteriaRow | null>(null);
   const [alertSetting, setAlertSetting] = useState<AlertSetting | null>(null);
   const [candidatesByDept, setCandidatesByDept] = useState<Record<string, CandidateRecipient[]>>({});
 
@@ -317,15 +314,15 @@ export default function EventReview() {
       setLoading(true);
       setLoadError(null);
 
-      const [evRes, msgRes] = await Promise.all([
-        supabase.from("weather_events").select("*").eq("id", id).single(),
-        supabase.from("messages").select("*").eq("event_id", id).single(),
-      ]);
+      // 서버에 특보 단건 조회(GET /events/:id) 엔드포인트가 없다 — /api/events/open은
+      // PENDING_APPROVAL·ACTIVE만 돌려주는데, 이 화면이 보여주는 상태도 그 둘뿐이라
+      // (닫힌 특보로 가는 링크는 앱 안에 없다) 목록에서 찾는 것으로 충분하다.
+      const [openEventRows, messageRows] = await Promise.all([openEvents(), messagesOf(id)]);
       if (!active) return;
 
-      const ev = evRes.data as WeatherEvent | null;
-      const msg = msgRes.data as Message | null;
-      if (evRes.error || !ev || msgRes.error || !msg) {
+      const ev = openEventRows.find((e) => e.id === id) ?? null;
+      const msg = messageRows[0] ?? null;
+      if (!ev || !msg) {
         setLoadError("특보 이벤트를 찾을 수 없습니다.");
         setLoading(false);
         return;
@@ -336,49 +333,52 @@ export default function EventReview() {
       setContent(msg.content ?? []);
 
       const accumField = DAILY_ACCUM_FIELD[ev.kind];
-      const [obsRes, criteriaRes, alertRes, accumRes] = await Promise.all([
+      const [obsRows, criteriaRows, alertRows, accumRows, recipientRows] = await Promise.all([
+        // 서버에 관측 단건 조회(id 기준) 엔드포인트가 없다 — observationsSince로 감지
+        // 시각 앞뒤 구간을 받아 가장 가까운 시각의 관측을 트리거 관측의 근사치로 쓴다.
+        // (관측은 매시 1회이고 특보는 수집 직후 감지되므로 보통 정확히 일치한다.)
         ev.trigger_observation_id
-          ? supabase.from("weather_observations").select("*").eq("id", ev.trigger_observation_id).single()
-          : Promise.resolve({ data: null }),
-        supabase.from("weather_criteria").select("*").eq("kind", ev.kind).eq("grade", ev.grade).single(),
-        supabase.from("alert_settings").select("*").eq("kind", ev.kind).single(),
-        accumField
-          ? supabase
-              .from("weather_observations")
-              .select(accumField)
-              .gte("observed_at", kstMidnightISO(new Date()))
-              .eq("missing", false)
-          : Promise.resolve({ data: null }),
+          ? observationsSince(new Date(new Date(ev.detected_at).getTime() - 3 * 3600_000).toISOString())
+          : Promise.resolve([]),
+        fetchCriteria(),
+        fetchAlertSettings(),
+        accumField ? observationsSince(kstMidnightISO(new Date())) : Promise.resolve([]),
+        listRecipients(),
       ]);
       if (!active) return;
-      setObservation((obsRes.data as WeatherObservation | null) ?? null);
-      setCriteria((criteriaRes.data as WeatherCriteria | null) ?? null);
-      setAlertSetting((alertRes.data as AlertSetting | null) ?? null);
+
+      if (ev.trigger_observation_id && obsRows.length > 0) {
+        const detectedMs = new Date(ev.detected_at).getTime();
+        const closest = obsRows.reduce((best, r) =>
+          Math.abs(new Date(r.observed_at).getTime() - detectedMs) <
+          Math.abs(new Date(best.observed_at).getTime() - detectedMs)
+            ? r
+            : best,
+        );
+        setObservation({ ...closest, humidity_pct: null });
+      } else {
+        setObservation(null);
+      }
+      setCriteria(criteriaRows.find((c) => c.kind === ev.kind && c.grade === ev.grade) ?? null);
+      setAlertSetting(alertRows.find((a) => a.kind === ev.kind) ?? null);
 
       if (accumField) {
-        const rows = (accumRes.data ?? []) as Record<string, number | null>[];
-        setDailyAccum(rows.length === 0 ? null : rows.reduce((sum, r) => sum + Number(r[accumField] ?? 0), 0));
+        setDailyAccum(
+          accumRows.length === 0 ? null : accumRows.reduce((sum, r) => sum + Number(r[accumField] ?? 0), 0),
+        );
       } else {
         setDailyAccum(null);
       }
 
-      const deptIds = [...new Set((msg.content ?? []).map((b) => b.department_id))];
-      if (deptIds.length > 0) {
-        const { data: recRows } = await supabase
-          .from("recipients")
-          .select("department_id, employee_id, employees(name, kakaowork_user_id)")
-          .in("department_id", deptIds);
-        if (!active) return;
-        const map: Record<string, CandidateRecipient[]> = {};
-        for (const row of (recRows ?? []) as any[]) {
-          const emp = Array.isArray(row.employees) ? row.employees[0] : row.employees;
-          if (!emp) continue;
-          const list = map[row.department_id] ?? [];
-          list.push({ employee_id: row.employee_id, name: emp.name, kakaowork_user_id: emp.kakaowork_user_id ?? null });
-          map[row.department_id] = list;
-        }
-        setCandidatesByDept(map);
+      const deptIds = new Set((msg.content ?? []).map((b) => b.department_id));
+      const map: Record<string, CandidateRecipient[]> = {};
+      for (const row of recipientRows) {
+        if (!deptIds.has(row.department_id)) continue;
+        const list = map[row.department_id] ?? [];
+        list.push({ employee_id: row.employee_id, name: row.name, kakaowork_user_id: row.kakaowork_user_id });
+        map[row.department_id] = list;
       }
+      setCandidatesByDept(map);
 
       setLoading(false);
     })();
@@ -472,13 +472,16 @@ export default function EventReview() {
     setSavingDraft(true);
     setActionError(null);
     setBanner(null);
-    const { error } = await supabase
-      .from("messages")
-      .update({ content, updated_at: new Date().toISOString(), updated_by: employee?.id ?? null })
-      .eq("id", messageId);
-    setSavingDraft(false);
-    if (error) setActionError("임시 저장에 실패했습니다.");
-    else setBanner({ type: "info", text: "임시 저장되었습니다." });
+    try {
+      // 서버(content.ts)에 messages 갱신 엔드포인트가 없다 — GET만 있다. 이 호출은
+      // 그 엔드포인트가 생기기 전까지 404로 실패한다. task-8-report.md 참고.
+      await saveDraftMessage(messageId, content);
+      setBanner({ type: "info", text: "임시 저장되었습니다." });
+    } catch {
+      setActionError("임시 저장에 실패했습니다.");
+    } finally {
+      setSavingDraft(false);
+    }
   }
 
   async function handleDismissConfirmed() {
