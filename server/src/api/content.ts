@@ -114,6 +114,40 @@ contentRouter.get("/messages", async (req, res) => {
   res.json(rows);
 });
 
+// EventReview.tsx의 "임시 저장" — 승인 전 초안의 content(부서 블록 배열)를 고친다.
+// w_approver 정책은 0007_approver_from_alert_recipients.sql이 current_emp_is_approver()
+// (= alert_recipients 등록 여부)로 재정의해 둔 상태다 — role='approver'가 아니라 실제
+// Alert 수신자만 통과한다(role만 approver고 미등록이면 막힌다, admin도 미등록이면
+// 막힌다). 화면의 "승인 권한 = Alert 수신자 등록"이라는 안내와 실제 게이트를 맞추기
+// 위한 의도적 설계다(2026-08-13 스펙). requireAdmin을 쓰지 않고 withUser로만 접근해
+// 이 정책이 그대로 판정하게 둔다.
+//
+// update가 0건일 때 "없어서"인지 "권한이 없어서"인지를 구분해야 한다 — 둘 다 그냥
+// 0건으로는 구분이 안 된다. r_messages(전 로그인 사용자에게 select 허용)로 먼저
+// 존재를 확인한 뒤, 그래도 update가 0건이면 그건 정책이 막은 것(403)이다.
+contentRouter.patch("/messages/:id", async (req, res) => {
+  const id = req.params.id;
+  if (!UUID.test(id)) return res.status(400).json({ error: "id 형식이 올바르지 않습니다" });
+  if (!Array.isArray(req.body?.content)) {
+    return res.status(400).json({ error: "content가 필요합니다" });
+  }
+  const outcome = await withUser(req.user!.accountId, async (q) => {
+    const { rows: existing } = await q.query("select id from messages where id = $1", [id]);
+    if (existing.length === 0) return { kind: "not_found" as const };
+    const { rows } = await q.query(
+      `update messages set content = $2, updated_at = now(), updated_by = current_emp_id()
+        where id = $1
+        returning id, event_id, status, content, updated_at, updated_by`,
+      [id, JSON.stringify(req.body.content)],
+    );
+    if (rows.length === 0) return { kind: "forbidden" as const };
+    return { kind: "ok" as const, row: rows[0] };
+  });
+  if (outcome.kind === "not_found") return res.status(404).json({ error: "메시지를 찾을 수 없습니다" });
+  if (outcome.kind === "forbidden") return res.status(403).json({ error: "권한이 없습니다" });
+  res.json(outcome.row);
+});
+
 // ---------------------------------------------------------------------------
 // 발송 이력 (dispatches) — History.tsx
 // ---------------------------------------------------------------------------
