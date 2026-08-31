@@ -7,8 +7,10 @@ import { Modal } from "../components/Modal";
 import { StatusDot } from "../components/StatusDot";
 import { DeptModal } from "../components/DeptModal";
 import { useAuth } from "../auth/AuthProvider";
-import { supabase } from "../lib/supabase";
-import type { Department, EmpRole, Employee } from "../lib/types";
+import { ApiError } from "../lib/api/client";
+import { listDepartments, listEmployees, updateEmployee, deleteEmployee as deleteEmployeeApi, createEmployee } from "../lib/api/org";
+import type { DepartmentRow, EmployeeRow } from "../lib/api/org";
+import type { EmpRole } from "../lib/types";
 import { ROLE_LABEL } from "../lib/roles";
 import "./Employees.css";
 
@@ -39,8 +41,8 @@ export default function Employees() {
   const isAdmin = me?.role === "admin";
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [employees, setEmployees] = useState<Employee[]>([]);
-  const [departments, setDepartments] = useState<Department[]>([]);
+  const [employees, setEmployees] = useState<EmployeeRow[]>([]);
+  const [departments, setDepartments] = useState<DepartmentRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [search, setSearch] = useState("");
@@ -57,12 +59,11 @@ export default function Employees() {
   const [toast, setToast] = useState<ToastState>(null);
 
   async function loadAll() {
-    const [empRes, deptRes] = await Promise.all([
-      supabase.from("employees").select("*").order("created_at", { ascending: false }),
-      supabase.from("departments").select("*").order("sort_order", { ascending: true }),
-    ]);
-    setEmployees((empRes.data as Employee[] | null) ?? []);
-    setDepartments((deptRes.data as Department[] | null) ?? []);
+    const [emps, depts] = await Promise.all([listEmployees(), listDepartments()]);
+    // employees API는 정렬 순서를 강제하지 않는다(org.ts: order by name) — 화면은
+    // "최근 가입 우선"을 기대했으므로 created_at 내림차순으로 다시 정렬한다.
+    setEmployees([...emps].sort((a, b) => b.created_at.localeCompare(a.created_at)));
+    setDepartments(depts);
     setLoading(false);
   }
 
@@ -76,8 +77,10 @@ export default function Employees() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  // departments API는 id/name만 내려준다(parent_id 없음) — 예전처럼 "상위 · 하위"로
+  // 묶어 보여줄 수 없어 평면 목록으로 대체한다. task-8-report.md 참고.
   const deptById = useMemo(() => {
-    const map = new Map<string, Department>();
+    const map = new Map<string, DepartmentRow>();
     for (const d of departments) map.set(d.id, d);
     return map;
   }, [departments]);
@@ -85,25 +88,14 @@ export default function Employees() {
   const deptLabel = useMemo(() => {
     return (id: string | null): string => {
       if (!id) return "미지정";
-      const dept = deptById.get(id);
-      if (!dept) return "미지정";
-      if (!dept.parent_id) return dept.name;
-      const parent = deptById.get(dept.parent_id);
-      return parent ? `${parent.name} · ${dept.name}` : dept.name;
+      return deptById.get(id)?.name ?? "미지정";
     };
   }, [deptById]);
 
-  const deptOptions = useMemo(() => {
-    const top = departments.filter((d) => !d.parent_id);
-    const options: { id: string; label: string }[] = [];
-    for (const t of top) {
-      options.push({ id: t.id, label: t.name });
-      for (const child of departments.filter((d) => d.parent_id === t.id)) {
-        options.push({ id: child.id, label: `${t.name} · ${child.name}` });
-      }
-    }
-    return options;
-  }, [departments]);
+  const deptOptions = useMemo(
+    () => departments.map((d) => ({ id: d.id, label: d.name })),
+    [departments],
+  );
 
   const unassignedCount = useMemo(
     () => employees.filter((e) => e.department_id === null).length,
@@ -129,7 +121,7 @@ export default function Employees() {
     setFormOpen(true);
   }
 
-  function openEdit(e: Employee) {
+  function openEdit(e: EmployeeRow) {
     setForm({ id: e.id, name: e.name, email: e.email, department_id: e.department_id, role: e.role });
     setFormOpen(true);
   }
@@ -142,61 +134,56 @@ export default function Employees() {
     setSaving(true);
     try {
       if (form.id) {
-        const { error } = await supabase
-          .from("employees")
-          .update({
-            name: form.name.trim(),
-            email: form.email.trim(),
-            department_id: form.department_id,
-            role: form.role,
-          })
-          .eq("id", form.id);
-        if (error) throw error;
+        // PATCH /api/employees/:id는 name/role/department_id/phone만 받는다 — email은
+        // 서버가 갱신 대상으로 취급하지 않는다(org.ts). 여기서 보내도 조용히 무시된다.
+        await updateEmployee(form.id, {
+          name: form.name.trim(),
+          department_id: form.department_id,
+          role: form.role,
+        });
         setToast({ kind: "ok", message: "직원 정보를 수정했습니다" });
       } else {
-        const { error } = await supabase.from("employees").insert({
+        // 서버에 직원 생성 엔드포인트가 없다(가입은 /api/auth/signup 전용) —
+        // 이 호출은 이 엔드포인트가 생기기 전까지 404로 실패한다. task-8-report.md 참고.
+        await createEmployee({
           name: form.name.trim(),
           email: form.email.trim(),
           department_id: form.department_id,
           role: form.role,
         });
-        if (error) throw error;
         setToast({ kind: "ok", message: "직원을 추가했습니다" });
       }
       setFormOpen(false);
       await loadAll();
     } catch (err) {
-      setToast({ kind: "error", message: (err as Error).message ?? "저장에 실패했습니다" });
+      setToast({ kind: "error", message: err instanceof ApiError ? err.message : "저장에 실패했습니다" });
     } finally {
       setSaving(false);
     }
   }
 
-  async function deleteEmployee(e: Employee) {
+  async function deleteEmployee(e: EmployeeRow) {
     const ok = window.confirm(
       `${e.name} 님을 삭제하시겠습니까?\n지침 수신자 지정에서도 함께 제외됩니다.`,
     );
     if (!ok) return;
-    const { error } = await supabase.from("employees").delete().eq("id", e.id);
-    if (error) {
-      setToast({ kind: "error", message: error.message });
-      return;
+    try {
+      await deleteEmployeeApi(e.id);
+      setToast({ kind: "ok", message: "직원을 삭제했습니다" });
+      await loadAll();
+    } catch (err) {
+      setToast({ kind: "error", message: err instanceof ApiError ? err.message : "삭제에 실패했습니다" });
     }
-    setToast({ kind: "ok", message: "직원을 삭제했습니다" });
-    await loadAll();
   }
 
   async function assignDept(employeeId: string, departmentId: string) {
-    const { error } = await supabase
-      .from("employees")
-      .update({ department_id: departmentId || null })
-      .eq("id", employeeId);
-    if (error) {
-      setToast({ kind: "error", message: error.message });
-      return;
+    try {
+      await updateEmployee(employeeId, { department_id: departmentId || null });
+      setAssigningId(null);
+      await loadAll();
+    } catch (err) {
+      setToast({ kind: "error", message: err instanceof ApiError ? err.message : "배정에 실패했습니다" });
     }
-    setAssigningId(null);
-    await loadAll();
   }
 
   function closeDeptModal() {

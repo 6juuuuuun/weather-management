@@ -5,7 +5,10 @@ import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { Chip } from "../components/Chip";
 import { useAuth } from "../auth/AuthProvider";
-import { supabase } from "../lib/supabase";
+import { criteria as fetchCriteria, saveCriteria } from "../lib/api/dashboard";
+import type { CriteriaRow } from "../lib/api/dashboard";
+import { listEmployees, alertRecipients, saveAlertRecipients } from "../lib/api/org";
+import { ApiError } from "../lib/api/client";
 import type { EmpRole, Grade, Kind } from "../lib/types";
 import { ROLE_LABEL } from "../lib/roles";
 import "./Criteria.css";
@@ -121,29 +124,25 @@ export default function Criteria() {
   useEffect(() => {
     let active = true;
     (async () => {
-      const [criteriaRes, recipientsRes, candidatesRes] = await Promise.all([
-        supabase.from("weather_criteria").select("kind,grade,threshold"),
-        supabase.from("alert_recipients").select("employee_id, employees(id,name,role)"),
-        supabase.from("employees").select("id,name,role").in("role", ["admin", "approver"]),
+      const [criteriaRows, recipientRows, candidateRows] = await Promise.all([
+        fetchCriteria(),
+        // GET /api/alert-recipients는 이제 평면 형태 { employee_id, name, role }로 온다
+        // (예전의 { employee_id, employees: {...} } 중첩이 아니다).
+        alertRecipients(),
+        listEmployees({ roles: ["admin", "approver"] }),
       ]);
       if (!active) return;
 
       const next = clonePreset();
-      for (const row of criteriaRes.data ?? []) {
-        const kind = row.kind as Kind;
-        const grade = row.grade as Grade;
-        next[kind][grade] = row.threshold as Record<string, number>;
+      for (const row of criteriaRows) {
+        const kind = row.kind;
+        const grade = row.grade;
+        next[kind][grade] = row.threshold;
       }
       setCriteria(next);
 
-      type RecipientRow = { employee_id: string; employees: RecipientEmployee | RecipientEmployee[] | null };
-      const recipientRows = (recipientsRes.data ?? []) as unknown as RecipientRow[];
-      const recipientList = recipientRows
-        .map((r) => (Array.isArray(r.employees) ? r.employees[0] : r.employees))
-        .filter((e): e is RecipientEmployee => e != null);
-      setRecipients(recipientList);
-
-      setCandidates((candidatesRes.data ?? []) as RecipientEmployee[]);
+      setRecipients(recipientRows.map((r) => ({ id: r.employee_id, name: r.name, role: r.role })));
+      setCandidates(candidateRows.map((c) => ({ id: c.id, name: c.name, role: c.role })));
       setLoading(false);
     })();
     return () => {
@@ -171,42 +170,50 @@ export default function Criteria() {
   async function handleSave() {
     setSaving(true);
     setErrorMsg(null);
-    const rows = KIND_ORDER.flatMap((kind) =>
+    const rows: CriteriaRow[] = KIND_ORDER.flatMap((kind) =>
       GRADE_ORDER.map((grade) => ({
         kind,
         grade,
         threshold: criteria[kind][grade],
       })),
     );
-    const { error } = await supabase.from("weather_criteria").upsert(rows, { onConflict: "kind,grade" });
-    setSaving(false);
-    if (error) {
-      setErrorMsg(error.message);
-      return;
+    try {
+      // 서버(dashboard.ts)에는 아직 weather_criteria 저장 엔드포인트가 없다 — 이 호출은
+      // 그 엔드포인트가 생기기 전까지 404로 실패한다. task-8-report.md 참고.
+      await saveCriteria(rows);
+      setShowSuccess(true);
+      setTimeout(() => setShowSuccess(false), 3000);
+    } catch (err) {
+      setErrorMsg(err instanceof ApiError ? err.message : "저장에 실패했습니다");
+    } finally {
+      setSaving(false);
     }
-    setShowSuccess(true);
-    setTimeout(() => setShowSuccess(false), 3000);
   }
 
+  // alert_recipients는 부분 갱신이 아니라 전체 교체다(PUT /api/alert-recipients) — 화면이
+  // '전체 선택 상태'를 넘긴다. 추가/삭제 모두 현재 목록에서 계산한 전체 id 목록을 보낸다.
   async function handleAddRecipient(employeeId: string) {
     if (!employeeId) return;
-    const { error } = await supabase.from("alert_recipients").insert({ employee_id: employeeId });
     setAddingRecipient(false);
-    if (error) {
-      setErrorMsg(error.message);
-      return;
-    }
     const emp = candidates.find((c) => c.id === employeeId);
-    if (emp) setRecipients((prev) => [...prev, emp]);
+    if (!emp) return;
+    const nextIds = [...recipients.map((r) => r.id), employeeId];
+    try {
+      await saveAlertRecipients(nextIds);
+      setRecipients((prev) => [...prev, emp]);
+    } catch (err) {
+      setErrorMsg(err instanceof ApiError ? err.message : "저장에 실패했습니다");
+    }
   }
 
   async function handleRemoveRecipient(employeeId: string) {
-    const { error } = await supabase.from("alert_recipients").delete().eq("employee_id", employeeId);
-    if (error) {
-      setErrorMsg(error.message);
-      return;
+    const nextIds = recipients.filter((r) => r.id !== employeeId).map((r) => r.id);
+    try {
+      await saveAlertRecipients(nextIds);
+      setRecipients((prev) => prev.filter((r) => r.id !== employeeId));
+    } catch (err) {
+      setErrorMsg(err instanceof ApiError ? err.message : "저장에 실패했습니다");
     }
-    setRecipients((prev) => prev.filter((r) => r.id !== employeeId));
   }
 
   const recipientIds = new Set(recipients.map((r) => r.id));

@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react";
 import { Modal } from "./Modal";
 import { Button } from "./Button";
-import { supabase } from "../lib/supabase";
-import type { Department } from "../lib/types";
+import { ApiError } from "../lib/api/client";
+import { listDepartments, createDepartment, renameDepartment, deleteDepartment } from "../lib/api/org";
+import type { DepartmentRow } from "../lib/api/org";
 import "./DeptModal.css";
 
 type EditingState = { id: string; name: string } | null;
-type AddingChildState = { parentId: string; name: string } | null;
 
+// 서버(org.ts)는 departments를 id/name만 평면으로 내려주고(parent_id/sort_order 없음),
+// insert/update도 name만 받는다 — 상위/하위 부서 계층은 이 API로 다룰 수 없다.
+// 그래서 이 모달은 예전의 2단 트리(최상위 + 하위) 대신 평면 목록만 보여준다.
+// task-8-report.md에 이 제약을 자세히 적어 뒀다.
 export function DeptModal({
   onClose,
   onChanged,
@@ -15,23 +19,19 @@ export function DeptModal({
   onClose: () => void;
   onChanged?: () => void;
 }) {
-  const [departments, setDepartments] = useState<Department[]>([]);
+  const [departments, setDepartments] = useState<DepartmentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<EditingState>(null);
-  const [addingChild, setAddingChild] = useState<AddingChildState>(null);
   const [addingTop, setAddingTop] = useState(false);
   const [newTopName, setNewTopName] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
-    const { data, error: err } = await supabase
-      .from("departments")
-      .select("*")
-      .order("sort_order", { ascending: true });
-    if (err) {
-      setError(err.message);
-    } else {
-      setDepartments((data as Department[] | null) ?? []);
+    try {
+      const rows = await listDepartments();
+      setDepartments(rows);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "부서 목록을 불러오지 못했습니다");
     }
     setLoading(false);
   }
@@ -39,11 +39,6 @@ export function DeptModal({
   useEffect(() => {
     load();
   }, []);
-
-  const topLevel = departments.filter((d) => !d.parent_id);
-  function childrenOf(id: string) {
-    return departments.filter((d) => d.parent_id === id);
-  }
 
   async function notifyChanged() {
     await load();
@@ -56,12 +51,12 @@ export function DeptModal({
       setEditing(null);
       return;
     }
-    const { error: err } = await supabase.from("departments").update({ name: trimmed }).eq("id", id);
-    if (err) {
-      setError(err.message);
-    } else {
+    try {
+      await renameDepartment(id, trimmed);
       setEditing(null);
       await notifyChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "이름 변경에 실패했습니다");
     }
   }
 
@@ -72,64 +67,29 @@ export function DeptModal({
       setNewTopName("");
       return;
     }
-    const maxSort = topLevel.reduce((m, d) => Math.max(m, d.sort_order), -1);
-    const { error: err } = await supabase
-      .from("departments")
-      .insert({ name: trimmed, parent_id: null, sort_order: maxSort + 1 });
-    if (err) {
-      setError(err.message);
-    } else {
+    try {
+      await createDepartment(trimmed);
       setAddingTop(false);
       setNewTopName("");
       await notifyChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "부서 추가에 실패했습니다");
     }
   }
 
-  async function addChild(parentId: string, name: string) {
-    const trimmed = name.trim();
-    if (!trimmed) {
-      setAddingChild(null);
-      return;
-    }
-    const siblings = childrenOf(parentId);
-    const maxSort = siblings.reduce((m, d) => Math.max(m, d.sort_order), -1);
-    const { error: err } = await supabase
-      .from("departments")
-      .insert({ name: trimmed, parent_id: parentId, sort_order: maxSort + 1 });
-    if (err) {
-      setError(err.message);
-    } else {
-      setAddingChild(null);
-      await notifyChanged();
-    }
-  }
-
-  async function deleteDept(dept: Department) {
-    const children = childrenOf(dept.id);
-    const msg =
-      children.length > 0
-        ? `'${dept.name}' 부서와 하위 부서 ${children.length}개를 삭제하시겠습니까?\n` +
-          "소속 직원은 미지정으로 이동합니다. 이 부서로 등록된 수신자 지정은 함께 삭제됩니다."
-        : `'${dept.name}' 부서를 삭제하시겠습니까?\n` +
-          "소속 직원은 미지정으로 이동합니다. 이 부서로 등록된 수신자 지정은 함께 삭제됩니다.";
-    const ok = window.confirm(msg);
+  async function deleteDept(dept: DepartmentRow) {
+    const ok = window.confirm(
+      `'${dept.name}' 부서를 삭제하시겠습니까?\n소속 직원은 미지정으로 이동합니다. 이 부서로 등록된 수신자 지정은 함께 삭제됩니다.`,
+    );
     if (!ok) return;
 
     setError(null);
-    // parent_id는 on delete restrict이므로 하위 부서를 먼저 삭제한다.
-    for (const child of children) {
-      const { error: err } = await supabase.from("departments").delete().eq("id", child.id);
-      if (err) {
-        setError(err.message);
-        await notifyChanged();
-        return;
-      }
+    try {
+      await deleteDepartment(dept.id);
+      await notifyChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "부서 삭제에 실패했습니다");
     }
-    const { error: err } = await supabase.from("departments").delete().eq("id", dept.id);
-    if (err) {
-      setError(err.message);
-    }
-    await notifyChanged();
   }
 
   return (
@@ -153,53 +113,20 @@ export function DeptModal({
         <p className="dept-modal-loading">불러오는 중…</p>
       ) : (
         <div className="dept-modal-tree">
-          {topLevel.map((dept) => (
-            <div className="dept-modal-group" key={dept.id}>
+          <div className="dept-modal-group">
+            {departments.map((dept) => (
               <DeptRow
+                key={dept.id}
                 dept={dept}
-                depth={0}
                 editing={editing}
                 onStartEdit={() => setEditing({ id: dept.id, name: dept.name })}
                 onEditChange={(name) => setEditing((e) => (e ? { ...e, name } : e))}
                 onCommitEdit={() => editing && renameDept(editing.id, editing.name)}
                 onCancelEdit={() => setEditing(null)}
-                onAddChild={() => setAddingChild({ parentId: dept.id, name: "" })}
                 onDelete={() => deleteDept(dept)}
               />
-              {childrenOf(dept.id).map((child) => (
-                <DeptRow
-                  key={child.id}
-                  dept={child}
-                  depth={1}
-                  editing={editing}
-                  onStartEdit={() => setEditing({ id: child.id, name: child.name })}
-                  onEditChange={(name) => setEditing((e) => (e ? { ...e, name } : e))}
-                  onCommitEdit={() => editing && renameDept(editing.id, editing.name)}
-                  onCancelEdit={() => setEditing(null)}
-                  onDelete={() => deleteDept(child)}
-                />
-              ))}
-              {addingChild?.parentId === dept.id && (
-                <div className="dept-modal-row dept-modal-row-depth1">
-                  <span className="dept-modal-grip" aria-hidden="true">
-                    ::
-                  </span>
-                  <input
-                    autoFocus
-                    className="dept-modal-input"
-                    placeholder="새 하위 부서 이름"
-                    value={addingChild.name}
-                    onChange={(e) => setAddingChild({ parentId: dept.id, name: e.target.value })}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") addChild(dept.id, addingChild.name);
-                      if (e.key === "Escape") setAddingChild(null);
-                    }}
-                    onBlur={() => addChild(dept.id, addingChild.name)}
-                  />
-                </div>
-              )}
-            </div>
-          ))}
+            ))}
+          </div>
 
           {addingTop ? (
             <div className="dept-modal-row">
@@ -209,7 +136,7 @@ export function DeptModal({
               <input
                 autoFocus
                 className="dept-modal-input"
-                placeholder="새 최상위 부서 이름"
+                placeholder="새 부서 이름"
                 value={newTopName}
                 onChange={(e) => setNewTopName(e.target.value)}
                 onKeyDown={(e) => {
@@ -224,7 +151,7 @@ export function DeptModal({
             </div>
           ) : (
             <button type="button" className="dept-modal-add-top" onClick={() => setAddingTop(true)}>
-              + 최상위 부서 추가
+              + 부서 추가
             </button>
           )}
         </div>
@@ -235,28 +162,24 @@ export function DeptModal({
 
 function DeptRow({
   dept,
-  depth,
   editing,
   onStartEdit,
   onEditChange,
   onCommitEdit,
   onCancelEdit,
-  onAddChild,
   onDelete,
 }: {
-  dept: Department;
-  depth: 0 | 1;
+  dept: DepartmentRow;
   editing: EditingState;
   onStartEdit: () => void;
   onEditChange: (name: string) => void;
   onCommitEdit: () => void;
   onCancelEdit: () => void;
-  onAddChild?: () => void;
   onDelete: () => void;
 }) {
   const isEditing = editing?.id === dept.id;
   return (
-    <div className={`dept-modal-row ${depth === 1 ? "dept-modal-row-depth1" : ""}`}>
+    <div className="dept-modal-row">
       <span className="dept-modal-grip" aria-hidden="true">
         ::
       </span>
@@ -273,16 +196,9 @@ function DeptRow({
           onBlur={onCommitEdit}
         />
       ) : (
-        <span className={depth === 0 ? "dept-modal-name" : "dept-modal-name dept-modal-name-child"}>
-          {dept.name}
-        </span>
+        <span className="dept-modal-name">{dept.name}</span>
       )}
       <span className="dept-modal-row-actions">
-        {onAddChild && (
-          <button type="button" className="dept-modal-icon-btn" aria-label={`${dept.name} 하위 부서 추가`} onClick={onAddChild}>
-            +
-          </button>
-        )}
         <button type="button" className="dept-modal-icon-btn" aria-label={`${dept.name} 이름 수정`} onClick={onStartEdit}>
           <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <path
