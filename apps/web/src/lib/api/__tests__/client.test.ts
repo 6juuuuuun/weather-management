@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { apiGet, apiSend } from "../client";
+import { ApiError, apiGet, apiSend } from "../client";
 
 beforeEach(() => vi.restoreAllMocks());
 
@@ -50,6 +50,44 @@ describe("API 클라이언트", () => {
     expect(init.method).toBe("PATCH");
     expect(init.headers).toMatchObject({ "Content-Type": "application/json" });
     expect(init.body).toBe(JSON.stringify({ name: "홍길동" }));
+  });
+
+  // Task 9(로그인 화면)의 선행조건. auth/middleware.ts는 "비밀번호 강제 변경"
+  // 상태에서 모든 /api/* 요청에 403 { must_change_password: true }를 주는데
+  // requireAdmin의 권한 거부도 403이라 상태 코드만으로는 갈리지 않는다. 호출부가
+  // 본문의 플래그를 읽어 /change-password로 보낼 수 있어야 한다 — 이게 없으면
+  // 한국어 메시지 문자열 비교밖에 방법이 없고 문구가 바뀌면 깨진다.
+  it("오류 응답 본문을 통째로 보존한다 (must_change_password를 상태 코드와 구분할 수 있다)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: "비밀번호를 먼저 변경해야 합니다", must_change_password: true }), {
+          status: 403,
+        }),
+      ),
+    );
+    const err = await apiGet("/api/departments").catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(403);
+    expect(err.body?.must_change_password).toBe(true);
+  });
+
+  // 같은 403이라도 권한 거부에는 그 플래그가 없어야 한다 — 둘이 구분되지 않으면
+  // 위 테스트만으로는 아무것도 증명하지 못한다.
+  it("권한 거부 403에는 must_change_password가 없다", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "권한이 없습니다" }), { status: 403 })),
+    );
+    const err = await apiGet("/api/departments").catch((e) => e);
+    expect(err.status).toBe(403);
+    expect(err.body?.must_change_password).toBeUndefined();
+  });
+
+  it("오류 본문이 JSON이 아니면 body는 null이다", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<html>Not Found</html>", { status: 404 })));
+    const err = await apiGet("/api/nope").catch((e) => e);
+    expect(err.body).toBeNull();
   });
 
   // 본문 없는 GET은 Content-Type을 보내지 않는다 — 실려도 무해하지만, 있으면
