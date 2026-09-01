@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { app } from "../src/index.ts";
 import { withService } from "../src/db.ts";
-import { runWeatherTick } from "../src/jobs/weatherTick.ts";
+import { runWeatherTick, upsertHeartbeat } from "../src/jobs/weatherTick.ts";
 import { runRemindTick } from "../src/jobs/remindTick.ts";
 import { runSend } from "../src/jobs/send.ts";
 import type { NotificationChannel } from "../src/shared/channel.ts";
@@ -427,6 +427,75 @@ describe("승인 재알림", () => {
     const rec = recorder();
     expect((await runRemindTick({ channel: rec.channel })).reminded).toBe(0);
     expect(rec.sent).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 시계 도메인 — 앱(Node)과 DB(Postgres)의 시계를 섞지 않는다
+// ---------------------------------------------------------------------------
+//
+// 이 프로젝트는 같은 실수를 세 번 했다(계정 잠금 2fc6b13, catchUpIfMissed,
+// 그리고 태스크 10의 remindTick 이관). 앱 컨테이너 시계가 DB보다 어긋나면
+// (VM 재개·NTP 사고) 재알림이 어긋나고, heartbeat이 미래로 찍혀 수집이 완전히
+// 멈춰도 워치독이 드리프트만큼 늦게 깨어난다.
+//
+// 두 시계를 실제로 어긋나게 만들어 확인한다: Date만 가짜로 바꾸고(pg의 타이머는
+// 건드리지 않는다) 시각 판정이 그대로 옳은지 본다. 판정이 Node의 Date를 쓰면
+// 아래 두 테스트는 실패한다(변이로 확인함).
+describe("시계 도메인", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** 앱 시계만 delta만큼 어긋나게 만든다. pg가 쓰는 setTimeout 등은 그대로 둔다. */
+  function skewAppClock(ms: number) {
+    const realNow = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(realNow + ms));
+  }
+
+  it("앱 시계가 이틀 뒤처져도 재알림 주기는 DB 시계로 판정한다", async () => {
+    const approver = await makeEmployee({ name: "사업부장", email: "jobs-clock1@gonjiam.com", kw: "kw-appr" });
+    await makeAlertRecipient(approver);
+    const id = await withService(async (q) => {
+      const { rows } = await q.query(
+        `insert into weather_events (kind, grade, status, detected_at)
+         values ('rain','watch','PENDING_APPROVAL', now() - interval '2 hours') returning id`);
+      return rows[0].id as string;
+    });
+
+    // 앱 시계가 이틀 뒤처져 있다. Node의 new Date()로 cutoff를 만들면 그 값은
+    // 이틀 하고도 30분 전이 되어, 2시간 전에 감지된 이 건이 "아직 멀었다"로
+    // 걸러진다 — 승인 대기 특보의 재알림이 통째로 멈춘다.
+    skewAppClock(-2 * 24 * 3600_000);
+    const rec = recorder();
+    const out = await runRemindTick({ channel: rec.channel });
+    expect(out.reminded).toBe(1);
+
+    // 기록도 DB 시계로 찍혀야 한다. 앱 시계로 찍으면 last_reminded_at이 이틀 전이
+    // 되어 다음 주기가 같은 건을 또 재알림한다(10분마다 무한 반복).
+    const fresh = await withService(async (q) => {
+      const { rows } = await q.query(
+        "select now() - last_reminded_at < interval '5 minutes' as fresh from weather_events where id = $1",
+        [id],
+      );
+      return rows[0].fresh as boolean;
+    });
+    expect(fresh).toBe(true);
+  });
+
+  it("앱 시계가 이틀 앞서도 heartbeat은 DB 시계로 찍힌다", async () => {
+    // 미래로 찍힌 last_run_at은 워치독(now() - last_run_at > 130분)과
+    // catchUpIfMissed(70분)를 그 차이만큼 통째로 잠재운다 — 수집이 멈춰도 초록이다.
+    skewAppClock(2 * 24 * 3600_000);
+    await upsertHeartbeat("weather-tick", true, null);
+    const drift = await withService(async (q) => {
+      const { rows } = await q.query(
+        "select abs(extract(epoch from now() - last_run_at)) < 300 as close from heartbeats where name = 'weather-tick'",
+      );
+      return rows[0].close as boolean;
+    });
+    expect(drift).toBe(true);
   });
 });
 

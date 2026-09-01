@@ -68,13 +68,20 @@ export async function todayAccums(q: Querier, now: Date) {
   return { rainToday: Number(rows[0].rain_today), snowToday: Number(rows[0].snow_today) };
 }
 
-export async function upsertHeartbeat(name: string, at: Date, ok: boolean, note: string | null) {
+// last_run_at은 Node의 Date가 아니라 Postgres의 now()로 찍는다. 이 값을 판정하는
+// 쪽(jobs/scheduler.ts의 catchUpIfMissed, jobs/watchdog.ts의 checkHealth)이 전부
+// `now() - last_run_at > 임계값`을 SQL에서 계산하기 때문이다. 기록만 앱 시계로 하면
+// 두 시계를 섞어 쓰는 셈이고, 앱 컨테이너 시계가 DB보다 앞서면(VM 재개·NTP 사고)
+// last_run_at이 미래로 찍혀 수집이 완전히 멈춰도 워치독이 드리프트만큼 늦게 깨어난다.
+// 이 프로젝트는 같은 부류를 이미 두 번 고쳤다(계정 잠금 2fc6b13, catchUpIfMissed).
+// 시계 도메인을 Postgres 하나로 닫는다 — 그래서 이 함수는 시각을 인자로 받지 않는다.
+export async function upsertHeartbeat(name: string, ok: boolean, note: string | null) {
   await withService((q) =>
     q.query(
-      `insert into heartbeats (name, last_run_at, ok, note) values ($1, $2, $3, $4)
+      `insert into heartbeats (name, last_run_at, ok, note) values ($1, now(), $2, $3)
        on conflict (name) do update set
          last_run_at = excluded.last_run_at, ok = excluded.ok, note = excluded.note`,
-      [name, at, ok, note],
+      [name, ok, note],
     ),
   );
 }
@@ -146,7 +153,7 @@ export async function runWeatherTick(
     });
     for (const kw of admins)
       await channel.send(kw, "[날씨경영] 날씨 수집이 3시간 연속 실패했습니다. 시스템을 확인해 주세요.");
-    await upsertHeartbeat("weather-tick", now, false, "missing");
+    await upsertHeartbeat("weather-tick", false, "missing");
     return { collected: false, events: 0, actions: [] };
   }
 
@@ -250,6 +257,6 @@ export async function runWeatherTick(
     }
   }
 
-  await upsertHeartbeat("weather-tick", now, true, null);
+  await upsertHeartbeat("weather-tick", true, null);
   return { collected: true, events: actions.length, actions };
 }
