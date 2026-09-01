@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { withService } from "../src/db.ts";
-import { catchUpIfMissed, guarded } from "../src/jobs/scheduler.ts";
+import cron from "node-cron";
+import { catchUpIfMissed, guarded, startScheduler } from "../src/jobs/scheduler.ts";
 
 // runWeatherTick(kma 호출 포함)이 catchUpIfMissed 안에서 불릴 수 있다. 실제
 // 기상청 API로 나가면 느리고 흔들리고 키가 없으면 아예 실패한다 — jobs.test.ts와
@@ -102,5 +103,27 @@ describe("guarded", () => {
       ran = true;
     });
     expect(ran).toBe(true);
+  });
+});
+
+describe("스케줄 등록", () => {
+  // node-cron은 timezone을 안 주면 cron 식을 프로세스 로컬 시각으로 읽는다.
+  // 컨테이너 기본 시계가 UTC이므로, 그대로 두면 세션 정리("0 4 * * *")가
+  // 한국 시각 오후 1시에 돈다. 이미지의 TZ 설정에 기대지 않고 코드에서 못박는다.
+  it("세 스케줄을 모두 Asia/Seoul 기준으로 등록한다", async () => {
+    // startScheduler는 마지막에 catchUpIfMissed도 부른다. 방금 수집한 것으로
+    // 만들어 두면 따라잡기가 실행되지 않아 기상청 호출까지 가지 않는다.
+    await withService((q) =>
+      q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())"),
+    );
+    stubKma([]);
+
+    const schedule = vi.spyOn(cron, "schedule").mockReturnValue({ stop() {} });
+    startScheduler();
+
+    expect(schedule.mock.calls.map((c) => c[0])).toEqual(["5 * * * *", "*/10 * * * *", "0 4 * * *"]);
+    for (const call of schedule.mock.calls) {
+      expect(call[2]).toEqual({ timezone: "Asia/Seoul" });
+    }
   });
 });

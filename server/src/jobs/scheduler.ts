@@ -49,9 +49,24 @@ export async function guarded(name: string, fn: () => Promise<unknown>): Promise
   }
 }
 
+// node-cron은 timezone을 안 주면 cron 식을 "프로세스 로컬 시각"으로 해석한다.
+// 컨테이너 기본 시계는 UTC라, 그대로 두면 세션 정리("0 4 * * *")가 한국 시각
+// 오후 1시에 돈다 — 새벽에만 돌라고 정한 작업이 근무 시간 한복판에서 도는 셈이다.
+// 곤지암 리조트에서 쓰는 시스템이므로 기준 시각은 언제나 KST다.
+//
+// 이미지에도 TZ=Asia/Seoul을 넣지만(로그 시각·Date 출력까지 KST로 맞추려고),
+// 그것만 믿지 않고 여기서도 한 번 더 못박는다: TZ는 실행 환경이 정하는 값이라
+// 이 이미지를 compose 밖에서 돌리거나 누가 env를 지우면 조용히 사라진다.
+// 스케줄의 의미가 배포 환경 설정에 의존하면 안 된다.
+//
+// 수집(매시 5분)·리마인드(10분마다)는 빈도 기준이라 타임존과 무관하게 동작이
+// 같다. 그래도 같은 값을 주는 이유는, 셋 중 하나만 예외로 두면 다음 사람이
+// "왜 얘만 다른가"를 다시 추적해야 하기 때문이다.
+const TIMEZONE = "Asia/Seoul";
+
 export function startScheduler(): void {
-  cron.schedule("5 * * * *", () => guarded("weather-tick", runWeatherTick));
-  cron.schedule("*/10 * * * *", () => guarded("remind-tick", runRemindTick));
-  cron.schedule("0 4 * * *", () => guarded("session-purge", purgeExpired));
+  cron.schedule("5 * * * *", () => guarded("weather-tick", runWeatherTick), { timezone: TIMEZONE });
+  cron.schedule("*/10 * * * *", () => guarded("remind-tick", runRemindTick), { timezone: TIMEZONE });
+  cron.schedule("0 4 * * *", () => guarded("session-purge", purgeExpired), { timezone: TIMEZONE });
   void guarded("catch-up", catchUpIfMissed);
 }
