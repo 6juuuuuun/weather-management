@@ -6,6 +6,7 @@ import { orgRouter } from "./api/org.ts";
 import { contentRouter } from "./api/content.ts";
 import { requireAuth } from "./auth/middleware.ts";
 import { runSend } from "./jobs/send.ts";
+import { startScheduler } from "./jobs/scheduler.ts";
 
 export const app = express();
 app.use(express.json());
@@ -54,4 +55,11 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 const port = Number(process.env.PORT ?? 3000);
 if (process.env.NODE_ENV !== "test") {
   app.listen(port, () => console.log(`[server] listening on ${port}`));
+  // pg_cron이 pg_net으로 앱을 호출하던 구조를 걷어냈다 — 앱이 상시 떠 있으므로
+  // 안에서 스스로 주기를 돈다. vitest는 NODE_ENV를 "test"로 미리 설정해 두므로
+  // (확인됨 — server/vitest.config.ts는 이 값을 건드리지 않는다) 이 가드가 테스트
+  // 중에는 cron 타이머가 뜨지 않게 그대로 막아 준다. app.listen과 같은 가드를
+  // 쓰는 이유: 테스트 프로세스가 계속 살아있게 만드는 것도, 테스트 DB에 실제
+  // tick을 돌리는 것도 여기서 막아야 하는 문제라 정확히 같은 조건이다.
+  startScheduler();
 }
