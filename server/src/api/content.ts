@@ -196,9 +196,12 @@ contentRouter.get("/dispatches", async (req, res) => {
   const includeTest = String(req.query.include_test ?? "") === "true";
   const rows = await withUser(req.user!.accountId, async (q) => {
     const { rows } = await q.query(
+      // event_status·message_status는 화면이 "이미 해제된 특보"의 재발송 버튼을 막는 데
+      // 쓴다(QA W-11) — 서버도 같은 조건으로 거부하지만, 누를 수 있는 버튼을 그려 두면
+      // 승인자는 지난주 관측값이 나가는 줄 모르고 누른다.
       `select d.id, d.message_id, d.event_id, d.sent_at, d.channel, d.repeat_no, d.is_test, d.results, d.content,
-              we.kind, we.grade, we.detected_at,
-              m.content as message_content
+              we.kind, we.grade, we.detected_at, we.status as event_status,
+              m.content as message_content, m.status as message_status
          from dispatches d
          join weather_events we on we.id = d.event_id
          join messages m on m.id = d.message_id

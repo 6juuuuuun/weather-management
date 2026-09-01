@@ -56,6 +56,10 @@ export type DispatchRow = {
   grade: Grade;
   detected_at: string;
   message_content: DeptBlock[];
+  // 이미 해제된 특보를 지난주 관측값으로 재발송할 수 있었다(QA W-11). 서버가 특보와
+  // 메시지의 현재 상태를 함께 내려 주므로, 화면이 그 행의 재발송 버튼을 아예 그리지 않는다.
+  event_status: "PENDING_APPROVAL" | "ACTIVE" | "RESOLVED" | "ESCALATED" | "DISMISSED";
+  message_status: "draft" | "approved";
 };
 
 export const dispatches = (opts?: { limit?: number; since?: string; includeTest?: boolean }) => {

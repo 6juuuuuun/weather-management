@@ -8,6 +8,7 @@ import { EmptyState } from "../components/EmptyState";
 import { useAuth } from "../auth/AuthProvider";
 import { ApiError } from "../lib/api/client";
 import { dispatches as fetchDispatches } from "../lib/api/content";
+import type { DispatchRow as DispatchRowApi } from "../lib/api/content";
 import { callSend } from "../lib/api/send";
 import type { DeptBlock, DispatchResult, Grade, Kind } from "../lib/types";
 import "./History.css";
@@ -47,7 +48,19 @@ type DispatchRow = {
   grade: Grade;
   detected_at: string;
   content: DeptBlock[];
+  event_status: DispatchRowApi["event_status"];
+  message_status: DispatchRowApi["message_status"];
 };
+
+// 재발송이 허용되는 상태(server/src/jobs/send.ts의 resend 게이트와 같은 조건).
+// 이미 해제·격상·무시된 특보를 다시 보내면 obs_line이 그 특보의 트리거 관측이므로
+// **지난주 값이 "현재 관측"으로** 나간다 — 받는 사람은 지금 비가 온다는 뜻으로 읽는다.
+function canResendRow(row: { event_status: string; message_status: string }): boolean {
+  return (
+    (row.event_status === "PENDING_APPROVAL" || row.event_status === "ACTIVE") &&
+    row.message_status === "approved"
+  );
+}
 
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
@@ -133,6 +146,8 @@ export default function History() {
         kind: d.kind,
         grade: d.grade,
         detected_at: d.detected_at,
+        event_status: d.event_status,
+        message_status: d.message_status,
         // 발송 시점 스냅샷 우선, 스냅샷 이전(0004 마이그레이션 이전) 이력은 message_content로 폴백
         content: d.content ?? d.message_content ?? [],
       }));
@@ -354,7 +369,7 @@ export default function History() {
                     </td>
                     <td className="col-repeat">{row.repeat_no}회차</td>
                     <td className="col-action">
-                      {canResend && !row.is_test && (
+                      {canResend && !row.is_test && canResendRow(row) && (
                         <button
                           type="button"
                           className="history-resend-btn"
@@ -450,11 +465,16 @@ export default function History() {
               </>
             ) : (
               canResend &&
-              !selected.is_test && (
+              !selected.is_test &&
+              (canResendRow(selected) ? (
                 <Button variant="primary" onClick={() => setEditMode(true)}>
                   수정 후 재발송
                 </Button>
-              )
+              ) : (
+                <p className="history-footnote">
+                  이미 종료된 특보라 재발송할 수 없습니다 — 그때의 관측값이 "현재 관측"으로 나갑니다.
+                </p>
+              ))
             )
           }
         >

@@ -263,6 +263,36 @@ export async function runSend(
   }
 
   if (body.mode === "resend") {
+    // 재발송은 **열려 있는 특보에만** 허용한다(QA W-11).
+    //
+    // 예전에는 이벤트 상태도 메시지 상태도 보지 않았다. 발송 이력에서 지난주의
+    // 해제된 폭우 주의보를 그대로 다시 보낼 수 있었고, obs_line은 언제나 그 특보의
+    // 트리거 관측이므로 **지난주 값이 "현재 관측"으로** 직원들에게 도착했다.
+    // 받는 사람에게는 지금 비가 오고 있다는 뜻으로 읽힌다.
+    const found = await withService(async (q) => {
+      const { rows: msgRows } = await q.query(
+        "select id, event_id, status from messages where id = $1", [body.message_id]);
+      const msg = msgRows[0];
+      if (!msg) return null;
+      const { rows: evRows } = await q.query("select * from weather_events where id = $1", [msg.event_id]);
+      return { msg, ev: evRows[0] };
+    });
+    if (!found) return { ok: false, status: 404, error: "메시지를 찾을 수 없습니다" };
+    const OPEN = ["PENDING_APPROVAL", "ACTIVE"];
+    if (!OPEN.includes(found.ev?.status)) {
+      return { ok: false, status: 409,
+        error: "이미 종료된 특보는 재발송할 수 없습니다 — 지난 관측값이 '현재 관측'으로 나갑니다. 새 특보를 기다리거나 관리자에게 알려 주세요." };
+    }
+    if (found.msg.status !== "approved") {
+      return { ok: false, status: 409, error: "아직 승인되지 않은 초안은 재발송할 수 없습니다" };
+    }
+    // 승인과 같은 이유로 0명 발송을 성공이라고 하지 않는다(QA W-02).
+    const targetCount = countTargets(body.content);
+    if (targetCount === 0) {
+      return { ok: false, status: 400, recipient_count: 0, sent_count: 0,
+        error: "선택한 부서에 수신자가 한 명도 없습니다 — 재발송해도 아무에게도 전달되지 않습니다." };
+    }
+
     const prepared = await withService(async (q) => {
       const { rows: msgRows } = await q.query(
         `update messages set content = $2::jsonb, updated_by = $3, updated_by_name = $4, updated_at = now()

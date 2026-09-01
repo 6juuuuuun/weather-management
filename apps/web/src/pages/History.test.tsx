@@ -54,6 +54,9 @@ const dispatchRow = {
   kind: "rain" as const,
   grade: "watch" as const,
   detected_at,
+  // 재발송은 아직 열려 있는 특보에만 허용된다(QA W-11) — 서버가 이 두 상태를 함께 준다.
+  event_status: "ACTIVE" as const,
+  message_status: "approved" as const,
 };
 
 // content 스냅샷 컬럼이 없던(0004 이전) 과거 이력 — messages.content로 폴백되어야 함
@@ -96,6 +99,8 @@ const legacyDispatchRow = {
   kind: "snow" as const,
   grade: "warning" as const,
   detected_at: legacyDetectedAt,
+  event_status: "ACTIVE" as const,
+  message_status: "approved" as const,
 };
 
 const mocks = vi.hoisted(() => ({
@@ -176,6 +181,36 @@ describe("History", () => {
     expect(screen.getByText("성공 1")).toBeInTheDocument();
     expect(screen.getByText("3회차")).toBeInTheDocument();
     expect(screen.getAllByText("재발송").length).toBeGreaterThan(0);
+  });
+
+  // 발송 이력에서 이미 해제된 특보를 그대로 다시 보낼 수 있었다(QA W-11). obs_line은
+  // 그 특보의 트리거 관측이므로 **지난주 값이 "현재 관측"으로** 직원들에게 도착한다.
+  it("이미 해제된 특보는 재발송 버튼을 그리지 않는다", async () => {
+    vi.mocked(fetchDispatches).mockResolvedValueOnce([
+      { ...dispatchRow, event_status: "RESOLVED" },
+    ] as never);
+    render(
+      <MemoryRouter>
+        <History />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("폭우")).toBeInTheDocument());
+    expect(screen.queryByText("재발송")).toBeNull();
+  });
+
+  it("해제된 특보의 모달에서는 수정 후 재발송 대신 이유를 보여준다", async () => {
+    vi.mocked(fetchDispatches).mockResolvedValueOnce([
+      { ...dispatchRow, event_status: "RESOLVED" },
+    ] as never);
+    render(
+      <MemoryRouter>
+        <History />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("폭우")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("폭우"));
+    expect(await screen.findByText(/이미 종료된 특보라 재발송할 수 없습니다/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "수정 후 재발송" })).toBeNull();
   });
 
   it("행 클릭 시 모달에 발송 당시 내용이 표시된다", async () => {

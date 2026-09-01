@@ -1169,6 +1169,60 @@ describe("POST /api/send — 모드별 동작", () => {
     expect((await state()).event.status).toBe("ACTIVE");
   });
 
+  // -------------------------------------------------------------------------
+  // 해제된 특보의 재발송 — QA W-11
+  // -------------------------------------------------------------------------
+  //
+  // 발송 이력에서 아무 행이나 열어 재발송을 누르면(확인창 하나) 비가 오지 않고 특보도
+  // 이미 해제된 상태에서 "[곤지암] 폭우 주의보 — 현재 관측: 시간당 0mm"가 직원들에게
+  // 도착했다. obs_line은 언제나 그 특보의 트리거 관측이라 지난주 값이 현재로 나간다.
+  it("이미 해제된 특보는 재발송할 수 없다", async () => {
+    const staff = await makeEmployee({ name: "객실직원", email: "resend-closed-staff@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", staff);
+    const { eventId, messageId, content } = await pendingEventWithDraft(deptId, staff);
+    await withService((q) =>
+      q.query(
+        "update weather_events set status='RESOLVED', closed_at=now(), repeat_count=1 where id=$1", [eventId]));
+    await withService((q) => q.query("update messages set status='approved' where id=$1", [messageId]));
+    const agent = await recipientAgent("resend-closed-recip@gonjiam.com");
+
+    const res = await agent.post("/api/send").send({ mode: "resend", message_id: messageId, content });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/이미 종료된 특보/);
+    // 아무것도 나가지 않았고 회차도 오르지 않았다.
+    const st = await state();
+    expect(st.dispatches).toEqual([]);
+    expect(st.event.repeat_count).toBe(1);
+  });
+
+  it("승인되지 않은 초안은 재발송할 수 없다", async () => {
+    const staff = await makeEmployee({ name: "객실직원", email: "resend-draft-staff@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", staff);
+    const { messageId, content } = await pendingEventWithDraft(deptId, staff);
+    const agent = await recipientAgent("resend-draft-recip@gonjiam.com");
+
+    const res = await agent.post("/api/send").send({ mode: "resend", message_id: messageId, content });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/승인되지 않은 초안/);
+    expect((await state()).dispatches).toEqual([]);
+  });
+
+  // 대조군: 열려 있는 특보의 재발송은 그대로 동작해야 한다(위 게이트가 전부를 막으면
+  // 이력 화면의 재발송 기능 자체가 죽는다).
+  it("열려 있는 특보는 그대로 재발송된다", async () => {
+    const staff = await makeEmployee({ name: "객실직원", email: "resend-open-staff@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", staff);
+    const { eventId, messageId, content } = await pendingEventWithDraft(deptId, staff);
+    await withService((q) =>
+      q.query("update weather_events set status='ACTIVE', repeat_count=1 where id=$1", [eventId]));
+    await withService((q) => q.query("update messages set status='approved' where id=$1", [messageId]));
+    const agent = await recipientAgent("resend-open-recip@gonjiam.com");
+
+    const res = await agent.post("/api/send").send({ mode: "resend", message_id: messageId, content });
+    expect(res.status).toBe(200);
+    expect((await state()).dispatches).toHaveLength(1);
+  });
+
   // 원본은 없는 message_id에 500으로 터졌고(ev.repeat_count 접근), 이식하며 404로 고쳤다.
   // 그 개선을 지키는 테스트가 없으면 `if (!msg) return null` 한 줄이 사라져도 조용하다.
   it("없는 message_id로 재발송하면 404다", async () => {
