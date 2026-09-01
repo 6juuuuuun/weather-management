@@ -6,6 +6,7 @@ import { withService } from "../db.ts";
 import { runWeatherTick } from "./weatherTick.ts";
 import { runRemindTick } from "./remindTick.ts";
 import { purgeExpired } from "../auth/session.ts";
+import { reportIfUnhealthy } from "./watchdog.ts";
 
 // 관측은 매시 1회다. 70분이 지났다면 최소 한 번은 놓친 것이다.
 const STALE_MINUTES = 70;
@@ -68,5 +69,9 @@ export function startScheduler(): void {
   cron.schedule("5 * * * *", () => guarded("weather-tick", runWeatherTick), { timezone: TIMEZONE });
   cron.schedule("*/10 * * * *", () => guarded("remind-tick", runRemindTick), { timezone: TIMEZONE });
   cron.schedule("0 4 * * *", () => guarded("session-purge", purgeExpired), { timezone: TIMEZONE });
+  // 관리형 서비스가 해 주던 "죽었으면 알려 주기"를 앱이 스스로 한다. 6시간마다
+  // 도는 이유: 수집 주기가 1시간이라 130분 기준으로 사고를 판정하는데, 점검을
+  // 그보다 훨씬 자주 돌리면 같은 사고를 반복해서 알려 사람이 무시하게 된다.
+  cron.schedule("0 */6 * * *", () => guarded("watchdog", reportIfUnhealthy), { timezone: TIMEZONE });
   void guarded("catch-up", catchUpIfMissed);
 }

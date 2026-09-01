@@ -8,12 +8,26 @@ import { contentRouter } from "./api/content.ts";
 import { requireAuth } from "./auth/middleware.ts";
 import { runSend } from "./jobs/send.ts";
 import { startScheduler } from "./jobs/scheduler.ts";
+import { checkHealth } from "./jobs/watchdog.ts";
 
 export const app = express();
 app.use(express.json());
 app.use(cookieParser());
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
+
+// /api/health는 "프로세스가 응답하는가"만 본다 — DB가 죽어도, 수집이 몇 시간째
+// 멈춰 있어도 200이다(docker의 healthcheck가 그걸 본다). 운영자가 "정말 잘 돌고
+// 있나"를 확인할 때 볼 곳은 이쪽이다. 문제가 있으면 상태 코드까지 503으로
+// 바뀌므로 사내 모니터링에서 그대로 걸어 쓸 수 있다.
+// 로그인을 요구하지 않는다 — 로그인이 안 되는 상황을 확인하려고 부르는
+// 엔드포인트라 인증을 걸면 쓸모가 없다. 응답에 담기는 것은 "수집이 멈췄다"
+// 같은 상태 문장뿐이라 새어 나갈 개인정보가 없다. 아래 라우터들보다 반드시
+// 앞에 있어야 한다 — 뒤로 밀리면 requireAuth가 먼저 401로 끊는다.
+app.get("/api/health/deep", async (_req, res) => {
+  const h = await checkHealth();
+  res.status(h.ok ? 200 : 503).json(h);
+});
 
 app.use("/api/auth", authRouter);
 app.use("/api/admin/users", adminUserRouter);
