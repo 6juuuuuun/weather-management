@@ -38,7 +38,9 @@ docker compose start app >/dev/null
 # 확인 명령에 실제 포트를 넣는다. .env에 APP_HOST_PORT를 적어 8080이 아닌
 # 곳에서 서비스하는 경우가 있어(docs/운영.md 7-1) 고정으로 8080을 찍으면
 # 운영자가 "복구했는데 응답이 없다"고 오해한다.
-PORT=$(grep -E '^APP_HOST_PORT=[0-9]+' .env 2>/dev/null | tail -1 | cut -d= -f2 || true)
+# 숫자만 뽑는다. cut -d= -f2는 `APP_HOST_PORT=8090   # 설명` 처럼 인라인 주석이
+# 붙은 줄에서 주석까지 함께 가져와, 그대로 붙여 넣을 수 없는 안내가 나갔다.
+PORT=$(sed -n 's/^APP_HOST_PORT=\([0-9][0-9]*\).*/\1/p' .env 2>/dev/null | tail -1 || true)
 [ -n "${PORT:-}" ] || PORT=8080
 
 echo "복구 완료. 잠시 뒤 아래 명령으로 상태를 확인하세요."

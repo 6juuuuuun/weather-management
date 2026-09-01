@@ -18,12 +18,30 @@ set -eu
 cd "$(dirname "$0")/.."
 HERE="$(pwd)"
 
-STAMP=$(date +%Y%m%d-%H%M)
+# 초까지 넣는다. 분 단위였을 때는 같은 분에 두 번 돌리면 앞 파일이 조용히
+# 덮였다(크론은 하루 1회라 실무 영향은 작지만, 손으로 두 번 돌리는 일은 흔하다).
+STAMP=$(date +%Y%m%d-%H%M%S)
 OUT="$BACKUP_DIR/weather-${STAMP}.sql.gz"
-TMP="$OUT.partial"
+# 임시 이름에 PID를 넣어 두 실행이 겹쳐도 서로의 임시 파일을 지우지 않게 한다.
+# 이름은 weather-...sql.gz 로 시작해야 아래 30일 정리 글롭에 걸린다.
+TMP="$OUT.$$.partial"
 RC="$TMP.rc"
 
 cleanup() { rm -f "$TMP" "$RC"; }
+
+# 신호로 끊겨도(서버 재부팅, docker stop, 운영자의 Ctrl+C) 임시 파일을 남기지 않는다.
+# trap이 없던 동안에는 수십 MB짜리 .partial이 백업 디스크에 계속 쌓였다 — 정리
+# 글롭이 .partial을 안 잡아서 영원히 지워지지 않았고, 그게 바로 정리 코드가
+# 막으려던 "디스크가 차서 어느 날 DB가 멈춘다"였다.
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 129' HUP
+trap cleanup EXIT
+
+# 전원이 끊기거나 SIGKILL이면 trap도 못 돈다. 그때 남은 찌꺼기를 다음 백업이
+# 치운다. 하루가 지난 것만 지우므로 지금 돌고 있는 다른 백업은 건드리지 않는다.
+find "$BACKUP_DIR" -name 'weather-*.partial' -mmin +1440 -delete 2>/dev/null || true
+find "$BACKUP_DIR" -name 'weather-*.partial.rc' -mmin +1440 -delete 2>/dev/null || true
 
 # 실패한 덤프가 정상 백업처럼 남으면, 그것이 가짜라는 사실은 복구가 필요한
 # 바로 그 순간에 밝혀진다. 백업이 아예 없는 것보다 나쁘다 — 없으면 운영자가
@@ -73,7 +91,8 @@ mv "$TMP" "$OUT"
 # 30일이 지난 백업은 지운다. 안 지우면 디스크가 차서 어느 날 DB가 멈춘다.
 # 이 줄은 위 검사를 전부 통과한 뒤에만 닿는다 — 오늘 백업이 실패했는데
 # 멀쩡한 예전 백업을 지워 버리면 안 된다.
-find "$BACKUP_DIR" -name 'weather-*.sql.gz' -mtime +30 -delete
+# 글롭 끝의 *는 남아 있을 수 있는 .partial 찌꺼기까지 덮는다(위 trap이 못 돈 경우).
+find "$BACKUP_DIR" -name 'weather-*.sql.gz*' -mtime +30 -delete
 
 SIZE=$(wc -c < "$OUT" | tr -d ' ')
 echo "백업 완료(검사 통과): $OUT (${SIZE}바이트)"
