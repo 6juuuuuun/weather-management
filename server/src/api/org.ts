@@ -2,7 +2,7 @@ import { Router } from "express";
 import { UUID, withUser, withService } from "../db.ts";
 import { requireAuth, requireAdmin } from "../auth/middleware.ts";
 import { isAllowedEmailDomain } from "../auth/emailDomain.ts";
-import { linkKakaoworkUserId } from "../kakaoLink.ts";
+import { linkKakaoworkUserId, clearKakaoworkUserId } from "../kakaoLink.ts";
 
 export const orgRouter = Router();
 orgRouter.use(requireAuth);
@@ -199,8 +199,14 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
   }
   if (sets.length === 0) return res.status(400).json({ error: "변경할 값이 없습니다" });
   let rows: any[];
+  // 바꾸기 **전**의 이메일을 같은 트랜잭션에서 함께 읽는다. 아래에서 "이메일이 실제로
+  // 바뀌었는가"를 판정하는 데 쓴다 — 화면의 수정 폼은 바뀌지 않은 이메일도 매번 함께
+  // 보내므로, 그 구분 없이 다시 조회하면 무관한 저장 한 번마다 연결이 흔들린다.
+  let prevEmail: string | null = null;
   try {
     rows = await withUser(req.user!.accountId, async (q) => {
+      const { rows: before } = await q.query("select email from employees where id = $1", [req.params.id]);
+      prevEmail = (before[0]?.email ?? null) as string | null;
       const { rows } = await q.query(
         `update employees set ${sets.join(", ")} where id = $1 returning ${EMP_COLS}`,
         vals,
@@ -222,9 +228,22 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
   // 이메일이 바뀌면 카카오워크 연결도 다시 맞춰야 한다 — 옛 이메일로 조회한 id가
   // 그대로 남으면 그 직원의 특보가 남의 계정으로 간다. 관리자가 이 요청에서
   // kakaowork_user_id를 직접 지정했다면 그 값을 존중하고 조회하지 않는다.
-  if ("email" in body && !("kakaowork_user_id" in body)) {
+  // 이메일이 실제로 달라졌을 때만 움직인다(수정 폼이 같은 값을 매번 보낸다).
+  if ("email" in body && !("kakaowork_user_id" in body) && prevEmail !== rows[0].email) {
     const out = await linkKakaoworkUserId(rows[0].email);
-    if (out.linked) rows[0].kakaowork_user_id = out.linked;
+    if (out.linked) {
+      rows[0].kakaowork_user_id = out.linked;
+    } else if (rows[0].kakaowork_user_id !== null) {
+      // 조회가 실패했다(봇 키 없음·네트워크 오류·새 이메일의 카카오워크 계정 없음).
+      // 여기서 옛 값을 그대로 두면 **바로 위 주석이 경고한 그 상태**가 된다:
+      // 이 직원 앞으로 나가는 특보가 옛 이메일 주인의 계정으로 간다. 인사이동으로
+      // 이메일이 넘어간 경우라면 낯선 사람이 남의 특보 DM을 받는다.
+      // 지워서 "미연결"로 떨어뜨린다 — 미연결은 하루 한 번 도는 재시도와 관리자의
+      // 수동 입력으로 복구되고, 그 사실이 셋업 체크리스트·/api/health/deep·워치독에
+      // 드러난다. 잘못 간 DM은 복구도 발견도 안 된다.
+      await clearKakaoworkUserId(rows[0].id);
+      rows[0].kakaowork_user_id = null;
+    }
   }
   res.json(rows[0]);
 });

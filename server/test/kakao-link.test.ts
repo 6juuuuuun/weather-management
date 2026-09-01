@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import request from "supertest";
 import { app } from "../src/index.ts";
 import { withService } from "../src/db.ts";
-import { linkKakaoworkUserId, relinkUnlinked } from "../src/kakaoLink.ts";
+import { linkKakaoworkUserId, relinkUnlinked, LOOKUP_TIMEOUT_MS } from "../src/kakaoLink.ts";
 import { runKakaoLinkTick } from "../src/jobs/kakaoLinkTick.ts";
 
 // 이 파일이 닫는 구멍: 이관된 시스템에는 employees.kakaowork_user_id를 채우는 경로가
@@ -33,6 +33,7 @@ const EMAILS = [
   "link-c@gonjiam.com",
   "link-admin@gonjiam.com",
   "link-new@gonjiam.com",
+  "link-moved@gonjiam.com",
 ];
 
 beforeEach(async () => {
@@ -137,6 +138,80 @@ describe("카카오워크 연결 — 값이 채워진다", () => {
   });
 });
 
+// 재리뷰 N-1. 이 라운드가 만든 결함이고, 방향이 나머지와 반대다: 다른 항목들은
+// "알림이 안 간다"였는데 이건 **알림이 엉뚱한 사람에게 간다**.
+//
+// 이메일을 바꾸면 새 이메일로 다시 조회하는데, 조회가 실패하면 예전에는 행을 그대로
+// 뒀다 — 옛 이메일로 얻은 id가 남는다. 인사이동으로 이메일이 넘어간 경우라면 그
+// 직원의 특보 DM이 옛 주인의 카카오워크 계정으로 간다. 하루 한 번 도는 재시도는
+// kakaowork_user_id가 null인 행만 보므로 이 상태를 영원히 고치지 못한다.
+//
+// 성공 갈래만 테스트하던 자리다(위 "이메일을 고치면 새 이메일로 다시 조회한다"가
+// 바로 이 위험을 이름으로 달고 있으면서 실패 갈래를 덮지 않았다). 여기서 덮는다.
+describe("이메일이 바뀌었는데 재조회가 실패하면 옛 연결을 지운다", () => {
+  /** 옛 이메일(link-b)로 연결된 직원을 하나 만든다. */
+  async function linkedEmployee() {
+    stubKakaoworkDirectory({ "link-b@gonjiam.com": "kw-OLD-PERSON", "link-admin@gonjiam.com": "kw-admin" });
+    const admin = await adminAgent();
+    const created = await admin
+      .post("/api/employees")
+      .send({ name: "이동자", email: "link-b@gonjiam.com", department_id: null, role: "staff" });
+    expect(created.body.kakaowork_user_id).toBe("kw-OLD-PERSON");
+    return { admin, id: created.body.id as string };
+  }
+
+  it("새 이메일의 카카오워크 계정이 없으면 옛 id가 남지 않는다", async () => {
+    const { admin, id } = await linkedEmployee();
+    // 새 이메일은 카카오워크 명부에 없다.
+    stubKakaoworkDirectory({ "link-b@gonjiam.com": "kw-OLD-PERSON" });
+    const res = await admin.patch(`/api/employees/${id}`).send({ email: "link-moved@gonjiam.com" });
+    expect(res.status).toBe(200);
+    expect(res.body.kakaowork_user_id).toBe(null);
+    expect(await kakaoIdOf("link-moved@gonjiam.com")).toBe(null);
+  });
+
+  it("조회가 네트워크 오류로 터져도 옛 id가 남지 않는다", async () => {
+    const { admin, id } = await linkedEmployee();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("ECONNRESET"))));
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await admin.patch(`/api/employees/${id}`).send({ email: "link-moved@gonjiam.com" });
+    expect(res.status).toBe(200);
+    expect(res.body.kakaowork_user_id).toBe(null);
+    expect(await kakaoIdOf("link-moved@gonjiam.com")).toBe(null);
+    err.mockRestore();
+  });
+
+  it("봇 키가 없어도 옛 id가 남지 않는다", async () => {
+    const { admin, id } = await linkedEmployee();
+    process.env.KAKAOWORK_BOT_KEY = "";
+    const res = await admin.patch(`/api/employees/${id}`).send({ email: "link-moved@gonjiam.com" });
+    expect(res.status).toBe(200);
+    expect(res.body.kakaowork_user_id).toBe(null);
+  });
+
+  // 화면의 수정 폼은 바뀌지 않은 이메일도 매번 함께 보낸다. 그때까지 다시 조회하면
+  // 무관한 저장 한 번마다 연결이 흔들리고, 관리자가 손으로 넣은 값이 조용히 지워진다.
+  it("이메일이 그대로면 연결을 건드리지 않는다", async () => {
+    const { admin, id } = await linkedEmployee();
+    stubKakaoworkDirectory({}); // 지금 조회하면 반드시 실패한다
+    const res = await admin.patch(`/api/employees/${id}`).send({ email: "link-b@gonjiam.com", name: "이름만 수정" });
+    expect(res.status).toBe(200);
+    expect(res.body.kakaowork_user_id).toBe("kw-OLD-PERSON");
+    expect(res.body.name).toBe("이름만 수정");
+  });
+
+  // 관리자가 같은 요청에서 값을 직접 지정했다면 그것이 이긴다(수동 교정 경로).
+  it("이메일과 kakaowork_user_id를 함께 보내면 관리자가 지정한 값이 남는다", async () => {
+    const { admin, id } = await linkedEmployee();
+    stubKakaoworkDirectory({});
+    const res = await admin
+      .patch(`/api/employees/${id}`)
+      .send({ email: "link-moved@gonjiam.com", kakaowork_user_id: "kw-MANUAL" });
+    expect(res.status).toBe(200);
+    expect(res.body.kakaowork_user_id).toBe("kw-MANUAL");
+  });
+});
+
 // 알림 연결이 안 됐다고 사람이 시스템에 못 들어오게 만들면 안 된다.
 describe("카카오워크 연결 실패가 가입·등록을 막지 않는다", () => {
   it("봇 키가 없어도 가입은 성공한다 (값만 비어 있다)", async () => {
@@ -179,6 +254,44 @@ describe("카카오워크 연결 실패가 가입·등록을 막지 않는다", 
         resolve: () => Promise.reject(new Error("boom")),
       }),
     ).resolves.toEqual({ linked: null, reason: "error" });
+  });
+});
+
+// 재리뷰 N-2. 이 조회는 가입·직원등록 요청 안에서 동기적으로 일어난다. 상대가 응답을
+// 아예 주지 않으면(방화벽이 패킷을 버리는 사내망에서 실제로 그렇다) 제한이 없는 fetch는
+// 하염없이 기다리고, 그동안 가입 화면이 멈춘 것처럼 보인다. shared/kakaowork.ts는
+// 바이트 동일성 때문에 못 고치므로 그 함수가 받아 주는 fetchFn 자리에서 묶는다.
+describe("조회에 시간 제한이 걸려 있다", () => {
+  it("응답이 오지 않으면 스스로 끊고 실패로 돌려준다", async () => {
+    // 시그널이 오면 그때 끊고, 시그널이 없으면 **영원히 매달린다** — 제한이 사라지면
+    // 이 테스트는 통과가 아니라 타임아웃으로 죽는다(변이로 확인함).
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: unknown, init?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            const signal = init?.signal;
+            if (!signal) return;
+            signal.addEventListener("abort", () => reject(signal.reason));
+          }),
+      ),
+    );
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    // 제한이 없으면 이 호출은 영영 끝나지 않는다. 그때 스위트를 통째로 매달아 두는
+    // 대신, 감시 타이머와 경주시켜 **깔끔한 실패**로 만든다.
+    const HUNG = Symbol("hung");
+    const out = await Promise.race([
+      linkKakaoworkUserId("link-a@gonjiam.com", { botKey: "k", timeoutMs: 60 }),
+      new Promise((resolve) => setTimeout(() => resolve(HUNG), 1500)),
+    ]);
+    expect(out).not.toBe(HUNG); // 스스로 끊지 못하면 여기서 잡힌다
+    expect(out).toEqual({ linked: null, reason: "error" });
+    err.mockRestore();
+  });
+
+  it("기본 제한이 사람이 기다릴 만한 값으로 정해져 있다", () => {
+    expect(LOOKUP_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(LOOKUP_TIMEOUT_MS).toBeLessThanOrEqual(5000);
   });
 });
 

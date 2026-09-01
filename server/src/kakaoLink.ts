@@ -21,7 +21,29 @@ import { resolveKakaoworkUserIdByEmail } from "./shared/kakaowork.ts";
 import { withService } from "./db.ts";
 
 /** shared/kakaowork.ts의 조회 함수와 같은 모양. 테스트에서만 갈아 끼운다. */
-export type Resolver = (botKey: string, email: string) => Promise<string | null>;
+export type Resolver = (botKey: string, email: string, fetchFn?: typeof fetch) => Promise<string | null>;
+
+/**
+ * 카카오워크 사용자 조회에 거는 제한 시간.
+ *
+ * 이 조회는 가입·직원등록 요청 안에서 동기적으로 일어난다. 상대가 응답을 아예 주지
+ * 않으면(방화벽이 패킷을 버리거나 사내망이 그쪽으로 못 나갈 때가 실제로 그렇다)
+ * fetch는 기본적으로 기다릴 수 있는 만큼 기다린다 — 그동안 가입 화면이 멈춰 있다.
+ * 실패해도 가입은 성공하므로(fail-open) 이건 정확성이 아니라 체감의 문제지만,
+ * 사람이 "먹통이다"라고 판단하기에 충분한 시간이다.
+ *
+ * shared/kakaowork.ts는 원본과 바이트 단위로 같아야 해서 그 안에서 제한을 걸 수 없다.
+ * 대신 그 함수가 받아 주는 fetchFn 자리에 시간 제한이 붙은 fetch를 넣어 호출부에서 묶는다.
+ */
+export const LOOKUP_TIMEOUT_MS = 3000;
+
+/** ms 안에 응답이 없으면 스스로 끊는 fetch. 전역 fetch는 호출 시점에 찾는다(테스트가 갈아 끼운다). */
+function fetchWithTimeout(ms: number): typeof fetch {
+  // 인자 타입을 전역 fetch에서 그대로 끌어온다 — RequestInfo 같은 DOM 전용 이름을
+  // 직접 쓰면 서버 tsconfig(lib에 DOM이 없다)에서 타입체크가 깨진다.
+  return ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+    fetch(input, { ...init, signal: AbortSignal.timeout(ms) })) as typeof fetch;
+}
 
 /** 봇 키가 없으면 조회 자체가 불가능하다(설치 직후·시연 모드). null을 돌려준다. */
 function botKey(): string | null {
@@ -32,13 +54,32 @@ function botKey(): string | null {
 export type LinkResult = { linked: string | null; reason: "ok" | "no-bot-key" | "not-found" | "error" };
 
 /**
+ * 조회로 새 값을 얻지 못했을 때 남아 있는 값을 지운다.
+ *
+ * 이메일이 바뀐 뒤에만 쓴다. 옛 이메일로 얻은 id를 그대로 두면 그 직원의 특보가
+ * **다른 사람의 카카오워크 계정으로** 간다 — 인사이동 뒤 낯선 사람에게 DM이 가는
+ * 상태다. 못 받는 것과 남이 받는 것 중에는 못 받는 쪽이 낫다: 미연결은 하루 한 번
+ * 도는 재시도(relinkUnlinked)와 관리자의 수동 입력으로 복구되고, 그 사실이
+ * 셋업 체크리스트·/api/health/deep·워치독에 드러난다. 잘못 간 DM은 둘 다 아니다.
+ */
+export async function clearKakaoworkUserId(employeeId: string): Promise<void> {
+  try {
+    await withService((q) =>
+      q.query("update employees set kakaowork_user_id = null where id = $1", [employeeId]),
+    );
+  } catch (e) {
+    console.error(`[kakaowork] ${employeeId}의 옛 연결 삭제 실패:`, e);
+  }
+}
+
+/**
  * 회사 이메일로 카카오워크 user id를 조회해 employees 행에 채운다.
  * 이미 값이 있으면 덮어쓴다(이메일이 바뀌었거나 계정이 새로 만들어진 경우가 있다).
  * 어떤 이유로 실패하든 던지지 않고 이유를 돌려준다.
  */
 export async function linkKakaoworkUserId(
   email: string,
-  deps: { resolve?: Resolver; botKey?: string | null } = {},
+  deps: { resolve?: Resolver; botKey?: string | null; timeoutMs?: number } = {},
 ): Promise<LinkResult> {
   const key = deps.botKey !== undefined ? deps.botKey : botKey();
   if (!key) {
@@ -48,7 +89,7 @@ export async function linkKakaoworkUserId(
   const resolve = deps.resolve ?? resolveKakaoworkUserIdByEmail;
   let id: string | null = null;
   try {
-    id = await resolve(key, email);
+    id = await resolve(key, email, fetchWithTimeout(deps.timeoutMs ?? LOOKUP_TIMEOUT_MS));
   } catch (e) {
     // 네트워크·파싱 오류. 가입·등록을 막지 않는다.
     console.error(`[kakaowork] ${email} 조회 실패:`, e);
@@ -80,7 +121,7 @@ export async function linkKakaoworkUserId(
  * 영원히 미연결로 남는다.
  */
 export async function relinkUnlinked(
-  deps: { resolve?: Resolver; botKey?: string | null; limit?: number } = {},
+  deps: { resolve?: Resolver; botKey?: string | null; limit?: number; timeoutMs?: number } = {},
 ): Promise<{ candidates: number; linked: number }> {
   const key = deps.botKey !== undefined ? deps.botKey : botKey();
   if (!key) {
@@ -98,7 +139,11 @@ export async function relinkUnlinked(
   });
   let linked = 0;
   for (const email of emails) {
-    const out = await linkKakaoworkUserId(email, { resolve: deps.resolve, botKey: key });
+    const out = await linkKakaoworkUserId(email, {
+      resolve: deps.resolve,
+      botKey: key,
+      timeoutMs: deps.timeoutMs,
+    });
     if (out.linked) linked++;
   }
   if (emails.length > 0) {
