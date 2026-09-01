@@ -21,7 +21,7 @@ const dockerfile = readFileSync(join(here, "..", "Dockerfile"), "utf8");
 function dockerNodeFlags(): string[] {
   const line = dockerfile.split("\n").find((l) => l.trimStart().startsWith("CMD"));
   if (!line) throw new Error("Dockerfile에 CMD가 없습니다");
-  return [...line.matchAll(/"(--[^"]+)"/g)].map((m) => m[1]);
+  return [...line.matchAll(/"(--[^"]+)"/g)].map((m) => m[1]!);
 }
 
 function scriptNodeFlags(script: string): string[] {

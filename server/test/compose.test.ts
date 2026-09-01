@@ -25,7 +25,7 @@ function serviceValue(service: string, key: string): string | null {
     }
     if (!inside) continue;
     const kv = new RegExp(`^ {4}${key}:\\s*(.+?)\\s*$`).exec(line);
-    if (kv) return kv[1].replace(/^"|"$/g, "");
+    if (kv?.[1] !== undefined) return kv[1].replace(/^"|"$/g, "");
   }
   return null;
 }
