@@ -11,6 +11,12 @@ FILE="${1:?복구할 파일 경로를 넘기세요 (예: ./ops/restore.sh /backu
 
 cd "$(dirname "$0")/.."
 
+# 덮어쓰기 전에 백업 파일부터 검사한다. 중간에 끊긴 덤프로 복구하면
+# 데이터베이스가 비고 앱이 뜨지 않는데, 그때는 되돌릴 원본이 이미 없다.
+echo "백업 파일을 검사합니다..."
+./ops/verify-backup.sh "$FILE"
+
+echo
 echo "경고: 현재 데이터를 모두 덮어씁니다."
 echo "  복구할 파일: $FILE"
 echo "취소하려면 지금 Ctrl+C를 누르세요. 5초 후 시작합니다."
@@ -29,5 +35,11 @@ gunzip -c "$FILE" | docker compose exec -T postgres psql -U postgres -d weather 
 echo "앱을 다시 띄웁니다..."
 docker compose start app >/dev/null
 
+# 확인 명령에 실제 포트를 넣는다. .env에 APP_HOST_PORT를 적어 8080이 아닌
+# 곳에서 서비스하는 경우가 있어(docs/운영.md 7-1) 고정으로 8080을 찍으면
+# 운영자가 "복구했는데 응답이 없다"고 오해한다.
+PORT=$(grep -E '^APP_HOST_PORT=[0-9]+' .env 2>/dev/null | tail -1 | cut -d= -f2 || true)
+[ -n "${PORT:-}" ] || PORT=8080
+
 echo "복구 완료. 잠시 뒤 아래 명령으로 상태를 확인하세요."
-echo "  curl -s localhost:8080/api/health/deep"
+echo "  curl -s localhost:$PORT/api/health/deep"
