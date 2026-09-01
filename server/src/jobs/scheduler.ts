@@ -7,6 +7,7 @@ import { runWeatherTick } from "./weatherTick.ts";
 import { runRemindTick } from "./remindTick.ts";
 import { purgeExpired } from "../auth/session.ts";
 import { reportIfUnhealthy } from "./watchdog.ts";
+import { runKakaoLinkTick } from "./kakaoLinkTick.ts";
 
 // 관측은 매시 1회다. 70분이 지났다면 최소 한 번은 놓친 것이다.
 const STALE_MINUTES = 70;
@@ -73,5 +74,11 @@ export function startScheduler(): void {
   // 도는 이유: 수집 주기가 1시간이라 130분 기준으로 사고를 판정하는데, 점검을
   // 그보다 훨씬 자주 돌리면 같은 사고를 반복해서 알려 사람이 무시하게 된다.
   cron.schedule("0 */6 * * *", () => guarded("watchdog", reportIfUnhealthy), { timezone: TIMEZONE });
+  // 카카오워크 연결이 안 된 직원을 하루 한 번 다시 조회한다. 연결 실패의 흔한 원인은
+  // 나중에 고쳐지기 때문이다(설치 직후엔 봇 키가 없고, 카카오워크 계정이 늦게 만들어지고,
+  // 이메일 오타를 며칠 뒤 고친다). 가입·등록 시점 한 번만 시도하면 그 사람들은 영원히
+  // 미연결로 남고, 그만큼 특보가 덜 전달된다. 새벽에 도는 이유는 카카오워크 API를
+  // 사람이 쓰는 시간대에 여러 번 두드리지 않기 위해서다.
+  cron.schedule("20 5 * * *", () => guarded("kakao-link", runKakaoLinkTick), { timezone: TIMEZONE });
   void guarded("catch-up", catchUpIfMissed);
 }

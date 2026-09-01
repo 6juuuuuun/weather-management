@@ -2,6 +2,7 @@ import { Router } from "express";
 import { UUID, withUser, withService } from "../db.ts";
 import { requireAuth, requireAdmin } from "../auth/middleware.ts";
 import { isAllowedEmailDomain } from "../auth/emailDomain.ts";
+import { linkKakaoworkUserId } from "../kakaoLink.ts";
 
 export const orgRouter = Router();
 orgRouter.use(requireAuth);
@@ -160,9 +161,22 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
   if ("department_id" in body && body.department_id !== null && !UUID.test(String(body.department_id))) {
     return res.status(400).json({ error: "department_id 형식이 올바르지 않습니다" });
   }
+  // kakaowork_user_id는 보통 서버가 이메일로 조회해 채운다(kakaoLink.ts). 그런데
+  // 조회가 실패하는 경우가 실제로 있다: 카카오워크 계정 이메일이 회사 이메일과 다르거나,
+  // 봇이 그 사용자를 못 찾거나, 조직 이관 중이거나. 그때 관리자가 손으로 넣을 수 있는
+  // 길이 없으면 그 사람은 영원히 특보를 못 받는다 — 이 라우트는 requireAdmin이다.
+  // 빈 문자열은 "지운다"는 뜻으로 받아 null로 저장한다(공백만 든 값이 들어가면
+  // is not null 필터를 통과해 발송이 카카오워크 API 오류로 실패한다).
+  if ("kakaowork_user_id" in body) {
+    const raw = body.kakaowork_user_id;
+    if (raw !== null && typeof raw !== "string") {
+      return res.status(400).json({ error: "kakaowork_user_id는 문자열이거나 null이어야 합니다" });
+    }
+    body.kakaowork_user_id = raw === null || String(raw).trim() === "" ? null : String(raw).trim();
+  }
   const sets: string[] = [];
   const vals: unknown[] = [req.params.id];
-  for (const key of ["name", "role", "department_id", "phone"] as const) {
+  for (const key of ["name", "role", "department_id", "phone", "kakaowork_user_id"] as const) {
     if (key in body) {
       vals.push(body[key]);
       sets.push(`${key} = $${vals.length}`);
@@ -205,6 +219,13 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
     throw e;
   }
   if (rows.length === 0) return res.status(404).json({ error: "직원을 찾을 수 없습니다" });
+  // 이메일이 바뀌면 카카오워크 연결도 다시 맞춰야 한다 — 옛 이메일로 조회한 id가
+  // 그대로 남으면 그 직원의 특보가 남의 계정으로 간다. 관리자가 이 요청에서
+  // kakaowork_user_id를 직접 지정했다면 그 값을 존중하고 조회하지 않는다.
+  if ("email" in body && !("kakaowork_user_id" in body)) {
+    const out = await linkKakaoworkUserId(rows[0].email);
+    if (out.linked) rows[0].kakaowork_user_id = out.linked;
+  }
   res.json(rows[0]);
 });
 
@@ -254,6 +275,10 @@ orgRouter.post("/employees", requireAdmin, async (req, res) => {
     if (rows === null) {
       return res.status(400).json({ error: `department_id ${departmentId}에 해당하는 부서가 없습니다` });
     }
+    // 사전 등록된 직원도 곧바로 카카오워크에 연결한다. 이 사람이 Alert 수신자로
+    // 지정되는 것은 대개 등록 직후인데, 그때 연결이 없으면 승인 요청이 안 간다.
+    const linked = await linkKakaoworkUserId(email);
+    if (linked.linked) rows[0].kakaowork_user_id = linked.linked;
     res.status(201).json(rows[0]);
   } catch (e: any) {
     // employees.email은 unique다 — 이미 있는 이메일로 사전 등록을 시도한 경우.
@@ -339,7 +364,10 @@ orgRouter.put("/alert-recipients", requireAdmin, async (req, res) => {
 orgRouter.get("/alert-recipients", async (req, res) => {
   const rows = await withUser(req.user!.accountId, async (q) => {
     const { rows } = await q.query(
-      `select ar.employee_id, e.name, e.role
+      // kakaowork_user_id를 함께 내려준다 — 화면(대시보드 셋업 체크리스트·알림 설정)이
+      // "특보를 받을 수 있는 사람이 실제로 있는가"를 이 값으로 센다. 없으면 화면은
+      // 수신자가 지정돼 있다는 것만 보고 "준비 완료"라고 말한다(그게 F-0의 절반이었다).
+      `select ar.employee_id, e.name, e.role, e.kakaowork_user_id
          from alert_recipients ar join employees e on e.id = ar.employee_id
         order by e.name`,
     );

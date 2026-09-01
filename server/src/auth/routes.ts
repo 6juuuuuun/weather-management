@@ -4,6 +4,7 @@ import { hash, verify, temporaryPassword } from "./password.ts";
 import { issue, lookup, revoke } from "./session.ts";
 import { COOKIE, requireAuth, requireAdmin } from "./middleware.ts";
 import { isAllowedEmailDomain } from "./emailDomain.ts";
+import { linkKakaoworkUserId } from "../kakaoLink.ts";
 
 const MAX_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
@@ -72,6 +73,12 @@ authRouter.post("/signup", async (req, res) => {
     if (e?.code === "23505") return res.status(409).json({ error: "이미 가입된 이메일입니다" });
     throw e;
   }
+  // 옛 시스템에서는 매직링크 로그인이 곧 카카오워크 연결이었다(supabase/functions/
+  // auth-kakaowork). 그 절차가 사라지면서 이 값을 채우는 경로가 시스템에 하나도 남지
+  // 않았고, 모든 알림이 0명에게 갔다. 가입이 그 자리를 대신한다.
+  // linkKakaoworkUserId는 절대 던지지 않는다 — 봇 키가 없거나 조회가 실패해도
+  // 가입 자체는 성공해야 한다. DM으로 닿을 수 없는 사람도 시스템에는 들어와야 한다.
+  await linkKakaoworkUserId(email);
   res.status(201).json({ ok: true });
 });
 

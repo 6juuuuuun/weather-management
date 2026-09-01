@@ -41,6 +41,8 @@ loadRootEnv();
 
 export default defineConfig({
   test: {
+    // 실제 카카오워크로 나가는 것을 한 곳에서 막는다(test/setup.ts 주석 참고).
+    setupFiles: ["./test/setup.ts"],
     // 여러 테스트 파일이 같은 실제 Postgres 컨테이너의 auth_accounts 등을
     // beforeEach에서 지웠다 채운다. 파일을 병렬로 돌리면 한 파일의 삭제가
     // 다른 파일이 방금 만든 행을 지워 버려 조용히 실패한다(주로
