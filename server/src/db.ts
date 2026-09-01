@@ -17,6 +17,18 @@ pg.types.setTypeParser(pg.types.builtins.NUMERIC, (v) => parseFloat(v));
 const userPool = new pg.Pool({ connectionString: process.env.DATABASE_URL_USER });
 const servicePool = new pg.Pool({ connectionString: process.env.DATABASE_URL_SERVICE });
 
+// pg.Pool은 "빌려 쓰지 않고 놀고 있는" 커넥션이 서버 쪽에서 끊기면 error를
+// 던진다(Postgres 재시작, 관리자의 pg_terminate_backend, 네트워크 단절).
+// EventEmitter는 리스너가 하나도 없는 'error'를 예외로 다시 던지므로, 리스너가
+// 없으면 그 순간 Node 프로세스가 통째로 죽는다 — Postgres 컨테이너를 한 번
+// 재시작한 것만으로 앱이 내려간다는 뜻이다. compose의 restart: unless-stopped가
+// 다시 띄워 주긴 하지만, 무인 운영 시스템이 그 복구에 기대면 안 된다.
+// 로그만 남기고 흘려보낸다: 끊긴 커넥션은 pg가 알아서 풀에서 버리고, 다음
+// 요청은 새 커넥션으로 정상 처리된다.
+for (const [name, pool] of [["user", userPool], ["service", servicePool]] as const) {
+  pool.on("error", (err) => console.error(`[db] ${name} 풀의 유휴 커넥션 오류:`, err));
+}
+
 async function inTx<T>(pool: pg.Pool, setup: string | null, fn: (q: Querier) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   try {

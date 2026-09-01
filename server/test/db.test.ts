@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { withUser, withService, __debugUserPoolLeftoverUserId } from "../src/db.ts";
 
 describe("권한 통로", () => {
@@ -47,5 +47,54 @@ describe("권한 통로", () => {
     await expect(
       withUser("'; drop table employees; --", async () => undefined),
     ).rejects.toThrow(/사용자 ID/);
+  });
+});
+
+// Postgres가 재시작하면(운영 중 흔한 일이다 — 컨테이너 재기동, 백업 후 복구)
+// 그 시점에 풀에서 놀고 있던 커넥션이 전부 서버 쪽에서 끊긴다. pg.Pool은 그때
+// 'error'를 emit하는데, 리스너가 하나도 없으면 EventEmitter가 그것을 예외로
+// 다시 던져 Node 프로세스가 통째로 죽는다.
+//
+// 이 테스트는 그 상황을 실제로 만든다: 커넥션을 하나 만들어 유휴 상태로 풀에
+// 남긴 뒤, 다른 커넥션에서 그 백엔드를 강제 종료한다. 리스너를 지우면
+// uncaughtException이 나면서 이 파일이 통째로 실패한다(변이 확인함).
+describe("유휴 커넥션이 서버 쪽에서 끊길 때", () => {
+  it("프로세스를 죽이지 않고 로그만 남긴다", async () => {
+    // 풀에 유휴 커넥션을 여러 개 만들어 둔다. 동시에 빌려야 풀이 커넥션을
+    // 실제로 여러 개 연다 — 순차로 부르면 같은 커넥션 하나를 재사용해서
+    // "놀고 있는 커넥션"이 생기지 않는다.
+    await Promise.all([
+      withService((q) => q.query("select pg_sleep(0.1)")),
+      withService((q) => q.query("select pg_sleep(0.1)")),
+      withService((q) => q.query("select pg_sleep(0.1)")),
+    ]);
+
+    const logged: unknown[][] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logged.push(args);
+    });
+    try {
+      // 지금 이 질의가 쓰는 커넥션만 빼고, 같은 역할의 놀고 있는 백엔드를 끊는다.
+      // (다른 역할의 백엔드는 권한상 끊을 수 없으므로 대상에 넣지 않는다.)
+      const killed = await withService(async (q) => {
+        const { rows } = await q.query(
+          `select pg_terminate_backend(pid) from pg_stat_activity
+            where usename = current_user and pid <> pg_backend_pid()`,
+        );
+        return rows.length;
+      });
+      expect(killed).toBeGreaterThan(0);
+
+      // 끊김이 풀까지 전달될 시간을 준다.
+      await new Promise((r) => setTimeout(r, 500));
+      const text = logged.map((a) => a.map(String).join(" ")).join("\n");
+      expect(text).toMatch(/유휴 커넥션 오류/);
+    } finally {
+      spy.mockRestore();
+    }
+
+    // 끊긴 뒤에도 다음 질의는 새 커넥션으로 정상 처리돼야 한다.
+    const { rows } = await withService((q) => q.query("select 1 as n"));
+    expect(rows[0].n).toBe(1);
   });
 });

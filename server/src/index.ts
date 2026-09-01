@@ -69,6 +69,13 @@ app.use("/api", (_req, res) => res.status(404).json({ error: "없는 경로입�
 
 app.use(express.static(webRoot));
 
+// SPA 폴백 경로 패턴. 상수로 빼 둔 이유는 test/static.test.ts가 이 값 자체를
+// 가져다 "라우트가 이것 하나뿐인 빈 express 앱"에 걸고 GET /를 확인하기
+// 위해서다 — 실제 app에서는 express.static이 먼저 / 에 index.html을 내주므로
+// 여기서 {}를 지워 "/*splat"으로 바꿔도 어떤 테스트도 깨지지 않았다(변이 확인함).
+// 상수로 노출해야만 그 한 글자를 단독으로 고정할 수 있다.
+export const SPA_FALLBACK = "/{*splat}";
+
 // 화면 전환을 react-router가 브라우저에서 하므로 /criteria 같은 경로에는 실제
 // 파일이 없다. 그 경로에서 새로고침하면 404가 나므로 index.html로 넘긴다 —
 // 지운 wrangler.jsonc의 not_found_handling: "single-page-application"이 하던 일이다.
@@ -78,7 +85,7 @@ app.use(express.static(webRoot));
 // 라우트 "등록" 시점에 예외를 던져 서버가 아예 뜨지 않는다(실제로 확인함).
 // v8 문법에서 "0개 이상의 세그먼트"는 이름 붙인 와일드카드를 선택 그룹 {}로
 // 감싼 형태다. {}를 빼고 "/*splat"으로 쓰면 루트 "/"가 매치되지 않는다.
-app.get("/{*splat}", (_req, res) => res.sendFile(path.join(webRoot, "index.html")));
+app.get(SPA_FALLBACK, (_req, res) => res.sendFile(path.join(webRoot, "index.html")));
 
 // 잡히지 않은 예외(예: enum에 없는 값을 그대로 바인딩해 나는 DB 오류)가
 // Express 기본 핸들러로 새면 스택트레이스와 서버 내부 파일 경로가 담긴 HTML이

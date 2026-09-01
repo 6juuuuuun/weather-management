@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
+import express from "express";
 
 // 실제 빌드 산출물(apps/web/dist)은 gitignore 대상이라 저장소에 없다. 여기서
 // 검증할 것은 화면 내용이 아니라 "라우터 등록 순서"뿐이므로, index.html 하나와
@@ -20,7 +21,7 @@ mkdirSync(join(webRoot, "assets"));
 writeFileSync(join(webRoot, "assets", "app.js"), "console.log('빌드된 번들')");
 process.env.WEB_ROOT = webRoot;
 
-const { app } = await import("../src/index.ts");
+const { app, SPA_FALLBACK } = await import("../src/index.ts");
 const { withService } = await import("../src/db.ts");
 
 describe("화면 서빙", () => {
@@ -37,7 +38,7 @@ describe("화면 서빙", () => {
   // index.html을 기본 파일로 내주는 단계에서 걸리고, 정적 서빙이 빠지면 SPA
   // 폴백이 대신 받아야 한다 — 어느 경로로 오든 로그인 화면은 떠야 한다.
   // (그래서 이 테스트만으로는 "/{*splat}" vs "/*splat"이 갈리지 않는다.
-  //  변이 확인 결과 그 한 글자는 살아남았고, 패턴은 방어적으로 {}를 유지한다.)
+  //  그 한 글자는 아래 "SPA 폴백 패턴" 블록이 따로 고정한다.)
   it("루트 경로도 index.html을 준다", async () => {
     const res = await request(app).get("/");
     expect(res.status).toBe(200);
@@ -121,5 +122,37 @@ describe("정적 단계의 오류도 에러 핸들러가 잡는다", () => {
     expect(res.headers["content-type"]).toMatch(/json/);
     expect(res.status).toBe(500);
     expect(res.text).not.toMatch(/ENOENT|<pre>|at .*\.ts:/);
+  });
+});
+
+// 실제 app에서는 express.static이 / 에 index.html을 먼저 내주기 때문에, SPA
+// 폴백 패턴에서 {}를 지워 "/*splat"으로 바꿔도 위 테스트가 전부 통과한다(변이
+// 확인함). 그 한 글자를 단독으로 고정하려면 정적 서빙이 없는 곳에서 패턴만
+// 시험해야 한다 — 라우트가 이것 하나뿐인 빈 express 앱을 만들어 GET / 를 건다.
+//
+// 왜 중요한가: 정적 서빙이 어떤 이유로든(WEB_ROOT 오설정, 빌드 산출물 누락)
+// / 를 못 내주는 순간 폴백이 마지막 방어선이 되는데, "/*splat"은 루트를 매치하지
+// 않아 그 자리에서 404가 난다. 사내에서 주소를 치고 들어오는 첫 화면이 그 경로다.
+describe("SPA 폴백 패턴", () => {
+  it("패턴 하나만 등록해도 루트 경로가 폴백에 걸린다", async () => {
+    const bare = express();
+    bare.get(SPA_FALLBACK, (_req, res) => {
+      res.type("html").send(INDEX_BODY);
+    });
+    const res = await request(bare).get("/");
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("id=root");
+  });
+
+  it("하위 경로도 같은 패턴 하나로 받는다", async () => {
+    const bare = express();
+    bare.get(SPA_FALLBACK, (_req, res) => {
+      res.type("html").send(INDEX_BODY);
+    });
+    for (const p of ["/criteria", "/events/abc/detail"]) {
+      const res = await request(bare).get(p);
+      expect(res.status).toBe(200);
+      expect(res.text).toContain("id=root");
+    }
   });
 });
