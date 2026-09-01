@@ -14,15 +14,44 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+  # 스키마를 최신으로 맞추고 끝나는 1회성 컨테이너. 앱보다 먼저 돌고, 성공해야
+  # 앱이 뜬다(아래 service_completed_successfully). 이게 없던 동안에는
+  # `docker compose up -d --build`로 올린 새 서버의 데이터베이스가 텅 빈 채였고,
+  # 운영자가 호스트에 psql과 node를 직접 설치해 `cd db && npm run migrate`를
+  # 돌려야만 했다 — 아무 문서에도 적혀 있지 않았다.
+  #
+  # postgres 이미지를 그대로 쓰는 이유는 psql이 이미 들어 있어서다. 새 이미지를
+  # 빌드하지 않으므로 올리는 시간이 늘지 않는다.
+  #
+  # ops/migrate.sh는 이미 적용한 파일을 schema_migrations에 기록해 두고 건너뛰므로
+  # `docker compose up -d`를 몇 번을 해도 안전하다.
+  migrate:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/weather
+      APP_USER_PASSWORD: ${APP_USER_PASSWORD}
+      APP_SERVICE_PASSWORD: ${APP_SERVICE_PASSWORD}
+    volumes:
+      - ./db:/db:ro
+      - ./ops/migrate.sh:/migrate.sh:ro
+    entrypoint: ["/bin/sh", "/migrate.sh"]
+    # 한 번 성공하면 끝이다. 재시작 정책을 주면 끝난 컨테이너를 계속 되살린다.
+    restart: "no"
   app:
     build:
       context: .
       dockerfile: server/Dockerfile
-    # DB가 healthy가 된 뒤에 뜬다. 그래도 앱이 먼저 붙는 경우를 대비해
-    # restart로 재기동시킨다 — 운영자는 docker compose up -d 한 줄만 하면 된다.
+    # DB가 healthy가 되고 마이그레이션이 성공으로 끝난 뒤에 뜬다. 그래도 앱이
+    # 먼저 붙는 경우를 대비해 restart로 재기동시킨다 — 운영자는
+    # docker compose up -d --build 한 줄만 하면 된다.
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       # 컨테이너 안에서는 compose 네트워크의 서비스 이름(postgres)과 컨테이너
       # 포트(5432)를 쓴다. 루트 .env의 DATABASE_URL_USER는 127.0.0.1:5433 —
