@@ -7,38 +7,79 @@
 
 역할 구조는 Human-in-the-loop입니다: **System**(감지·조합·발송) → **사업부장**(승인·편집) → **실무자**(이행).
 
-설계 배경과 결정 사항의 전체 맥락은 [`docs/superpowers/specs/2026-08-12-weather-management-design.md`](docs/superpowers/specs/2026-08-12-weather-management-design.md)에 정리되어 있습니다.
+설계 배경과 결정 사항의 전체 맥락은 [`docs/superpowers/specs/2026-08-12-weather-management-design.md`](docs/superpowers/specs/2026-08-12-weather-management-design.md)에,
+자체 호스팅으로 옮긴 이유와 설계는 [`docs/superpowers/specs/2026-08-28-self-hosted-migration-design.md`](docs/superpowers/specs/2026-08-28-self-hosted-migration-design.md)에 있습니다.
+
+> **서버를 운영하는 분은 이 문서 말고 [`docs/운영.md`](docs/운영.md)를 보세요.**
+> 설치·백업·복구·장애 대응을 서버 지식 없이 따라 할 수 있게 정리한 안내서입니다.
+> 이 README는 코드를 고치는 사람을 위한 문서입니다.
 
 ## 1. 소개
 
 ### 아키텍처
 
+Supabase(관리형 Postgres + Edge Functions) + Cloudflare 정적 호스팅으로 시작했지만,
+사내망 전용 요구와 개인정보 보관 위치 때문에 **사내 서버 한 대 위의 Docker**로 옮겼습니다.
+지금은 상시 떠 있는 컨테이너 2개가 전부입니다.
+
 ```
-React SPA (Vite, Vercel) ── supabase-js ──► Supabase
-                                            ├─ Postgres (+ RLS)
-                                            ├─ pg_cron: 매시 정각 weather-tick, 매 10분 remind-tick
-                                            └─ Edge Functions (Deno/TS)
-                                               ├─ weather-tick  ← 기상청 공공 API
-                                               ├─ remind-tick
-                                               ├─ send          → 카카오워크 봇 API
-                                               └─ auth-kakaowork
+                    ┌──────────────────────── 사내 서버 (Docker) ────────────────────────┐
+브라우저 ──HTTP──►  │  app (Node 22 / Express 5)                                          │
+  :8080            │   ├─ 정적 서빙: apps/web 빌드 결과(dist)를 그대로 내보낸다           │
+                   │   ├─ /api/*      : 인증·대시보드·조직·콘텐츠·발송                    │
+                   │   ├─ /api/health : 프로세스가 살아 있는가                            │
+                   │   ├─ /api/health/deep : 실제로 일을 하고 있는가(503이면 문제)        │
+                   │   └─ 스케줄러(node-cron, KST 고정)                                   │
+                   │        ├─ 매시 5분   weather-tick  ← 기상청 초단기실황                │
+                   │        ├─ 10분마다   remind-tick                                     │
+                   │        ├─ 매일 04시  세션 정리                                        │
+                   │        └─ 6시간마다  watchdog → 문제면 카카오워크 DM                 │
+                   │                    │                                                 │
+                   │                    ▼ pg (RLS 적용 접속 / 우회 접속을 분리)           │
+                   │  postgres (16-alpine)  ── 볼륨 pgdata                                │
+                   │                                                                       │
+                   │  migrate (1회성) — up 할 때마다 스키마를 최신으로 맞추고 종료          │
+                   └───────────────────────────────────────────────────────────────────────┘
+                              └──► 카카오워크 봇 API (발송·승인 알림·점검 알림)
 ```
 
-- **React SPA**: 로그인 + 대시보드 + 화면 5개(기준 정의·지침 등록·초안 검토/발송·발송 이력·알림 설정·직원 관리).
-  조회·설정 수정은 supabase-js로 직접 접근(RLS로 권한 강제)하고, 부수효과가 있는 동작(발송)만 Edge
-  Function을 호출합니다.
-- **weather-tick** (매시 정각): 기상청 초단기실황을 조회해 `weather_observations`에 저장하고,
-  임계값을 평가해 특보를 생성(`PENDING_APPROVAL`)·초안을 조합·사업부장에게 카카오워크로 알립니다.
-  활성 특보의 반복발송·해제·격상 조건도 매 실행 시 함께 평가합니다.
-- **remind-tick** (매 10분): `PENDING_APPROVAL` 상태로 재알림 간격이 지나면 사업부장에게 다시 알립니다.
-- **send**: 사업부장의 승인/무시/재발송 요청을 처리합니다. 승인 시 메시지 스냅샷을 확정해
-  부서별 수신자에게 발송하고 `dispatches`에 기록합니다.
-- **auth-kakaowork**: 로그인 이메일을 받아 카카오워크 워크스페이스 멤버십을 확인하고, 멤버면
-  직원 매칭/자동 가입 후 카카오워크 봇 DM으로 Supabase 매직링크를 발송합니다(카카오워크 서드파티
-  OAuth는 제공되지 않아 사용하지 않습니다). 비멤버 요청도 동일한 응답을 돌려줘 계정 존재 여부를
-  노출하지 않습니다.
-- **NotificationChannel 어댑터**: 카카오워크 구현체 + 콘솔/로그 구현체. 다른 채널(알림톡 등)을
-  붙이고 싶은 오픈소스 사용자를 위한 확장 지점입니다 (§6 참고).
+- **화면(`apps/web`)** — Vite + React + TypeScript + Tailwind v4. 환경변수가 없습니다.
+  서버와는 같은 오리진의 상대경로(`/api/...`)로만 이야기합니다. 프로덕션에서는
+  `server/Dockerfile`이 빌드해 이미지 안 `/app/public`에 넣고 Express가 서빙합니다.
+- **서버(`server`)** — Express 5. 라우터 등록 순서가 기능입니다(기능 라우터 → `/api` 404 JSON
+  → `express.static` → SPA 폴백 → 에러 미들웨어). `server/test/static.test.ts`가 그 순서를
+  양방향으로 고정합니다.
+- **권한** — Postgres RLS 정책을 그대로 씁니다. `withUser()`는 정책이 적용되는 역할
+  (`app_user`)로, `withService()`는 우회하는 역할(`app_service`)로 **아예 다른 커넥션**으로
+  접속합니다. 한 커넥션에서 역할만 바꾸는 방식은 그 한 줄을 빠뜨렸을 때 RLS가 통째로
+  우회된 채 조용히 통과하므로 쓰지 않습니다(`server/src/db.ts`).
+- **로그인** — 사내 이메일 + 비밀번호(argon2) 방식의 자체 계정입니다(`auth_accounts`).
+  Supabase Auth와 카카오워크 매직링크는 이관하면서 걷어냈습니다. 가입은
+  `ALLOWED_EMAIL_DOMAINS`의 도메인만 허용하고, 가입해도 역할은 `staff`입니다 —
+  실제 관문은 관리자의 역할 부여입니다.
+- **주기 작업** — pg_cron이 pg_net으로 Edge Function을 HTTP 호출하던 구조를 걷어내고,
+  앱 프로세스 안에서 `node-cron`으로 돕니다. cron 식은 **컨테이너 시계가 아니라 KST로
+  못박혀** 있습니다(`server/src/jobs/scheduler.ts`).
+- **감시** — 자체 서버는 조용히 죽습니다. `checkHealth()`가 "수집이 멈췄는가 / 결측만
+  쌓이는가 / DB에 닿는가"를 보고, 6시간마다 문제가 있을 때만 알림 수신자에게 DM합니다
+  (`server/src/jobs/watchdog.ts`).
+- **NotificationChannel 어댑터** — 카카오워크 구현체 + 콘솔 구현체. 다른 채널을 붙이는
+  확장 지점입니다(§6).
+
+### TypeScript를 빌드하지 않고 그대로 싣습니다
+
+프로덕션 컨테이너는 `node --experimental-transform-types src/index.ts`로 뜹니다
+(`server/Dockerfile`). 별도 빌드 산출물이 없어 **배포되는 코드가 저장소의 코드와
+글자 그대로 같다**는 장점이 있습니다. 대신 두 가지를 알고 있어야 합니다.
+
+- 부팅할 때마다 `ExperimentalWarning: Transform Types is an experimental feature`가
+  로그에 찍힙니다. **정상입니다.** 장애 조사 때 이 줄에 시간을 쓰지 마세요
+  ([`docs/운영.md` §7-6](docs/운영.md)).
+- `--experimental-strip-types`(지우기만 하는 모드)로는 뜨지 않습니다.
+  `server/src/shared/kakaowork.ts`의 파라미터 프로퍼티(`constructor(private botKey: ...)`)가
+  코드 생성을 요구하기 때문입니다. 그 파일은 발송 경로를 통해 반드시 로드됩니다.
+- Node가 이 플래그의 동작을 바꾸면 컨테이너가 뜨지 않을 수 있습니다. Node 메이저 버전을
+  올릴 때는 반드시 컨테이너를 실제로 띄워 확인하세요.
 
 ### 화면
 
@@ -61,133 +102,127 @@ React SPA (Vite, Vercel) ── supabase-js ──► Supabase
 ### 카카오워크 봇 등록
 
 1. 카카오워크 관리자 콘솔 → 앱 관리에서 **커스텀 봇을 생성**합니다. 발급된 **App Key**가 `KAKAOWORK_BOT_KEY`입니다.
-   이 봇 키는 로그인 시 워크스페이스 멤버십 조회(`users.find_by_email`)와 매직링크 DM 발송
-   (`conversations.open` + `messages.send`), 특보 발송에 모두 사용됩니다.
-2. 카카오워크는 서드파티 OAuth를 제공하지 않으므로(`auth.kakaowork.com`이 존재하지 않음) 별도의
-   OAuth 앱 등록은 필요하지 않습니다. 로그인은 이메일 입력 → 봇 DM 매직링크 클릭 방식입니다.
-3. **중요**: 카카오워크 무료 플랜에서의 워크봇 API 가용 여부는 조직마다 다를 수 있습니다. 실 배포 전에
-   반드시 실제 워크스페이스로 로그인 요청 → DM 수신 → 매직링크 클릭 → 세션 발급까지 왕복을
-   스파이크로 검증하세요 (§3 배포 체크리스트 참고).
+   이 봇 키는 특보 발송, 승인 요청 알림, 상태 점검 알림에 사용됩니다.
+2. 비워 두면 발송이 실제로 나가지 않고 로그에만 찍힙니다 — 설치 직후 점검용으로 유용합니다.
+3. **중요**: 카카오워크 무료 플랜에서의 워크봇 API 가용 여부는 조직마다 다를 수 있습니다.
+   실 배포 전에 실제 워크스페이스로 DM이 도착하는지 확인하세요.
 
-### Supabase 프로젝트 생성
+### 서버
 
-[supabase.com](https://supabase.com)에서 새 프로젝트를 만들고 프로젝트 참조 ID(ref)와
-`anon`/`service_role` 키를 기록해 둡니다.
+Docker와 Docker Compose만 있으면 됩니다. **호스트에 PostgreSQL이나 Node.js를 설치할
+필요가 없습니다** — 전부 컨테이너 안에 있습니다.
 
 ## 3. 설치 (프로덕션 배포)
 
 ```bash
-# 1) 로컬 저장소를 원격 Supabase 프로젝트에 연결
-supabase link --project-ref <project-ref>
-
-# 2) 마이그레이션 적용 (스키마 + RLS + pg_cron + 시드)
-supabase db push
-
-# 3) Edge Function 배포
-supabase functions deploy weather-tick remind-tick send auth-kakaowork
-
-# 4) 비밀값 등록 (아래 환경변수 표 참고)
-supabase secrets set --env-file .env.production
-
-# 5) pg_cron이 Edge Function을 호출할 수 있도록 DB 설정값 등록 (0003_cron.sql 참고)
-#    SQL Editor 또는 psql로 실행:
-#    alter database postgres set app.edge_base_url = 'https://<project-ref>.supabase.co/functions/v1';
-#    alter database postgres set app.cron_secret = '<CRON_SECRET과 동일한 값>';
-
-# 6) apps/web을 Vercel/Netlify 등 정적 호스팅에 배포 (빌드: npm run build, 산출물: apps/web/dist)
+git clone <저장소 주소> weather && cd weather
+cp .env.selfhost.example .env     # 값을 채운다 (비밀번호는 openssl rand -hex 24)
+docker compose up -d --build      # postgres → migrate(스키마 적용) → app 순으로 뜬다
 ```
+
+`docker compose up -d --build` 한 줄이 전부입니다. `migrate` 서비스가 앱보다 먼저 돌아
+스키마와 기본값(부서 트리·특보 기준·알림 설정)을 넣고, 성공했을 때만 앱이 뜹니다
+(`depends_on: service_completed_successfully`). 이미 적용한 마이그레이션은
+`schema_migrations` 표를 보고 건너뛰므로 몇 번을 다시 올려도 안전합니다.
+
+확인:
+
+```bash
+docker compose ps                            # app / postgres 가 Up (healthy)
+curl -s localhost:8080/api/health/deep       # {"ok":true,"reasons":[]}
+```
+
+**설치 후 반드시 해야 하는 두 가지**가 있습니다. 둘 다 [`docs/운영.md`](docs/운영.md)에
+단계별로 적혀 있습니다.
+
+1. **첫 관리자 지정** — 새 데이터베이스에는 관리자가 0명입니다. 웹에서 가입한 뒤
+   `./ops/make-admin.sh 본인이메일@회사.com`을 한 번 실행합니다(§1-5).
+2. **부서별 행동지침 입력** — `action_guidelines`에는 시드가 없습니다(조직마다 다른
+   내용이라 기본값을 둘 수 없습니다). 비워 두면 특보가 떠도 "무엇을 하라"가 붙지 않은
+   메시지가 나갑니다. 대시보드의 셋업 체크리스트를 끝까지 진행하세요(§1-6).
 
 ### 환경변수
 
-| 변수 | 위치 | 설명 |
-|---|---|---|
-| `VITE_SUPABASE_URL` | `apps/web` 빌드 | Supabase 프로젝트 URL |
-| `VITE_SUPABASE_ANON_KEY` | `apps/web` 빌드 | Supabase anon key |
-| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Edge Functions (Supabase가 자동 주입) | DB 접근용 |
-| `KMA_API_KEY` | Edge Functions secrets | 기상청 공공데이터 일반 인증키(Decoding) |
-| `KAKAOWORK_BOT_KEY` | Edge Functions secrets | 카카오워크 커스텀 봇 App Key (멤버십 조회·로그인 DM·특보 발송) |
-| `ADMIN_KAKAOWORK_ID` | Edge Functions secrets | 최초 시스템관리자로 지정할 카카오워크 로그인 이메일 |
-| `CRON_SECRET` | Edge Functions secrets + DB `app.cron_secret` | pg_cron → Edge Function 호출 인증용 임의 문자열 |
-| `APP_BASE_URL` | Edge Functions secrets | 웹 콘솔 URL (매직링크 딥링크 생성용) |
-| `NOTIFY_CHANNEL` | Edge Functions secrets (선택) | `console`로 설정하면 카카오워크 대신 로그 채널 사용 (개발/시연용) |
+운영에서 채우는 값은 [`.env.selfhost.example`](.env.selfhost.example) 하나이고,
+각 값이 무엇인지는 [`docs/운영.md` §8](docs/운영.md)의 표에 있습니다.
+개발·테스트용 값은 [`.env.example`](.env.example)입니다.
 
-전체 목록과 형식은 저장소 루트의 [`.env.example`](.env.example), 웹 앱용은
-[`apps/web/.env.example`](apps/web/.env.example)을 참고하세요.
+| 변수 | 설명 |
+|---|---|
+| `POSTGRES_PASSWORD` | postgres 슈퍼유저 비밀번호. 볼륨을 처음 만들 때만 반영됩니다 |
+| `APP_USER_PASSWORD` / `APP_SERVICE_PASSWORD` | RLS 적용 접속 / 우회 접속의 비밀번호. `db/migrations/0010_role_login.sql`이 부여합니다 |
+| `ALLOWED_EMAIL_DOMAINS` | 가입 허용 이메일 도메인(콤마 구분) |
+| `APP_BASE_URL` | 카카오워크 DM 링크의 기준 주소 |
+| `KMA_API_KEY` | 기상청 일반 인증키(Decoding) |
+| `KAKAOWORK_BOT_KEY` | 카카오워크 봇 App Key. 비우면 발송이 로그로만 나갑니다 |
+| `NOTIFY_CHANNEL` | `console`이면 카카오워크 대신 로그로 발송(시연용) |
+| `COOKIE_SECURE` | HTTPS로 서비스할 때만 `true` |
 
-### 배포 체크리스트 (반드시 확인)
+### 백업
 
-- [ ] **카카오워크 봇 DM 왕복 스파이크를 배포 착수 조건으로 삼는다.** 로그인 화면에서 이메일 입력 →
-  DM 수신 → 매직링크 클릭 → 세션 발급까지 실제 워크스페이스에서 성공하는지 먼저 검증하세요.
-- [ ] **`ADMIN_KAKAOWORK_ID`를 설정한 뒤, 그 이메일 계정으로 첫 로그인**해 시스템관리자 권한을 확보한다
-  (§4 참고). 설정을 빠뜨리면 관리자가 0명인 채로 시작하게 됩니다.
-- [ ] `app.edge_base_url` / `app.cron_secret` DB 설정을 마쳐 pg_cron이 정상 동작하는지 확인한다
-  (대시보드의 "마지막 수집 N분 전" 표시로 확인 가능).
+`ops/backup.sh`가 데이터베이스를 파일 하나로 덤프하고, `ops/restore.sh`가 되돌립니다.
+크론 등록 방법과 복구 절차는 [`docs/운영.md` §4](docs/운영.md)에 있습니다.
+**복구를 실제로 해 보기 전까지는 백업이 아닙니다.**
 
 ## 4. 최초 로그인
 
-1. `ADMIN_KAKAOWORK_ID`로 지정한 카카오워크 계정으로 로그인합니다. `auth-kakaowork`가 이 계정을
-   자동으로 시스템관리자(`admin`) 역할로 부여합니다 (기존 사용자였어도 승격되며, 강등은 하지 않습니다).
-2. 대시보드 상단의 **셋업 체크리스트**를 순서대로 진행합니다. 5개 항목을 모두 완료하기 전에는
-   시스템이 발송을 시작할 수 없습니다.
-   1. **관측 지점** — 설정 화면에서 기상청 격자좌표(nx, ny)와 지점명을 입력합니다.
-   2. **특보 기준** — 4종(폭우·폭설·강풍·폭염) × 2등급(주의보·경보) 임계값을 확인/조정합니다
-      (기상청 특보 기준 프리셋이 시드되어 있습니다).
-   3. **부서 구성** — 직원 관리 화면의 부서 관리 모달에서 부서 트리를 만듭니다.
-   4. **부서별 지침** — 지침 등록 화면에서 종류×등급×부서별로 인력 조정 지침과 고객 안내 멘트를 등록합니다.
-   5. **Alert 수신자** — 특보 발생 시 승인 알림을 받을 사업부장을 지정합니다.
-3. 이후 가입하는 직원은 카카오워크 로그인만으로 자동 가입되며 역할은 실무자, 부서는 미지정 상태입니다.
-   직원 관리 화면의 "부서 미지정 N명" 필터로 걸러 부서를 지정해 주세요.
+1. 브라우저에서 `http://서버주소:8080`에 들어가 **회사 이메일로 가입**합니다.
+   가입 직후 역할은 `staff`이고, 조회만 됩니다.
+2. 서버에서 `./ops/make-admin.sh 가입한이메일@회사.com`을 실행한 뒤 다시 로그인하면
+   관리자 메뉴가 보입니다.
+3. 대시보드 상단의 **셋업 체크리스트**를 순서대로 진행합니다.
+   1. **관측 지점** — 기상청 격자좌표(nx, ny)와 지점명
+   2. **특보 기준** — 4종 × 2등급 임계값 (기상청 특보 기준이 시드되어 있습니다)
+   3. **부서 구성** — 부서 트리 (기본 트리가 시드되어 있습니다)
+   4. **부서별 지침** — **시드가 없습니다.** 종류 × 등급 × 부서마다 직접 입력합니다
+   5. **Alert 수신자** — 승인 알림과 상태 점검 알림을 받을 사업부장. 여기가 비면
+      특보가 감지돼도 승인할 사람에게 알림이 가지 않습니다
+4. 이후 가입하는 직원은 역할 `staff`, 부서 미지정으로 시작합니다. 직원 관리 화면의
+   "부서 미지정 N명" 필터로 걸러 부서를 지정해 주세요.
+
+관리자가 비밀번호를 잊었을 때의 복구 절차는 [`docs/운영.md` §6-2](docs/운영.md)에 있습니다
+(자체 서비스 복구 경로가 없어 DB를 직접 손대야 합니다). **관리자는 처음부터 두 명 두세요.**
 
 ## 5. 로컬 개발
 
 ```bash
-cp .env.test.example .env.test                        # 로컬 테스트용 env 생성 (gitignore 대상)
-supabase start                                       # 로컬 Supabase 스택 기동
-supabase db reset                                     # 스키마 + RLS + 시드 적용
-supabase functions serve --env-file .env.test          # Edge Functions 로컬 서빙 (터미널 1)
-cd apps/web && npm run dev                              # React 개발 서버 (터미널 2)
+cp .env.example .env                    # 값을 채운다 (gitignore 대상)
+docker compose up -d postgres           # Postgres만 띄운다 (호스트 127.0.0.1:5433)
+docker compose run --rm migrate         # 스키마 + 시드 적용
 ```
 
-`.env.test`는 로컬 전용 값(콘솔 알림 채널, mock 카카오 프로필 등)을 담고 있으며 저장소에는
-템플릿인 [`.env.test.example`](.env.test.example)만 커밋됩니다. 템플릿의 Supabase 키는
-`supabase start`가 출력하는 로컬 데모 값이라 그대로 써도 되지만, 값이 다르면 `supabase status`
-출력으로 맞춰 주세요. 웹 앱은 별도로 `apps/web/.env`(`apps/web/.env.example` 복사)의
-`VITE_SUPABASE_ANON_KEY`에 같은 anon key를 채워 넣습니다.
-
-### 테스트 명령
-
-`--env-file`은 `functions serve` 컨테이너에만 적용되므로, 테스트를 실행하는 셸에는 `SUPABASE_URL`
-등의 env가 없습니다. Deno 통합/시나리오 테스트(`serviceClient()`로 DB에 직접 접속)를 실행하기 전에
-아래처럼 셸에 로컬 env를 별도로 주입해야 합니다.
+이후 서버와 화면을 따로 띄웁니다.
 
 ```bash
-# 통합/시나리오 테스트 전 셸에 로컬 env 주입 (1회)
-set -a && source .env.test && set +a
+cd server   && npm ci && npm run dev    # http://localhost:3000
+cd apps/web && npm ci && npm run dev    # http://localhost:5173
 ```
+
+`npm run dev`(5173)로 화면을 따로 띄우면 API 요청이 5173으로 나갑니다. 서버(3000)를 함께
+띄우고 vite 프록시를 붙이거나, 빌드본을 서버가 서빙하게 해서 확인하세요.
+
+### 테스트
+
+서버 테스트는 **실제 Postgres에 붙습니다**(위 `docker compose up -d postgres`가 떠 있어야
+합니다). `server/vitest.config.ts`가 저장소 루트 `.env`를 직접 읽어 접속 정보를 채우므로,
+셸에 따로 export할 필요는 없습니다.
 
 ```bash
-# Deno 단위/통합 테스트 (supabase start + db reset + functions serve 필요)
-deno test --allow-net --allow-env supabase/functions/
-
-# 전 구간 시나리오 테스트 (감지 → 승인 → 반복발송 → 격상 → 해제)
-deno test --allow-net --allow-env scripts/scenario-test.ts
-
-# 웹 앱 단위 테스트 (Vitest)
-cd apps/web && npx vitest run
-
-# 웹 앱 빌드 검증
-cd apps/web && npm run build
+cd server   && npx vitest run    # 서버 (Postgres 필요)
+cd apps/web && npm test          # 화면
+cd apps/web && npm run build     # 화면 빌드 검증
 ```
 
-전부 한 번에 확인하려면:
+`cd server && npx tsc --noEmit`은 `src/shared/`에서 8개의 오류를 냅니다. 그 7개 모듈은
+`supabase/functions/_shared/`의 원본과 **바이트 단위로 같아야** 하고(이식의 핵심 보증)
+어느 것도 런타임 버그가 아니라, 고치지 않기로 판단한 것입니다. 근거는
+`server/tsconfig.json`에 적혀 있습니다. 프로덕션 컨테이너는 타입체크를 하지 않습니다.
 
-```bash
-supabase db reset
-set -a && source .env.test && set +a
-deno test --allow-net --allow-env supabase/functions/ scripts/scenario-test.ts \
-  && (cd apps/web && npx vitest run) \
-  && (cd apps/web && npm run build)
-```
+### `supabase/`와 `scripts/scenario-test.ts`
+
+이관 전 원본입니다. `server/src/shared/`가 `supabase/functions/_shared/`와 바이트 단위로
+같은지 `diff`로 확인하는 기준이라 **아직 지우지 않았습니다.** 운영이 안정된 뒤에 지웁니다.
+새 코드는 이쪽에 추가하지 마세요.
 
 ## 6. 라이선스 · 확장
 
@@ -195,7 +230,7 @@ MIT License — [`LICENSE`](LICENSE) 참고. 자유롭게 포크·수정·재배
 
 ### 알림 채널 확장하기
 
-카카오워크 외 채널(알림톡, 슬랙, 이메일 등)을 붙이려면 `supabase/functions/_shared/channel.ts`의
+카카오워크 외 채널(알림톡, 슬랙, 이메일 등)을 붙이려면 `server/src/shared/channel.ts`의
 `NotificationChannel` 인터페이스(`send(kakaoworkUserId, text): Promise<{ok, error?}>`)를 구현하는
-클래스를 하나 추가하고, `_shared/kakaowork.ts`의 `getChannel()`이 환경변수에 따라 그 구현체를
+클래스를 하나 추가하고, `server/src/shared/kakaowork.ts`의 `getChannel()`이 환경변수에 따라 그 구현체를
 반환하도록 분기를 추가하면 됩니다 (기존 `KakaoWorkChannel`/`ConsoleChannel`이 참고 예시입니다).
