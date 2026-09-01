@@ -10,6 +10,9 @@ import {
 } from "../shared/template.ts";
 import type { NotificationChannel } from "../shared/channel.ts";
 import { envChannel } from "./common.ts";
+// 폭설 메시지의 "오늘 누적"은 판정 엔진이 쓰는 것과 같은 합산이어야 한다 —
+// 두 벌로 적으면 화면·메시지·판정이 조용히 어긋난다.
+import { todayAccums } from "./weatherTick.ts";
 
 export type SendBody =
   | { mode: "approve"; event_id: string; content: DeptBlock[] }
@@ -49,13 +52,23 @@ async function isAlertRecipient(q: Querier, employeeId: string): Promise<boolean
 // 특보를 발생시킨 관측 행을 읽어 weather-tick의 반복 발송과 동일한 포맷의 "현재 관측" 줄을 만든다
 // (스펙 결정 11 — 사람이 승인한 최초 발송이 자동 반복 발송보다 빈약해서는 안 됨).
 // 관측 조회에 실패한 경우에만 폴백 문구를 쓴다.
-async function obsLineFor(q: Querier, ev: { trigger_observation_id?: number | string | null }): Promise<string> {
+// 폭설만은 여기에 적설량을 덧붙인다(QA W-04). formatObsLine에는 적설이 없어서
+// "폭설 주의보 — 시간당 0mm · 1℃ · 풍속 2m/s"처럼 눈 이야기가 한 글자도 없는 DM이 나갔다.
+// shared/template.ts는 원본과 바이트 단위로 같아야 하므로 호출부에서 붙인다
+// (weatherTick.ts의 lineFor와 같은 처방).
+async function obsLineFor(
+  q: Querier,
+  ev: { kind?: string; trigger_observation_id?: number | string | null },
+): Promise<string> {
   if (!ev?.trigger_observation_id) return OBS_LINE_FALLBACK;
   const { rows } = await q.query(
-    "select rain_mm_per_hr, temp_c, feels_c, wind_ms from weather_observations where id = $1",
+    "select rain_mm_per_hr, temp_c, feels_c, wind_ms, snow_new_cm from weather_observations where id = $1",
     [ev.trigger_observation_id],
   );
-  return formatObsLine(rows[0] ?? null);
+  const line = formatObsLine(rows[0] ?? null);
+  if (ev.kind !== "snow" || !rows[0]) return line;
+  const { snowToday } = await todayAccums(q, new Date());
+  return `${line} · 신적설 ${rows[0].snow_new_cm ?? "-"}cm(오늘 누적 ${snowToday ?? "-"}cm)`;
 }
 
 async function dispatch(

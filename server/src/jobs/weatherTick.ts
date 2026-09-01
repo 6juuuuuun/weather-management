@@ -166,6 +166,14 @@ export async function runWeatherTick(
 
   const obsLine = formatObsLine(saved);
 
+  // 폭설 메시지에 적설량이 한 글자도 없었다(QA W-04) — 받는 사람은 얼마나 왔는지 모른 채
+  // "폭설 주의보"만 읽는다. shared/template.ts의 formatObsLine은 원본과 바이트 단위로 같아야
+  // 하므로 그 안에 넣을 수 없다. 종류별로 필요한 값을 **호출부에서** 덧붙인다.
+  const lineFor = (kind: Kind) =>
+    kind === "snow"
+      ? `${obsLine} · 신적설 ${saved.snow_new_cm ?? "-"}cm(오늘 누적 ${acc.snowToday ?? "-"}cm)`
+      : obsLine;
+
   async function createEvent(kind: Kind, grade: Grade) {
     const { eventId, alertIds } = await withService(async (q) => {
       const { rows: evRows } = await q.query(
@@ -194,7 +202,7 @@ export async function runWeatherTick(
     const deepLink = `${env("APP_BASE_URL")}/events/${eventId}`;
     for (const kw of alertIds)
       await channel.send(kw,
-        `[날씨경영] ${KIND_LABEL[kind]} ${GRADE_LABEL[grade]} 감지 — 발송 초안이 승인을 기다립니다.\n${obsLine}\n검토: ${deepLink}`);
+        `[날씨경영] ${KIND_LABEL[kind]} ${GRADE_LABEL[grade]} 감지 — 발송 초안이 승인을 기다립니다.\n${lineFor(kind)}\n검토: ${deepLink}`);
   }
 
   for (const a of actions) {
@@ -217,7 +225,7 @@ export async function runWeatherTick(
             results.push({ employee_id: r.employee_id, name: r.name,
               ...(r.kakaowork_user_id
                 ? await channel.send(r.kakaowork_user_id, renderMessage(b, { kindLabel: KIND_LABEL[a.kind],
-                    gradeLabel: GRADE_LABEL[a.grade], siteName: site.site_name, obsLine }))
+                    gradeLabel: GRADE_LABEL[a.grade], siteName: site.site_name, obsLine: lineFor(a.kind) }))
                 : { ok: false, error: "카카오워크 미연결" }) });
         await withService(async (q) => {
           // 회차 채번은 weather_events.repeat_count 단일 소스 (승인 발송이 1회차 → 이후 +1씩).

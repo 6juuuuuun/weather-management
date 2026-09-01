@@ -1,5 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { app } from "../src/index.ts";
 import { withService } from "../src/db.ts";
@@ -15,6 +18,7 @@ import type { NotificationChannel } from "../src/shared/channel.ts";
 process.env.NOTIFY_CHANNEL = "console";
 
 const DEPT_PREFIX = "zzjob-dept-";
+const here = dirname(fileURLToPath(import.meta.url));
 
 // 발송 내용을 그대로 모아 두는 채널. "발송했다/안 했다"를 눈으로 볼 수 있어야
 // 권한 검사가 실제로 막고 있는지 증명할 수 있다.
@@ -428,6 +432,143 @@ describe("승인 재알림", () => {
     const rec = recorder();
     expect((await runRemindTick({ channel: rec.channel })).reminded).toBe(0);
     expect(rec.sent).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 폭설 반복·해제 — 눈이 그쳤는데 자정까지 매시간 반복되던 문제 (QA W-04)
+// ---------------------------------------------------------------------------
+//
+// 폭설 판정은 **당일 누적 적설**(snowToday)을 본다. 그런데 시드의 정책이
+// hourly_until_below("매시간 관측이 기준 미만이면 해제")였다. 누적값은 눈이 그쳐도
+// 자정까지 줄지 않으므로 반복은 항상 참, 해제는 항상 거짓이 된다 — QA 실측으로
+// 신적설 0인데 반복 발송 3회. 정책 값 하나가 바뀌면 동작이 통째로 뒤집히므로,
+// **두 정책을 같은 상황에 놓고 대조**해 무엇이 그 차이를 만드는지 고정한다.
+describe("폭설 반복·해제", () => {
+  let originalPolicy: { policy: string; accum: string | null };
+
+  beforeEach(async () => {
+    originalPolicy = await withService(async (q) => {
+      const { rows } = await q.query(
+        "select repeat_policy, repeat_accum_threshold from alert_settings where kind = 'snow'");
+      return { policy: rows[0].repeat_policy as string, accum: rows[0].repeat_accum_threshold as string | null };
+    });
+  });
+
+  // 시드는 지우지 않는다 — 테스트가 바꾼 값을 원래대로 되돌린다(resolve_notice와 같은 방식).
+  afterEach(async () => {
+    await withService((q) =>
+      q.query(
+        "update alert_settings set repeat_policy = $1, repeat_accum_threshold = $2 where kind = 'snow'",
+        [originalPolicy.policy, originalPolicy.accum],
+      ));
+  });
+
+  async function setSnowPolicy(policy: string) {
+    await withService((q) =>
+      q.query(
+        "update alert_settings set repeat_policy = $1, repeat_accum_threshold = null where kind = 'snow'",
+        [policy],
+      ));
+  }
+
+  /** 오늘(KST) 누적 적설 6cm — 폭설 주의보 기준(5cm)을 이미 넘긴 상태를 만든다. */
+  async function snowedTodayThenStopped(staffId: string) {
+    return withService(async (q) => {
+      const { rows: d } = await q.query(
+        "insert into departments (name) values ($1) returning id", [`${DEPT_PREFIX}제설`]);
+      const deptId = d[0].id as string;
+      await q.query("insert into recipients (department_id, employee_id) values ($1, $2)", [deptId, staffId]);
+      // 오늘 자정 이후의 유효 관측(누적 6cm).
+      await q.query(
+        `insert into weather_observations (observed_at, rain_mm_per_hr, snow_new_cm, temp_c, wind_ms, missing)
+         values (now() - interval '20 minutes', 6, 6, -1, 2, false)`);
+      const { rows: ev } = await q.query(
+        `insert into weather_events (kind, grade, status, repeat_count)
+         values ('snow','watch','ACTIVE', 1) returning id`);
+      await q.query(
+        "insert into messages (event_id, status, content) values ($1, 'approved', $2::jsonb)",
+        [ev[0].id, JSON.stringify([{ department_id: deptId, department_name: "제설",
+          staff_actions: ["제설 장비 투입"], guest_notice: "",
+          recipients: [{ employee_id: staffId, name: "제설담당", kakaowork_user_id: "kw-snow" }],
+          selected: true }])],
+      );
+      return ev[0].id as string;
+    });
+  }
+
+  /** 눈이 그친 관측(PTY=1 비, 강수 0) — 신적설 0이지만 오늘 누적은 그대로 6cm다. */
+  const SNOW_STOPPED = [
+    { category: "RN1", obsrValue: "0", baseDate: "20260812", baseTime: "1500" },
+    { category: "PTY", obsrValue: "1" }, { category: "T1H", obsrValue: "1" },
+    { category: "WSD", obsrValue: "2" }, { category: "REH", obsrValue: "80" },
+  ];
+
+  it("눈이 그치면 폭설 특보를 해제한다 (반복하지 않는다)", async () => {
+    const staff = await makeEmployee({ name: "제설담당", email: "snow-stop@gonjiam.com", kw: "kw-snow" });
+    const eventId = await snowedTodayThenStopped(staff);
+    await setSnowPolicy("until_daily_accum_below");
+
+    stubKma(SNOW_STOPPED);
+    const rec = recorder();
+    const out = await runWeatherTick({ channel: rec.channel });
+    expect(out.actions).toEqual([{ type: "resolve", eventId, kind: "snow", grade: "watch" }]);
+
+    const { ev, dispatches } = await withService(async (q) => {
+      const { rows } = await q.query("select status from weather_events where id = $1", [eventId]);
+      const { rows: d } = await q.query("select id from dispatches");
+      return { ev: rows[0], dispatches: d };
+    });
+    expect(ev.status).toBe("RESOLVED");
+    // 반복 발송이 한 건도 없어야 한다 — 이게 QA가 본 "신적설 0인데 반복 3회"의 반대다.
+    expect(dispatches).toEqual([]);
+  });
+
+  // 대조군 겸 회귀 증인: 정책 값이 예전(hourly_until_below)이면 같은 상황에서
+  // 해제 대신 반복이 나온다. 이 테스트가 깨지면 QA가 본 버그가 되살아난 것이다.
+  it("예전 정책(hourly_until_below)이면 같은 상황에서 반복 발송이 나간다", async () => {
+    const staff = await makeEmployee({ name: "제설담당", email: "snow-old@gonjiam.com", kw: "kw-snow" });
+    const eventId = await snowedTodayThenStopped(staff);
+    await setSnowPolicy("hourly_until_below");
+
+    stubKma(SNOW_STOPPED);
+    const out = await runWeatherTick({ channel: recorder().channel });
+    expect(out.actions).toEqual([{ type: "repeat", eventId, kind: "snow", grade: "watch" }]);
+  });
+
+  it("아직 눈이 내리는 중이면 반복 발송을 계속한다", async () => {
+    const staff = await makeEmployee({ name: "제설담당", email: "snow-cont@gonjiam.com", kw: "kw-snow" });
+    const eventId = await snowedTodayThenStopped(staff);
+    await setSnowPolicy("until_daily_accum_below");
+
+    stubKma([
+      { category: "RN1", obsrValue: "2", baseDate: "20260812", baseTime: "1600" },
+      { category: "PTY", obsrValue: "3" }, { category: "T1H", obsrValue: "-2" },
+      { category: "WSD", obsrValue: "2" }, { category: "REH", obsrValue: "90" },
+    ]);
+    const rec = recorder();
+    const out = await runWeatherTick({ channel: rec.channel });
+    expect(out.actions).toEqual([{ type: "repeat", eventId, kind: "snow", grade: "watch" }]);
+    // 폭설 메시지에 적설량이 없으면 받는 사람은 얼마나 왔는지 모른다.
+    expect(rec.sent[0]!.text).toMatch(/신적설 2cm/);
+    expect(rec.sent[0]!.text).toMatch(/오늘 누적 6cm/);
+  });
+
+  // 시드 값 자체를 고정한다. 위 두 테스트는 정책을 직접 세팅하므로, 정작 배포되는
+  // 기본값이 예전 값으로 되돌아가도 통과한다 — 그 구멍을 파일 내용으로 막는다.
+  it("시드와 마이그레이션이 폭설 정책을 누적용으로 심는다", () => {
+    const dbDir = join(here, "..", "..", "db");
+    const seed = readFileSync(join(dbDir, "seed.sql"), "utf8");
+    // 한 줄에 rain과 snow가 함께 있으므로 줄 단위로 보면 안 된다 — rain의
+    // until_daily_accum_below 때문에 snow가 옛 값이어도 통과한다(실제로 그 변이가 살아남았다).
+    expect(seed).toMatch(/\('snow','until_daily_accum_below'/);
+    expect(seed).not.toMatch(/\('snow','hourly_until_below'/);
+    // 이미 배포된 데이터베이스는 시드를 다시 돌리지 않는다(ops/migrate.sh) —
+    // 마이그레이션이 없으면 운영 DB는 영원히 옛 값 그대로다.
+    const mig = readFileSync(join(dbDir, "migrations", "0015_snow_repeat_policy.sql"), "utf8");
+    expect(mig).toMatch(/update alert_settings/);
+    expect(mig).toMatch(/until_daily_accum_below/);
+    expect(mig).toMatch(/kind = 'snow'/);
   });
 });
 

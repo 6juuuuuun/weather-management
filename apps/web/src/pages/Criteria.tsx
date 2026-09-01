@@ -83,7 +83,11 @@ function HeatIcon() {
 
 const ROW_DEFS: RowDef[] = [
   { kind: "rain", label: "폭우", desc: "시간당 강수량", icon: <RainIcon />, fields: [{ key: "rain_mm_per_hr", unit: "mm 이상" }] },
-  { kind: "snow", label: "폭설", desc: "현 시간 기준 적설량", icon: <SnowIcon />, fields: [{ key: "snow_cm", unit: "cm 이상" }] },
+  // 판정은 "이번 시간에 온 눈"이 아니라 **당일(자정 이후) 누적 신적설**을 본다
+  // (server/src/shared/engine.ts의 exceeds("snow") → obs.snowToday). 화면이 "현 시간 기준"이라고
+  // 적어 두면 관리자는 "한 시간에 5cm"로 읽고 값을 넣는데 실제 판정은 "오늘 통틀어 5cm"다
+  // — 기준이 의도보다 훨씬 자주 걸린다(QA W-04).
+  { kind: "snow", label: "폭설", desc: "오늘 누적 적설량(자정 기준)", icon: <SnowIcon />, fields: [{ key: "snow_cm", unit: "cm 이상" }] },
   { kind: "wind", label: "강풍", desc: "10분 평균 풍속", icon: <WindIcon />, fields: [{ key: "wind_ms", unit: "m/s 이상" }] },
   {
     kind: "heat",

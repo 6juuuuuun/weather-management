@@ -16,8 +16,14 @@ insert into weather_criteria (kind, grade, threshold) values
  ('heat','watch','{"temp_c":33,"feels_c":31}'), ('heat','warning','{"temp_c":35,"feels_c":33}')
 on conflict (kind, grade) do nothing;
 
+-- snow가 until_daily_accum_below인 이유: 폭설 판정은 당일 누적 적설(snowToday)을 보는데,
+-- 누적값은 눈이 그쳐도 자정까지 줄지 않는다 — hourly_until_below("매시간 관측이 기준
+-- 미만이면 해제")를 쓰면 해제 조건이 영원히 성립하지 않고 반복 발송만 자정까지 계속된다
+-- (QA W-04, 이미 배포된 DB는 0015_snow_repeat_policy.sql이 고친다).
+-- until_daily_accum_below는 정확히 그 함정을 피하려고 만든 정책이다: 누적은 "반복을 계속할
+-- 이유"로만 쓰고 해제는 강설 중단(snowNew = 0)으로 판정한다(shared/engine.ts 주석·스펙 §5).
 insert into alert_settings (kind, repeat_policy, repeat_accum_threshold, heat_repeat_basis) values
- ('rain','until_daily_accum_below',80,null), ('snow','hourly_until_below',null,null),
+ ('rain','until_daily_accum_below',80,null), ('snow','until_daily_accum_below',null,null),
  ('wind','hourly_until_below',null,null),    ('heat','hourly_until_below',null,'feels')
 on conflict (kind) do nothing;
 
