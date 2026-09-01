@@ -294,6 +294,27 @@ describe("가입 병합 — 남의 직원 행을 인수할 수 없다 (W-01d)", 
     expect(await accountBy("life-take-new@gonjiam.com")).toBeNull();
   });
 
+  // 운영 안내서 §6-2가 이 경로에 의존한다: 관리자가 자기 비밀번호를 잊으면 서버
+  // 터미널에서 auth_accounts 행만 지우고 같은 이메일로 다시 가입한다. employees의
+  // 외래키가 on delete set null이라 그때 auth_user_id가 비고, 그래서 병합이 다시
+  // 허용된다 — 위 가드(auth_user_id is null)가 이 복구 경로를 막지 않는지 못박는다.
+  it("계정만 지운 뒤 같은 이메일로 다시 가입하면 역할이 유지된 채 이어 붙는다", async () => {
+    await agentAs("admin", "life-recover@gonjiam.com", "관리자");
+    const before = await employeeBy("life-recover@gonjiam.com");
+    await withService((q) => q.query("delete from auth_accounts where email = $1", ["life-recover@gonjiam.com"]));
+
+    const signup = await request(app)
+      .post("/api/auth/signup")
+      .send({ email: "life-recover@gonjiam.com", password: "recovered-pw-1", name: "관리자" });
+    expect(signup.status).toBe(201);
+
+    const after = await employeeBy("life-recover@gonjiam.com");
+    expect(after.id).toBe(before.id);
+    expect(after.role).toBe("admin");
+    expect(after.auth_user_id).not.toBeNull();
+    expect(after.auth_user_id).not.toBe(before.auth_user_id);
+  });
+
   it("계정이 없는 사전 등록 행에는 예전처럼 이어 붙는다", async () => {
     const admin = await agentAs("admin", "life-merge-admin@gonjiam.com");
     const created = await admin
