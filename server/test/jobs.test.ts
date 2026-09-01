@@ -141,6 +141,76 @@ describe("관측 수집", () => {
     expect(beat.note).toBe("missing");
   });
 
+  // 결측을 **실제로 놓친 시각**에 남겨야 한다 (QA W-13). 성공 경로는 기상청이 준 base
+  // 시각에 쓰는데 실패 경로만 앱의 현재 정시로 썼다 — 수집 크론이 매시 5분이고
+  // baseDateTime()이 KST 분 10분 미만이면 한 시간 전을 잡으므로 둘이 항상 1시간
+  // 어긋났다. 그래서 잃은 시각에는 행이 없고, 엉뚱한 자리에 찍힌 결측은 다음 성공
+  // 수집이 upsert로 덮어 지웠다 — 사후에 "그때 수집이 실패했었다"를 알 수 없다.
+  it("결측을 성공 수집과 같은 기준 시각에 기록한다", async () => {
+    // KST 09:05 — baseDateTime은 08:00을 base로 잡는다(분 < 10).
+    const now = new Date("2026-08-12T09:05:00+09:00");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network")));
+    await runWeatherTick({ channel: recorder().channel, now });
+
+    const rows = await withService(async (q) => {
+      const { rows } = await q.query("select observed_at, missing from weather_observations");
+      return rows;
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].missing).toBe(true);
+    // 앱 시계의 정시(09:00)가 아니라 기상청 base 시각(08:00)이어야 한다.
+    expect(new Date(rows[0].observed_at).toISOString()).toBe("2026-08-11T23:00:00.000Z");
+  });
+
+  it("결측 다음 시간의 성공 수집이 그 결측 기록을 지우지 않는다", async () => {
+    const failAt = new Date("2026-08-12T09:05:00+09:00");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network")));
+    await runWeatherTick({ channel: recorder().channel, now: failAt });
+
+    // 한 시간 뒤 정상 수집(기상청이 준 base = 09:00).
+    stubKma([
+      { category: "RN1", obsrValue: "0", baseDate: "20260812", baseTime: "0900" },
+      { category: "T1H", obsrValue: "22" }, { category: "WSD", obsrValue: "2" }, { category: "REH", obsrValue: "80" },
+    ]);
+    await runWeatherTick({ channel: recorder().channel, now: new Date("2026-08-12T10:05:00+09:00") });
+
+    const rows = await withService(async (q) => {
+      const { rows } = await q.query("select observed_at, missing from weather_observations order by observed_at");
+      return rows;
+    });
+    // 결측 1건 + 성공 1건. 예전에는 성공 수집이 결측 행과 같은 시각에 떨어져 덮어 지웠다.
+    expect(rows.map((r: any) => r.missing)).toEqual([true, false]);
+  });
+
+  it("이미 성공 수집이 있는 시각은 결측으로 덮지 않는다", async () => {
+    stubKma([
+      { category: "RN1", obsrValue: "1", baseDate: "20260812", baseTime: "0800" },
+      { category: "T1H", obsrValue: "22" }, { category: "WSD", obsrValue: "2" }, { category: "REH", obsrValue: "80" },
+    ]);
+    await runWeatherTick({ channel: recorder().channel, now: new Date("2026-08-12T09:05:00+09:00") });
+
+    // 같은 base 시각(08:00)을 겨냥한 실행이 한 번 더 도는데 이번엔 기상청이 실패한다
+    // (따라잡기·수동 실행). KST 분이 10분 미만이면 baseDateTime은 한 시간 전을 잡는다.
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network")));
+    const out = await runWeatherTick({ channel: recorder().channel, now: new Date("2026-08-12T09:08:00+09:00") });
+
+    const rows = await withService(async (q) => {
+      const { rows } = await q.query("select missing, rain_mm_per_hr from weather_observations");
+      return rows;
+    });
+    expect(rows).toHaveLength(1);
+    // 값이 있는 행을 missing=true로 만들면 "결측인데 값이 있는 행"이 생기고 화면에서도 사라진다.
+    expect(rows[0].missing).toBe(false);
+    expect(Number(rows[0].rain_mm_per_hr)).toBe(1);
+    // 같은 관측으로 판정을 두 번 돌리지 않는다(같은 시간에 반복 발송이 한 번 더 나간다).
+    expect(out.collected).toBe(false);
+    const beat = await withService(async (q) => {
+      const { rows } = await q.query("select ok, note from heartbeats where name = 'weather-tick'");
+      return rows[0];
+    });
+    expect(beat.ok).toBe(false);
+  });
+
   it("관측값을 파생값(체감온도·신적설)까지 계산해 저장한다", async () => {
     stubKma([
       { category: "RN1", obsrValue: "3", baseDate: "20260212", baseTime: "0800" },

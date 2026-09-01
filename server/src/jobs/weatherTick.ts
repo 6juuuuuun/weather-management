@@ -10,7 +10,7 @@
 // (2) 카카오워크 발송(네트워크)이 트랜잭션 안에 들어가면 그동안 커넥션이 붙잡힌다.
 //     그래서 발송은 항상 withService 블록 바깥에서 한다.
 import { withService, type Querier } from "../db.ts";
-import { fetchObservation, type KmaObservation } from "../shared/kma.ts";
+import { baseDateTime, fetchObservation, type KmaObservation } from "../shared/kma.ts";
 import { feelsLikeC, snowNewCm } from "../shared/derive.ts";
 import { evaluate } from "../shared/engine.ts";
 import {
@@ -134,6 +134,8 @@ export async function runWeatherTick(
     fetchError = e;
   }
 
+  // 수집에 실패했는데 그 시각에 이미 성공 관측이 있는 경우를 구분한다(아래).
+  let alreadyCollected = false;
   const saved = await withService(async (q) => {
     if (kma) {
       const k = kma;
@@ -157,16 +159,45 @@ export async function runWeatherTick(
       return rows[0];
     }
     // 기상청이 실패했을 때 조용히 넘어가면 화면은 옛 값을 최신인 양 보여준다.
-    // 원본과 같이 정시로 내림한 시각에 결측 행을 남긴다.
+    //
+    // **결측을 실제로 놓친 시각에 남긴다** (QA W-13). 예전에는 앱의 현재 정시로
+    // 내림해 썼는데(`floor(now)`), 성공 경로는 기상청이 준 base 시각에 쓴다.
+    // 수집 크론은 매시 5분이고 baseDateTime()은 KST 분이 10분 미만이면 한 시간 전을
+    // base로 잡으므로(shared/kma.ts) 두 시각이 **항상 1시간 어긋났다**. 결과:
+    //  · 실제로 값을 잃은 시각에는 행이 아예 없고
+    //  · 결측 표시는 한 시간 뒤 자리에 찍혔다가 **다음 성공 수집이 그 행을 덮어 지운다**
+    // → "수집이 실패했었다"는 사실이 남지 않아 사후에 원인을 추적할 수 없다.
+    // 성공 경로와 같은 함수로 시각을 계산해 두 경로를 한 자리에 맞춘다.
+    const { baseDate, baseTime } = baseDateTime(now);
+    const missingAt = new Date(
+      `${baseDate.slice(0, 4)}-${baseDate.slice(4, 6)}-${baseDate.slice(6, 8)}T${baseTime.slice(0, 2)}:00:00+09:00`,
+    );
+    // 이미 그 시각의 **성공** 관측이 있으면 덮어쓰지 않는다. 값이 있는 행을 missing=true로
+    // 바꾸면 "결측인데 값이 있는 행"이 생기고(부수 결함) 멀쩡한 관측도 화면에서 사라진다.
     const { rows } = await q.query(
       `insert into weather_observations (observed_at, missing, raw)
        values ($1, true, $2::jsonb)
        on conflict (observed_at) do update set missing = true, raw = excluded.raw
+         where weather_observations.missing = true
        returning *`,
-      [new Date(Math.floor(now.getTime() / 3600_000) * 3600_000), JSON.stringify({ error: String(fetchError) })],
+      [missingAt, JSON.stringify({ error: String(fetchError) })],
     );
-    return rows[0];
+    if (rows[0]) return rows[0];
+    // 충돌했는데 갱신하지 않았다 = 그 시각은 이미 성공 수집이 있다(크론 밖 수동 실행,
+    // 밀린 수집 따라잡기 등). 그 관측을 결측으로 만들지 않고, 판정도 다시 돌리지 않는다 —
+    // 같은 관측으로 두 번 판정하면 같은 시간에 반복 발송이 한 번 더 나간다.
+    alreadyCollected = true;
+    const { rows: existing } = await q.query(
+      "select * from weather_observations where observed_at = $1", [missingAt]);
+    return existing[0];
   });
+
+  if (alreadyCollected) {
+    // 수집은 실패했지만 그 시각 관측은 이미 있다. 실패 사실은 하트비트에 남긴다 —
+    // 삼키면 기상청 키 만료 같은 지속 장애가 이 경로에서만 조용히 지나간다.
+    await upsertHeartbeat("weather-tick", false, "fetch-failed(이미 수집된 시각)");
+    return { collected: false, events: 0, actions: [] };
+  }
 
   // 결측 3연속 → admin 알림, 판정 스킵
   if (saved.missing) {
