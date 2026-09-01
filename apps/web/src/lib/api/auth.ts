@@ -42,8 +42,11 @@ export const setAccountStatus = (accountId: string, status: "active" | "disabled
   apiSend<{ ok: boolean }>("PATCH", `/api/admin/users/${encodeURIComponent(accountId)}/status`, { status });
 
 // 응답의 temporary_password는 이 호출 한 번에만 내려온다 — 화면을 벗어나면 다시 볼 수 없다.
+// expires_in_hours는 그 값의 유효 시간이다(스펙 §6.4, server/src/auth/routes.ts의
+// TEMP_PASSWORD_HOURS). 만료가 있다는 사실이 화면에 안 보이면 관리자는 "왜 로그인이
+// 안 되죠"라는 문의로만 만료를 알게 된다.
 export const resetPassword = (accountId: string) =>
-  apiSend<{ temporary_password: string }>(
+  apiSend<{ temporary_password: string; expires_in_hours: number }>(
     "POST",
     `/api/admin/users/${encodeURIComponent(accountId)}/reset-password`,
   );

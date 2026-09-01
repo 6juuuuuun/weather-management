@@ -722,6 +722,93 @@ describe("지침 수신자 (부서별)", () => {
     expect(res.status).toBe(403);
     void admin;
   });
+
+  // 잘못된 입력이 500으로 나가면 운영 문서가 안내하는 "로그 마지막 몇 줄"에서
+  // 클라이언트 실수와 진짜 서버 장애가 구분되지 않는다. 같은 파일의
+  // POST /departments·POST /employees는 이미 400으로 거른다 — 규칙을 맞춘다.
+  it("부서 id가 uuid 형식이 아니면 400이다 (예전에는 500)", async () => {
+    const admin = await agentAs("admin", "rec-400a@gonjiam.com");
+    const res = await admin.put("/api/recipients/not-a-uuid").send({ employee_ids: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it("존재하지 않는 부서 uuid면 400이다 (예전에는 외래키 위반으로 500)", async () => {
+    const admin = await agentAs("admin", "rec-400b@gonjiam.com");
+    const res = await admin
+      .put("/api/recipients/00000000-0000-0000-0000-000000000000")
+      .send({ employee_ids: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it("employee_ids에 uuid가 아닌 값이 있으면 400이다", async () => {
+    const admin = await agentAs("admin", "rec-400c@gonjiam.com");
+    const deptId = await withService(async (q) => {
+      const { rows } = await q.query("insert into departments (name) values ($1) returning id", [
+        `${DEPT_PREFIX}400c`,
+      ]);
+      return rows[0].id;
+    });
+    const res = await admin.put(`/api/recipients/${deptId}`).send({ employee_ids: ["nope"] });
+    expect(res.status).toBe(400);
+  });
+
+  it("employee_ids에 없는 직원 uuid가 있으면 400이고, 기존 수신자는 그대로다", async () => {
+    const admin = await agentAs("admin", "rec-400d@gonjiam.com");
+    const { deptId, empId } = await withService(async (q) => {
+      const { rows: d } = await q.query("insert into departments (name) values ($1) returning id", [
+        `${DEPT_PREFIX}400d`,
+      ]);
+      const { rows: e } = await q.query(
+        "insert into employees (name, email) values ('기존', 'rec-400d-emp@gonjiam.com') returning id");
+      await q.query("insert into recipients (department_id, employee_id) values ($1,$2)", [d[0].id, e[0].id]);
+      return { deptId: d[0].id as string, empId: e[0].id as string };
+    });
+    const res = await admin
+      .put(`/api/recipients/${deptId}`)
+      .send({ employee_ids: ["00000000-0000-0000-0000-000000000000"] });
+    expect(res.status).toBe(400);
+    // 트랜잭션이 롤백돼 기존 지정이 살아 있어야 한다 — delete만 먹고 끝나면
+    // 400을 받은 관리자가 모르는 사이에 수신자가 통째로 사라진다.
+    const rows = (await admin.get(`/api/recipients?department_id=${deptId}`)).body;
+    expect(rows.map((r: any) => r.employee_id)).toEqual([empId]);
+  });
+});
+
+// PATCH /api/employees의 department_id도 같은 부류였다(원장에 파킹돼 있던 바로 그 항목).
+describe("직원 수정의 잘못된 입력", () => {
+  async function oneEmployee(email: string) {
+    return withService(async (q) => {
+      const { rows } = await q.query("insert into employees (name, email) values ('대상', $1) returning id", [
+        email,
+      ]);
+      return rows[0].id as string;
+    });
+  }
+
+  it("department_id가 uuid 형식이 아니면 400이다 (예전에는 500)", async () => {
+    const admin = await agentAs("admin", "emp-400a@gonjiam.com");
+    const id = await oneEmployee("emp-400a-target@gonjiam.com");
+    const res = await admin.patch(`/api/employees/${id}`).send({ department_id: "nope" });
+    expect(res.status).toBe(400);
+  });
+
+  it("존재하지 않는 부서 uuid면 400이다 (예전에는 외래키 위반으로 500)", async () => {
+    const admin = await agentAs("admin", "emp-400b@gonjiam.com");
+    const id = await oneEmployee("emp-400b-target@gonjiam.com");
+    const res = await admin
+      .patch(`/api/employees/${id}`)
+      .send({ department_id: "00000000-0000-0000-0000-000000000000" });
+    expect(res.status).toBe(400);
+  });
+
+  // null은 "부서 미지정"이라는 정당한 값이다 — 형식 검사가 이걸 막으면 안 된다.
+  it("department_id: null은 그대로 허용한다", async () => {
+    const admin = await agentAs("admin", "emp-400c@gonjiam.com");
+    const id = await oneEmployee("emp-400c-target@gonjiam.com");
+    const res = await admin.patch(`/api/employees/${id}`).send({ department_id: null });
+    expect(res.status).toBe(200);
+    expect(res.body.department_id).toBe(null);
+  });
 });
 
 describe("특보 승인 수신자 (alert_recipients)", () => {

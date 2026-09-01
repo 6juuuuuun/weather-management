@@ -1,7 +1,8 @@
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { describe, expect, it, beforeEach, afterAll, vi } from "vitest";
 import request from "supertest";
 import { app } from "../src/index.ts";
 import { withService } from "../src/db.ts";
+import { MIN_PASSWORD } from "../src/auth/routes.ts";
 
 const SIGNUP = {
   email: "hong@gonjiam.com",
@@ -21,6 +22,71 @@ beforeEach(async () => {
     // 세는 다른 검증(Task 6 등)을 어긋나게 한다). 시드 16개는 이름이 겹치지
     // 않으니 이 delete가 그 행들을 건드릴 일은 없다.
     await q.query("delete from departments where id = $1", ["eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"]);
+  });
+});
+
+// 비밀번호 최소 길이는 세 곳에 각각 하드코딩돼 있다(서버 auth/routes.ts,
+// 웹 Signup.tsx, 웹 ChangePassword.tsx). 웹과 서버는 별개 npm 패키지라 상수를
+// 공유할 자연스러운 통로가 없어서, 무리하게 구조를 만드는 대신 세 값이 어긋나면
+// 실패하는 테스트로 묶는다. 실제로 예전에는 서버의 **가입 경로만** 그 값을 안 써서
+// 1자 비밀번호로 가입하고 로그인까지 됐다.
+describe("비밀번호 최소 길이", () => {
+  it("서버와 화면 두 곳이 같은 값을 쓴다", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { dirname, join } = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const here = dirname(fileURLToPath(import.meta.url));
+    const web = join(here, "..", "..", "apps", "web", "src", "pages");
+    const read = (f: string) => {
+      const text = readFileSync(f, "utf8");
+      const m = /MIN_PASSWORD\s*=\s*(\d+)/.exec(text);
+      if (!m) throw new Error(`MIN_PASSWORD를 찾지 못했습니다: ${f}`);
+      return Number(m[1]);
+    };
+    expect(read(join(web, "Signup.tsx"))).toBe(MIN_PASSWORD);
+    expect(read(join(web, "ChangePassword.tsx"))).toBe(MIN_PASSWORD);
+  });
+
+  it("서버 가입 경로가 짧은 비밀번호를 거부한다 — 그 계정은 만들어지지 않는다", async () => {
+    const res = await request(app)
+      .post("/api/auth/signup")
+      .send({ email: "shorty@gonjiam.com", password: "1", name: "짧은이" });
+    expect(res.status).toBe(400);
+    // 브라우저를 거치지 않는 요청이라 화면의 10자 검사는 방벽이 아니다.
+    // 계정이 실제로 안 만들어졌는지까지 본다 — 만들어졌다면 로그인이 200이 된다.
+    const login = await request(app)
+      .post("/api/auth/login")
+      .send({ email: "shorty@gonjiam.com", password: "1" });
+    expect(login.status).toBe(401);
+    const n = await withService(async (q) => {
+      const { rows } = await q.query("select count(*)::int as n from auth_accounts where email = $1", [
+        "shorty@gonjiam.com",
+      ]);
+      return rows[0].n as number;
+    });
+    expect(n).toBe(0);
+  });
+
+  it("정확히 최소 길이면 가입된다 (경계)", async () => {
+    const res = await request(app)
+      .post("/api/auth/signup")
+      .send({ email: "edge@gonjiam.com", password: "a".repeat(MIN_PASSWORD), name: "경계" });
+    expect(res.status).toBe(201);
+  });
+
+  it("한 글자 모자라면 거부한다 (경계)", async () => {
+    const res = await request(app)
+      .post("/api/auth/signup")
+      .send({ email: "edge2@gonjiam.com", password: "a".repeat(MIN_PASSWORD - 1), name: "경계" });
+    expect(res.status).toBe(400);
+  });
+
+  // 이 describe가 만든 직원 행은 여기서 치운다 — employees는 모든 테스트 파일이
+  // 공유하는 작업 DB의 실제 명부라, 남겨 두면 개수를 세는 다른 검증이 어긋난다.
+  afterAll(async () => {
+    await withService((q) =>
+      q.query("delete from employees where email in ('edge@gonjiam.com','edge2@gonjiam.com','shorty@gonjiam.com')"),
+    );
   });
 });
 

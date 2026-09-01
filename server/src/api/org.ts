@@ -152,6 +152,14 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
   if ("role" in body && !EMP_ROLES.includes(body.role)) {
     return res.status(400).json({ error: `role은 ${EMP_ROLES.join(", ")} 중 하나여야 합니다` });
   }
+  // department_id는 uuid 컬럼이다. 형식이 아닌 값을 그대로 바인딩하면 Postgres가
+  // 22P02로 죽고 그 예외가 에러 미들웨어까지 새어 500이 된다. 같은 파일의
+  // POST /employees·POST /departments는 이미 400으로 거르고 있었다 — 라우트마다
+  // 규칙이 다르면 운영자가 로그에서 클라이언트 실수와 진짜 장애를 구분할 수 없다.
+  // null은 "부서 미지정"이라 그대로 허용한다.
+  if ("department_id" in body && body.department_id !== null && !UUID.test(String(body.department_id))) {
+    return res.status(400).json({ error: "department_id 형식이 올바르지 않습니다" });
+  }
   const sets: string[] = [];
   const vals: unknown[] = [req.params.id];
   for (const key of ["name", "role", "department_id", "phone"] as const) {
@@ -189,6 +197,11 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
     // employees.email은 unique다. 이미 다른 직원이 쓰는 이메일로 바꾸려 한 경우로,
     // 클라이언트 잘못이므로 500이 아니라 409다(POST /employees와 같은 처리).
     if (e?.code === "23505") return res.status(409).json({ error: "이미 등록된 이메일입니다" });
+    // 형식은 맞지만 존재하지 않는 부서 uuid — 외래키 위반(23503)이다. 이것도
+    // 클라이언트 잘못이므로 500으로 내보내지 않는다(POST /employees와 같은 문구).
+    if (e?.code === "23503") {
+      return res.status(400).json({ error: `department_id ${body.department_id}에 해당하는 부서가 없습니다` });
+    }
     throw e;
   }
   if (rows.length === 0) return res.status(404).json({ error: "직원을 찾을 수 없습니다" });
@@ -273,14 +286,36 @@ orgRouter.get("/recipients", async (req, res) => {
 // 이 부서(departmentId) 몫만 지우고 다시 넣는다 — 전체를 지우면 다른 부서의
 // 수신자 지정까지 함께 사라진다.
 orgRouter.put("/recipients/:departmentId", requireAdmin, async (req, res) => {
-  const departmentId = req.params.departmentId;
+  const departmentId = String(req.params.departmentId ?? "");
   const ids: string[] = Array.isArray(req.body?.employee_ids) ? req.body.employee_ids : [];
-  await withUser(req.user!.accountId, async (q) => {
-    await q.query("delete from recipients where department_id = $1", [departmentId]);
-    for (const id of ids) {
-      await q.query("insert into recipients (department_id, employee_id) values ($1, $2)", [departmentId, id]);
-    }
-  });
+  // 경로의 부서 id와 본문의 직원 id 모두 uuid 컬럼에 그대로 들어간다. 형식이 아닌
+  // 값은 Postgres가 22P02로 죽고 그 예외가 500이 되어 나갔다 — 같은 파일의
+  // POST /departments·POST /employees와 같은 규칙(400)으로 맞춘다.
+  if (!UUID.test(departmentId)) {
+    return res.status(400).json({ error: "department_id 형식이 올바르지 않습니다" });
+  }
+  const badId = ids.find((id) => !UUID.test(String(id)));
+  if (badId !== undefined) {
+    return res.status(400).json({ error: "employee_ids 형식이 올바르지 않습니다" });
+  }
+  try {
+    const ok = await withUser(req.user!.accountId, async (q) => {
+      // 형식만 맞고 실존하지 않는 부서면 delete가 0행을 지우고 insert가 외래키
+      // 위반으로 터진다(트랜잭션은 정상 롤백되지만 응답은 500이었다). 먼저 본다.
+      const { rows } = await q.query("select id from departments where id = $1", [departmentId]);
+      if (rows.length === 0) return false;
+      await q.query("delete from recipients where department_id = $1", [departmentId]);
+      for (const id of ids) {
+        await q.query("insert into recipients (department_id, employee_id) values ($1, $2)", [departmentId, id]);
+      }
+      return true;
+    });
+    if (!ok) return res.status(400).json({ error: `department_id ${departmentId}에 해당하는 부서가 없습니다` });
+  } catch (e: any) {
+    // 존재하지 않는 직원 id를 넘긴 경우다(employee_id 외래키). 클라이언트 잘못이다.
+    if (e?.code === "23503") return res.status(400).json({ error: "없는 직원이 employee_ids에 있습니다" });
+    throw e;
+  }
   res.status(204).end();
 });
 

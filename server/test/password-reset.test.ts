@@ -177,6 +177,162 @@ describe("비밀번호 재설정", () => {
   });
 });
 
+// 스펙 §6.4 "임시 비밀번호에는 만료 시간을 둔다".
+//
+// 만료가 없으면 발급된 값이 영구히 유효하다. 발급한 관리자는 그 값을 알고 있으므로
+// 당사자가 쓰지 않고 방치하면 몇 달 뒤에도 그 계정으로 로그인해 비밀번호를 바꿔
+// 계정을 인수할 수 있다(대상이 Alert 수신자면 특보 승인 권한까지).
+describe("임시 비밀번호 만료", () => {
+  async function issueTemp() {
+    await activeAgent(USER);
+    await activeAgent(ADMIN);
+    await withService((q) => q.query("update employees set role='admin' where email=$1", [ADMIN.email]));
+    const admin = request.agent(app);
+    await admin.post("/api/auth/login").send({ email: ADMIN.email, password: ADMIN.password });
+    const id = await withService(async (q) => {
+      const { rows } = await q.query("select id from auth_accounts where email=$1", [USER.email]);
+      return rows[0].id as string;
+    });
+    const res = await admin.post(`/api/admin/users/${id}/reset-password`);
+    expect(res.status).toBe(200);
+    return { id, temp: res.body.temporary_password as string, body: res.body };
+  }
+
+  it("발급하면 만료 시각이 함께 기록되고, 응답이 유효 시간을 알려 준다", async () => {
+    const { id, body } = await issueTemp();
+    expect(body.expires_in_hours).toBeGreaterThan(0);
+    const row = await withService(async (q) => {
+      const { rows } = await q.query(
+        "select temp_password_expires_at is not null as has_exp, temp_password_expires_at > now() as future from auth_accounts where id=$1",
+        [id],
+      );
+      return rows[0];
+    });
+    expect(row.has_exp).toBe(true);
+    expect(row.future).toBe(true);
+  });
+
+  it("만료 전에는 그 값으로 로그인된다", async () => {
+    const { temp } = await issueTemp();
+    const login = await request(app).post("/api/auth/login").send({ email: USER.email, password: temp });
+    expect(login.status).toBe(200);
+    expect(login.body.must_change_password).toBe(true);
+  });
+
+  it("만료된 뒤에는 값이 맞아도 로그인되지 않는다", async () => {
+    const { id, temp } = await issueTemp();
+    await withService((q) =>
+      q.query("update auth_accounts set temp_password_expires_at = now() - interval '1 minute' where id=$1", [id]),
+    );
+    const login = await request(app).post("/api/auth/login").send({ email: USER.email, password: temp });
+    expect(login.status).toBe(403);
+    expect(login.body.error).toMatch(/임시 비밀번호/);
+  });
+
+  it("비밀번호를 바꾸면 만료가 지워진다 — 본인이 정한 비밀번호가 만료를 물려받지 않는다", async () => {
+    const { id, temp } = await issueTemp();
+    const agent = request.agent(app);
+    await agent.post("/api/auth/login").send({ email: USER.email, password: temp });
+    expect((await agent.post("/api/auth/change-password").send({ current: temp, next: "brand-new-password" })).status)
+      .toBe(204);
+    const row = await withService(async (q) => {
+      const { rows } = await q.query(
+        "select temp_password_expires_at, must_change_password from auth_accounts where id=$1", [id]);
+      return rows[0];
+    });
+    expect(row.temp_password_expires_at).toBe(null);
+    expect(row.must_change_password).toBe(false);
+
+    // 만료 시각을 과거로 되돌려 놔도(=옛 발급의 흔적) 본인 비밀번호는 막히면 안 된다.
+    await withService((q) =>
+      q.query("update auth_accounts set temp_password_expires_at = now() - interval '1 day' where id=$1", [id]));
+    const login = await request(app)
+      .post("/api/auth/login")
+      .send({ email: USER.email, password: "brand-new-password" });
+    expect(login.status).toBe(200);
+  });
+
+  // 이 마이그레이션 이전에 발급된 값은 만료 시각이 null이다. 그것을 "만료됨"으로
+  // 취급하면, 지금 그 값으로만 로그인할 수 있는 사람이 갑자기 잠긴다.
+  it("만료 시각이 없는(옛) 임시 비밀번호는 그대로 쓸 수 있다", async () => {
+    const { id, temp } = await issueTemp();
+    await withService((q) =>
+      q.query("update auth_accounts set temp_password_expires_at = null where id=$1", [id]));
+    const login = await request(app).post("/api/auth/login").send({ email: USER.email, password: temp });
+    expect(login.status).toBe(200);
+  });
+});
+
+// PATCH /api/admin/users/:id/status — 계정 활성/비활성
+//
+// 이 엔드포인트는 퇴사자를 막는 유일한 수단이면서, 자기 자신에게 쓰면 제품 안에
+// 복구 경로가 없는 유일한 조작이기도 하다: 관리자가 1명뿐인 배포(= 이 제품의
+// 기본 상태)에서 자기 행의 "비활성화"를 누르면 상태가 disabled로 바뀌고 자기
+// 세션까지 전부 지워진다 → 로그인 403 → 재활성화는 admin만 가능 → DB 직접 개입.
+// 같은 라우터의 reset-password는 이미 같은 이유로 자기대상을 막고 있었다.
+describe("계정 상태 변경", () => {
+  async function adminAgent() {
+    await request(app).post("/api/auth/signup").send(ADMIN);
+    await withService((q) => q.query("update employees set role='admin' where email=$1", [ADMIN.email]));
+    const agent = request.agent(app);
+    await agent.post("/api/auth/login").send({ email: ADMIN.email, password: ADMIN.password });
+    const id = await withService(async (q) => {
+      const { rows } = await q.query("select id from auth_accounts where email=$1", [ADMIN.email]);
+      return rows[0].id as string;
+    });
+    return { agent, id };
+  }
+
+  it("남의 계정은 비활성화할 수 있다", async () => {
+    await activeAgent(USER);
+    const { agent } = await adminAgent();
+    const victimId = await withService(async (q) => {
+      const { rows } = await q.query("select id from auth_accounts where email=$1", [USER.email]);
+      return rows[0].id as string;
+    });
+    const res = await agent.patch(`/api/admin/users/${victimId}/status`).send({ status: "disabled" });
+    expect(res.status).toBe(200);
+    const relogin = await request(app)
+      .post("/api/auth/login")
+      .send({ email: USER.email, password: USER.password });
+    expect(relogin.status).toBe(403);
+  });
+
+  it("자기 계정은 비활성화할 수 없다 — 스스로 잠그면 복구 경로가 없다", async () => {
+    const { agent, id } = await adminAgent();
+    const res = await agent.patch(`/api/admin/users/${id}/status`).send({ status: "disabled" });
+    expect(res.status).toBe(403);
+    // 세션도 계정도 그대로 살아 있어야 한다.
+    expect((await agent.get("/api/auth/me")).status).toBe(200);
+    const relogin = await request(app)
+      .post("/api/auth/login")
+      .send({ email: ADMIN.email, password: ADMIN.password });
+    expect(relogin.status).toBe(200);
+  });
+
+  // 대소문자만 다른 uuid 표기로 가드를 우회할 수 없어야 한다(reset-password와 같은 처방).
+  it("대문자 uuid로도 자기 계정을 비활성화할 수 없다", async () => {
+    const { agent, id } = await adminAgent();
+    const res = await agent.patch(`/api/admin/users/${id.toUpperCase()}/status`).send({ status: "disabled" });
+    expect(res.status).toBe(403);
+  });
+
+  it("uuid 형식이 아니면 400이다 (예전에는 500이었다)", async () => {
+    const { agent } = await adminAgent();
+    const res = await agent.patch("/api/admin/users/not-a-uuid/status").send({ status: "disabled" });
+    expect(res.status).toBe(400);
+  });
+
+  // 없는 id에 200 {"ok":true}를 주면 관리자는 막았다고 믿는다.
+  it("없는 계정 id에는 404다 — reset-password와 같은 규약", async () => {
+    const { agent } = await adminAgent();
+    const res = await agent
+      .patch("/api/admin/users/00000000-0000-0000-0000-000000000000/status")
+      .send({ status: "disabled" });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe("비밀번호 변경", () => {
   it("현재 비밀번호가 맞아야 바꿀 수 있다", async () => {
     const agent = await activeAgent(USER);

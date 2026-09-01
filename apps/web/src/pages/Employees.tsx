@@ -64,7 +64,9 @@ export default function Employees() {
   // 다시 "사용 중"으로 보였다 — 그래서 이제 로컬 상태를 두지 않고 employees 배열의
   // account_status를 그대로 읽는다.
   const [accountBusyId, setAccountBusyId] = useState<string | null>(null);
-  const [tempPasswordModal, setTempPasswordModal] = useState<{ name: string; password: string } | null>(null);
+  const [tempPasswordModal, setTempPasswordModal] = useState<
+    { name: string; password: string; expiresInHours: number | null } | null
+  >(null);
 
   const [deptModalOpen, setDeptModalOpen] = useState(searchParams.get("dept") === "open" && isAdmin);
   const [toast, setToast] = useState<ToastState>(null);
@@ -276,8 +278,12 @@ export default function Employees() {
     if (!ok) return;
     setAccountBusyId(e.id);
     try {
-      const { temporary_password } = await resetPassword(accountId);
-      setTempPasswordModal({ name: e.name, password: temporary_password });
+      const { temporary_password, expires_in_hours } = await resetPassword(accountId);
+      setTempPasswordModal({
+        name: e.name,
+        password: temporary_password,
+        expiresInHours: typeof expires_in_hours === "number" ? expires_in_hours : null,
+      });
     } catch (err) {
       setToast({ kind: "error", message: err instanceof ApiError ? err.message : "임시 비밀번호 발급에 실패했습니다" });
     } finally {
@@ -621,6 +627,12 @@ export default function Employees() {
           <p className="employees-temp-password-warning">
             이 화면을 벗어나면 다시 볼 수 없습니다. 지금 안전하게 당사자에게 전달하세요.
           </p>
+          {tempPasswordModal.expiresInHours !== null && (
+            <p className="employees-temp-password-warning">
+              이 임시 비밀번호는 {tempPasswordModal.expiresInHours}시간 뒤에 만료됩니다. 그 뒤에는
+              다시 발급해야 합니다.
+            </p>
+          )}
         </Modal>
       )}
 

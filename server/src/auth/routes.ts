@@ -7,7 +7,17 @@ import { isAllowedEmailDomain } from "./emailDomain.ts";
 
 const MAX_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
-const MIN_PASSWORD = 10;
+// 임시 비밀번호의 유효 시간(스펙 §6.4). 관리자가 발급해 당사자에게 직접 전달하는
+// 값이라, 주말을 끼고 전달되는 경우까지 감안해 3일로 둔다. 이보다 길면 "발급해
+// 두고 잊은" 임시 비밀번호가 관리자만 아는 상시 백도어가 된다 — 관리자는 발급한
+// 값을 알고 있으므로, 그 계정이 Alert 수신자라면 특보 승인 권한까지 인수할 수 있다.
+const TEMP_PASSWORD_HOURS = 72;
+// 비밀번호 최소 길이. 화면(apps/web의 Signup.tsx·ChangePassword.tsx)에도 같은 값이
+// 각각 하드코딩돼 있다 — 웹과 서버는 별개 npm 패키지라 상수를 공유할 자연스러운
+// 통로가 없다. 무리하게 구조를 만드는 대신 export해서 세 값이 어긋나면 실패하는
+// 테스트로 묶는다(server/test/auth.test.ts의 "비밀번호 최소 길이"). 서버가
+// 최종 관문이므로, 화면 검사가 없어도 여기서 반드시 막힌다.
+export const MIN_PASSWORD = 10;
 
 export const authRouter = Router();
 
@@ -15,6 +25,14 @@ authRouter.post("/signup", async (req, res) => {
   const { password, name, department_id, phone } = req.body ?? {};
   const emailRaw = req.body?.email;
   if (!emailRaw || !password || !name) return res.status(400).json({ error: "필수 항목이 비어 있습니다" });
+
+  // 가입에도 변경(change-password)과 같은 최소 길이를 적용한다. 예전에는 !password만
+  // 봤기 때문에 브라우저를 거치지 않는 요청이 1자 비밀번호로 가입하고 그대로 로그인할 수
+  // 있었다 — 화면의 10자 검사는 우회할 수 있으므로 방벽이 아니다. 그 계정이 나중에
+  // Alert 수신자가 되면 1자 비밀번호가 특보 승인 권한을 지키게 된다.
+  if (typeof password !== "string" || password.length < MIN_PASSWORD) {
+    return res.status(400).json({ error: `비밀번호는 ${MIN_PASSWORD}자 이상이어야 합니다` });
+  }
 
   // 이메일 대소문자를 정규화한다. 그대로 두면 Kim@과 kim@이 서로 다른 계정·직원
   // 행으로 갈라져 같은 사람이 명부에 두 번 오르고, 부서 수신자 목록에도 중복으로
@@ -66,7 +84,10 @@ authRouter.post("/login", async (req, res) => {
       // 시계로 쓰이므로(now() + interval) Node의 new Date()로 비교하면 두 시계가
       // 어긋난 만큼 판정이 틀린다 — 시계 도메인을 하나로 묶는다.
       `select id, password_hash, status, failed_attempts, must_change_password,
-              (locked_until is not null and locked_until > now()) as is_locked
+              (locked_until is not null and locked_until > now()) as is_locked,
+              (must_change_password
+                 and temp_password_expires_at is not null
+                 and temp_password_expires_at <= now()) as temp_expired
          from auth_accounts where email = $1`,
       [email],
     );
@@ -116,6 +137,17 @@ authRouter.post("/login", async (req, res) => {
     return res.status(403).json({ error: "사용할 수 없는 계정입니다. 관리자에게 문의해 주세요" });
   }
 
+  // 임시 비밀번호는 만료된다(스펙 §6.4). 비밀번호 검증 뒤에 본다 — 앞에 두면
+  // 어떤 계정이 임시 비밀번호 상태인지 비밀번호 없이 알아낼 수 있다.
+  // 만료된 값으로는 세션을 아예 만들지 않는다: must_change_password 게이트는
+  // API 접근만 막고 로그인과 비밀번호 변경은 허용하므로, 그것만으로는
+  // "몇 달 뒤 그 값으로 들어와 비밀번호를 바꿔 계정을 인수"하는 길이 그대로 열린다.
+  if (account.temp_expired) {
+    return res.status(403).json({
+      error: "임시 비밀번호가 만료되었습니다. 관리자에게 다시 발급을 요청해 주세요",
+    });
+  }
+
   await withService((q) =>
     q.query("update auth_accounts set failed_attempts = 0, locked_until = null where id = $1", [account.id]),
   );
@@ -155,10 +187,14 @@ authRouter.post("/change-password", requireAuth, async (req, res) => {
     return res.status(401).json({ error: "현재 비밀번호가 맞지 않습니다" });
   }
   await withService(async (q) =>
-    q.query("update auth_accounts set password_hash = $2, must_change_password = false where id = $1", [
-      account.id,
-      await hash(next),
-    ]),
+    // 임시 비밀번호를 실제로 바꿨으니 만료 시각도 지운다 — 남겨 두면 본인이 정한
+    // 비밀번호가 임시 비밀번호의 만료를 물려받아 3일 뒤 로그인이 막힌다.
+    q.query(
+      `update auth_accounts
+          set password_hash = $2, must_change_password = false, temp_password_expires_at = null
+        where id = $1`,
+      [account.id, await hash(next)],
+    ),
   );
   res.status(204).end();
 });
@@ -170,13 +206,36 @@ adminUserRouter.patch("/:id/status", requireAuth, requireAdmin, async (req, res)
   if (status !== "active" && status !== "disabled") {
     return res.status(400).json({ error: "status는 active 또는 disabled여야 합니다" });
   }
-  await withService(async (q) => {
-    await q.query("update auth_accounts set status = $2 where id = $1", [req.params.id, status]);
+  const targetId = String(req.params.id ?? "");
+  // uuid가 아닌 값을 그대로 바인딩하면 Postgres가 22P02로 죽고 그 예외가 에러
+  // 미들웨어까지 새어 500이 된다 — 클라이언트 실수와 진짜 서버 장애가 로그에서
+  // 구분되지 않는다. 아래 reset-password와 같은 규칙으로 SQL에 닿기 전에 거른다.
+  if (!UUID.test(targetId)) {
+    return res.status(400).json({ error: "id 형식이 올바르지 않습니다" });
+  }
+  // 자기대상 가드. reset-password(:193 아래)에 있는 것과 같은 취지이고, 여기서는
+  // 결과가 더 나쁘다: 관리자가 1명뿐인 배포(= ops/make-admin.sh가 만드는 기본 상태)에서
+  // 자기 행의 "비활성화"를 누르면 서버가 status를 disabled로 바꾸고 자기 세션까지
+  // 전부 지운다 → 로그인 403 → 재활성화는 admin만 할 수 있으므로 제품 안에 남는
+  // 복구 경로가 없다(DB 직접 개입뿐). 남을 막는 기능이지 자기를 막는 기능이 아니다.
+  if (req.user!.accountId.toLowerCase() === targetId.toLowerCase()) {
+    return res.status(403).json({ error: "본인 계정의 상태는 스스로 바꿀 수 없습니다" });
+  }
+  const found = await withService(async (q) => {
+    const { rows } = await q.query(
+      "update auth_accounts set status = $2 where id = $1 returning id",
+      [targetId, status],
+    );
+    if (rows.length === 0) return false;
     // 퇴사자를 막는 것이 목적이다. 남아 있는 세션을 끊지 않으면 막은 의미가 없다.
     if (status === "disabled") {
-      await q.query("delete from auth_sessions where account_id = $1", [req.params.id]);
+      await q.query("delete from auth_sessions where account_id = $1", [targetId]);
     }
+    return true;
   });
+  // 없는 id에 200 {"ok":true}를 주면 관리자는 막았다고 믿는다. 같은 라우터의
+  // reset-password가 이미 404를 주므로 규약도 그쪽에 맞춘다.
+  if (!found) return res.status(404).json({ error: "계정을 찾을 수 없습니다" });
   res.json({ ok: true });
 });
 
@@ -200,8 +259,14 @@ adminUserRouter.post("/:id/reset-password", requireAuth, requireAdmin, async (re
   const temp = temporaryPassword();
   const found = await withService(async (q) => {
     const { rows } = await q.query(
-      "update auth_accounts set password_hash = $2, must_change_password = true, failed_attempts = 0, locked_until = null where id = $1 returning id",
-      [targetId, await hash(temp)],
+      // 만료 시각도 Postgres 시계로 찍는다(now() + interval) — 로그인 쪽 판정이
+      // now()와 비교하므로 앱 시계로 만들면 두 시계가 섞인다.
+      `update auth_accounts
+          set password_hash = $2, must_change_password = true, failed_attempts = 0, locked_until = null,
+              temp_password_expires_at = now() + ($3 || ' hours')::interval
+        where id = $1
+        returning id`,
+      [targetId, await hash(temp), String(TEMP_PASSWORD_HOURS)],
     );
     if (rows.length === 0) return false;
     // 비밀번호를 잃어버렸다는 전제의 발급이다. 남아 있는 세션도 함께 끊는다.
@@ -210,5 +275,7 @@ adminUserRouter.post("/:id/reset-password", requireAuth, requireAdmin, async (re
   });
   // 영향 행이 0이면 잘못된 id를 잘못 성공으로 오인하게 둘 수 없다.
   if (!found) return res.status(404).json({ error: "계정을 찾을 수 없습니다" });
-  res.json({ temporary_password: temp });
+  // 만료가 있다는 사실 자체가 관리자에게 보여야 한다 — 안 보이면 "왜 로그인이
+  // 안 되죠"라는 문의로만 만료를 알게 된다. 화면이 이 시간을 그대로 안내한다.
+  res.json({ temporary_password: temp, expires_in_hours: TEMP_PASSWORD_HOURS });
 });
