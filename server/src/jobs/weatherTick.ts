@@ -111,7 +111,11 @@ export async function refreshRecipients(q: Querier, blocks: DeptBlock[]): Promis
   }));
 }
 
-export type WeatherTickResult = { collected: boolean; events: number; actions: Action[] };
+export type WeatherTickResult = {
+  collected: boolean; events: number; actions: Action[];
+  /** 이 tick에서 처리하다 예외로 끝난 액션 수. 0이 아니면 하트비트가 ok=false로 찍힌다. */
+  actionFailures?: number;
+};
 
 export async function runWeatherTick(
   deps: { channel?: NotificationChannel; now?: Date } = {},
@@ -200,11 +204,19 @@ export async function runWeatherTick(
       : obsLine;
 
   async function createEvent(kind: Kind, grade: Grade) {
-    const { eventId, alertIds } = await withService(async (q) => {
+    const created = await withService(async (q) => {
+      // one_open_event(kind, grade) 부분 유니크 인덱스와 같은 조건으로 충돌을 흡수한다
+      // (QA W-12). 승격 분기는 이미 열린 경보가 있는지 보지 않고 createEvent를 부르는데
+      // (shared/engine.ts:71-74, 손댈 수 없다), 그러면 여기서 유니크 위반이 터지고
+      // 예전에는 그 예외가 tick 전체를 죽여 **그 시간의 폭설·강풍·폭염 판정까지 사라졌다.**
+      // 이미 같은 종류·등급의 열린 특보가 있다면 새로 만들 이유가 없으므로 조용히 건너뛴다.
       const { rows: evRows } = await q.query(
-        "insert into weather_events (kind, grade, trigger_observation_id) values ($1, $2, $3) returning id",
+        `insert into weather_events (kind, grade, trigger_observation_id) values ($1, $2, $3)
+         on conflict (kind, grade) where status in ('PENDING_APPROVAL','ACTIVE') do nothing
+         returning id`,
         [kind, grade, saved.id],
       );
+      if (evRows.length === 0) return null;
       const ev = evRows[0];
       const { rows: gRows } = await q.query(
         `select g.department_id, g.kind, g.grade, g.staff_actions, g.guest_notice,
@@ -219,92 +231,122 @@ export async function runWeatherTick(
            from recipients r
            join employees e on e.id = r.employee_id`,
       );
-      const blocks = composeDraft(kind, grade, gRows as any, rRows as any);
+      // 내용이 비어 있는 지침(인력 조정 지침도 고객 안내도 없는 행)은 제목만 있는 DM을
+      // 만든다(QA W-22). shared/template.ts의 composeDraft는 행이 있으면 무조건 블록을
+      // 만들므로 — 그 파일은 손댈 수 없다 — 여기서 걸러서 넘긴다. checkHealth·대시보드
+      // 체크리스트도 같은 기준으로 센다.
+      const effective = (gRows as any[]).filter(
+        (g) => (g.staff_actions ?? []).some((a: string) => a.trim() !== "") || (g.guest_notice ?? "").trim() !== "",
+      );
+      const blocks = composeDraft(kind, grade, effective as any, rRows as any);
       await q.query("insert into messages (event_id, content) values ($1, $2::jsonb)",
         [ev.id, JSON.stringify(blocks)]);
       return { eventId: ev.id as string, alertIds: await alertRecipientKakaoIds(q) };
     });
+    if (!created) {
+      console.warn(`[weather-tick] ${kind} ${grade}는 이미 열려 있어 새로 만들지 않았습니다`);
+      return;
+    }
+    const { eventId, alertIds } = created;
     const deepLink = `${env("APP_BASE_URL")}/events/${eventId}`;
     for (const kw of alertIds)
       await channel.send(kw,
         `[날씨경영] ${KIND_LABEL[kind]} ${GRADE_LABEL[grade]} 감지 — 발송 초안이 승인을 기다립니다.\n${lineFor(kind)}\n검토: ${deepLink}`);
   }
 
+  // 액션마다 격리한다 (QA W-12). 예전에는 열린 특보 하나가 어긋나 예외가 나면
+  // runWeatherTick이 통째로 죽었고, kinds 순회 순서가 rain → snow → wind → heat이라
+  // **폭우 처리에서 난 예외가 그 시간의 폭설·강풍·폭염 판정까지 지웠다.** 관측 행은
+  // 이미 저장돼 있어 대시보드는 방금 수집한 최신값을 정상으로 보여준다.
+  //
+  // 실패는 삼키지 않는다: 서버 로그에 남기고, 하트비트를 ok=false로 찍어
+  // /api/health/deep과 6시간 워치독이 그 사실을 사람에게 말하게 한다(항목 2).
+  let actionFailures = 0;
   for (const a of actions) {
-    if (a.type === "create") await createEvent(a.kind, a.grade);
-    if (a.type === "escalate") {
-      await withService((q) =>
-        q.query("update weather_events set status = 'ESCALATED', closed_at = $2 where id = $1", [a.eventId, now]));
-      await createEvent(a.kind, "warning");
-    }
-    if (a.type === "repeat") {
-      const msg = await withService(async (q) => {
-        const { rows } = await q.query(
-          "select id, event_id, content from messages where event_id = $1 and status = 'approved'", [a.eventId]);
-        return rows[0] ?? null;
-      });
-      if (msg) {
-        // 매 회차 현재 수신자를 다시 조회한다(QA W-06). 내용은 승인된 그대로다.
-        const blocks = await withService((q) => refreshRecipients(q, msg.content as DeptBlock[]));
-        const targets = blocks.filter((b) => b.selected).reduce((n, b) => n + b.recipients.length, 0);
-        if (targets === 0)
-          // 이 회차는 아무에게도 가지 않는다. 이력에는 results가 빈 배열로 남아 화면이
-          // "수신자 0명"으로 그리고(History.tsx), 상태 점검도 같은 상태를 사유로 잡는다.
-          console.error(
-            `[weather-tick] 반복 발송 대상이 0명입니다 (event=${a.eventId}) — 부서 수신자를 확인하세요`,
-          );
-        const results: unknown[] = [];
-        for (const b of blocks.filter((b) => b.selected))
-          for (const r of b.recipients)
-            results.push({ employee_id: r.employee_id, name: r.name,
-              ...(r.kakaowork_user_id
-                ? await channel.send(r.kakaowork_user_id, renderMessage(b, { kindLabel: KIND_LABEL[a.kind],
-                    gradeLabel: GRADE_LABEL[a.grade], siteName: site.site_name, obsLine: lineFor(a.kind) }))
-                : { ok: false, error: "카카오워크 미연결" }) });
-        await withService(async (q) => {
-          // 회차 채번은 weather_events.repeat_count 단일 소스 (승인 발송이 1회차 → 이후 +1씩).
-          const { rows: evRows } = await q.query("select repeat_count from weather_events where id = $1", [a.eventId]);
-          const repeatNo = (evRows[0]?.repeat_count ?? 0) + 1;
-          // content에는 **이번 회차에 실제로 쓴 블록**(갱신된 수신자 포함)을 남긴다 —
-          // 승인 스냅샷을 그대로 남기면 "누가 받았나"를 사후에 알 수 없다.
-          await q.query(
-            `insert into dispatches (message_id, event_id, repeat_no, results, content)
-             values ($1, $2, $3, $4::jsonb, $5::jsonb)`,
-            [msg.id, a.eventId, repeatNo, JSON.stringify(results), JSON.stringify(blocks)],
-          );
-          await q.query("update weather_events set repeat_count = $2 where id = $1", [a.eventId, repeatNo]);
+    try {
+      if (a.type === "create") await createEvent(a.kind, a.grade);
+      if (a.type === "escalate") {
+        await withService((q) =>
+          q.query("update weather_events set status = 'ESCALATED', closed_at = $2 where id = $1", [a.eventId, now]));
+        await createEvent(a.kind, "warning");
+      }
+      if (a.type === "repeat") {
+        const msg = await withService(async (q) => {
+          const { rows } = await q.query(
+            "select id, event_id, content from messages where event_id = $1 and status = 'approved'", [a.eventId]);
+          return rows[0] ?? null;
         });
-      }
-    }
-    if (a.type === "resolve") {
-      // 승인된 메시지 존재 여부로 분기 (스펙 오너 추가 결정, 2026-08-12):
-      // - approved 메시지 있음 (ACTIVE였던 경우): resolve_notice에 따라 발송받았던 부서에 해제 알림
-      // - approved 메시지 없음 (PENDING_APPROVAL 중 자동 종료): alert_recipients 전원에게 자동 종료 알림
-      const { approvedMsg, alertIds } = await withService(async (q) => {
-        const { rows } = await q.query(
-          "select content from messages where event_id = $1 and status = 'approved'", [a.eventId]);
-        await q.query("update weather_events set status = 'RESOLVED', closed_at = $2 where id = $1", [a.eventId, now]);
-        return { approvedMsg: rows[0] ?? null, alertIds: rows[0] ? [] : await alertRecipientKakaoIds(q) };
-      });
-      if (approvedMsg) {
-        if (site.resolve_notice) {
-          // 해제 알림도 반복 발송과 같은 명단을 쓴다(QA W-06). 승인 시점 스냅샷으로 보내면
-          // 방금 교대해 실제로 대응 중인 사람은 "끝났다"는 말을 못 듣고, 퇴근한 사람만 받는다.
-          const closing = await withService((q) =>
-            refreshRecipients(q, (approvedMsg.content ?? []) as DeptBlock[]));
-          for (const b of closing.filter((b) => b.selected))
-            for (const r of b.recipients) if (r.kakaowork_user_id)
-              await channel.send(r.kakaowork_user_id,
-                `[날씨경영] ${KIND_LABEL[a.kind]} ${GRADE_LABEL[a.grade]} 상황이 해제되었습니다. 조치해 주셔서 감사합니다.`);
+        if (msg) {
+          // 매 회차 현재 수신자를 다시 조회한다(QA W-06). 내용은 승인된 그대로다.
+          const blocks = await withService((q) => refreshRecipients(q, msg.content as DeptBlock[]));
+          const targets = blocks.filter((b) => b.selected).reduce((n, b) => n + b.recipients.length, 0);
+          if (targets === 0)
+            // 이 회차는 아무에게도 가지 않는다. 이력에는 results가 빈 배열로 남아 화면이
+            // "수신자 0명"으로 그리고(History.tsx), 상태 점검도 같은 상태를 사유로 잡는다.
+            console.error(
+              `[weather-tick] 반복 발송 대상이 0명입니다 (event=${a.eventId}) — 부서 수신자를 확인하세요`,
+            );
+          const results: unknown[] = [];
+          for (const b of blocks.filter((b) => b.selected))
+            for (const r of b.recipients)
+              results.push({ employee_id: r.employee_id, name: r.name,
+                ...(r.kakaowork_user_id
+                  ? await channel.send(r.kakaowork_user_id, renderMessage(b, { kindLabel: KIND_LABEL[a.kind],
+                      gradeLabel: GRADE_LABEL[a.grade], siteName: site.site_name, obsLine: lineFor(a.kind) }))
+                  : { ok: false, error: "카카오워크 미연결" }) });
+          await withService(async (q) => {
+            // 회차 채번은 weather_events.repeat_count 단일 소스 (승인 발송이 1회차 → 이후 +1씩).
+            const { rows: evRows } = await q.query("select repeat_count from weather_events where id = $1", [a.eventId]);
+            const repeatNo = (evRows[0]?.repeat_count ?? 0) + 1;
+            // content에는 **이번 회차에 실제로 쓴 블록**(갱신된 수신자 포함)을 남긴다 —
+            // 승인 스냅샷을 그대로 남기면 "누가 받았나"를 사후에 알 수 없다.
+            await q.query(
+              `insert into dispatches (message_id, event_id, repeat_no, results, content)
+               values ($1, $2, $3, $4::jsonb, $5::jsonb)`,
+              [msg.id, a.eventId, repeatNo, JSON.stringify(results), JSON.stringify(blocks)],
+            );
+            await q.query("update weather_events set repeat_count = $2 where id = $1", [a.eventId, repeatNo]);
+          });
         }
-      } else {
-        for (const kw of alertIds)
-          await channel.send(kw,
-            `[날씨경영] ${KIND_LABEL[a.kind]} ${GRADE_LABEL[a.grade]} 상황이 해제되어 승인 대기 초안이 자동 종료되었습니다`);
       }
+      if (a.type === "resolve") {
+        // 승인된 메시지 존재 여부로 분기 (스펙 오너 추가 결정, 2026-08-12):
+        // - approved 메시지 있음 (ACTIVE였던 경우): resolve_notice에 따라 발송받았던 부서에 해제 알림
+        // - approved 메시지 없음 (PENDING_APPROVAL 중 자동 종료): alert_recipients 전원에게 자동 종료 알림
+        const { approvedMsg, alertIds } = await withService(async (q) => {
+          const { rows } = await q.query(
+            "select content from messages where event_id = $1 and status = 'approved'", [a.eventId]);
+          await q.query("update weather_events set status = 'RESOLVED', closed_at = $2 where id = $1", [a.eventId, now]);
+          return { approvedMsg: rows[0] ?? null, alertIds: rows[0] ? [] : await alertRecipientKakaoIds(q) };
+        });
+        if (approvedMsg) {
+          if (site.resolve_notice) {
+            // 해제 알림도 반복 발송과 같은 명단을 쓴다(QA W-06). 승인 시점 스냅샷으로 보내면
+            // 방금 교대해 실제로 대응 중인 사람은 "끝났다"는 말을 못 듣고, 퇴근한 사람만 받는다.
+            const closing = await withService((q) =>
+              refreshRecipients(q, (approvedMsg.content ?? []) as DeptBlock[]));
+            for (const b of closing.filter((b) => b.selected))
+              for (const r of b.recipients) if (r.kakaowork_user_id)
+                await channel.send(r.kakaowork_user_id,
+                  `[날씨경영] ${KIND_LABEL[a.kind]} ${GRADE_LABEL[a.grade]} 상황이 해제되었습니다. 조치해 주셔서 감사합니다.`);
+          }
+        } else {
+          for (const kw of alertIds)
+            await channel.send(kw,
+              `[날씨경영] ${KIND_LABEL[a.kind]} ${GRADE_LABEL[a.grade]} 상황이 해제되어 승인 대기 초안이 자동 종료되었습니다`);
+        }
+      }
+    
+    } catch (e) {
+      actionFailures++;
+      console.error(`[weather-tick] ${a.type} 액션 실패 (kind=${a.kind})`, e);
     }
   }
 
-  await upsertHeartbeat("weather-tick", true, null);
-  return { collected: true, events: actions.length, actions };
+  await upsertHeartbeat(
+    "weather-tick",
+    actionFailures === 0,
+    actionFailures === 0 ? null : `action-failed:${actionFailures}`,
+  );
+  return { collected: true, events: actions.length, actions, actionFailures };
 }

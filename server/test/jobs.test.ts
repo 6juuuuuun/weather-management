@@ -436,6 +436,136 @@ describe("승인 재알림", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 내용이 빈 지침은 초안에 넣지 않는다 (QA W-22)
+// ---------------------------------------------------------------------------
+//
+// 지침을 지울 방법이 없어 내용만 비워 둔 경우, composeDraft는 행이 있으면 무조건
+// 블록을 만들고 renderMessage는 staff_actions가 비어도 제목 줄을 넣는다 —
+// "인력 조정 지침"이라는 제목만 있고 아래가 빈 DM이 나간다.
+describe("빈 지침 제외", () => {
+  it("내용이 비어 있는 지침은 발송 초안의 부서 블록이 되지 않는다", async () => {
+    const approver = await makeEmployee({ name: "사업부장", email: "empty-appr@gonjiam.com", kw: "kw-appr" });
+    await makeAlertRecipient(approver);
+    const staff = await makeEmployee({ name: "객실직원", email: "empty-staff@gonjiam.com", kw: "kw-staff" });
+    await makeDeptWithGuideline("rain", "watch", staff);   // 내용이 있는 지침
+    await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into departments (name) values ($1) returning id", [`${DEPT_PREFIX}빈지침`]);
+      await q.query(
+        `insert into action_guidelines (department_id, kind, grade, staff_actions, guest_notice)
+         values ($1, 'rain', 'watch', '{}', '')`, [rows[0].id]);
+      await q.query("insert into recipients (department_id, employee_id) values ($1, $2)", [rows[0].id, staff]);
+    });
+
+    stubKma(RAIN_32MM);
+    await runWeatherTick({ channel: recorder().channel });
+
+    const content = await withService(async (q) => {
+      const { rows } = await q.query("select content from messages");
+      return rows[0].content as { department_name: string }[];
+    });
+    // 빈 지침 부서가 블록으로 끼면 제목만 있는 DM이 그 부서 수신자에게 나간다.
+    expect(content).toHaveLength(1);
+    expect(content[0]!.department_name).toBe(`${DEPT_PREFIX}객실`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 액션 하나의 실패가 그 시간의 다른 판정을 죽이지 않는다 (QA W-12)
+// ---------------------------------------------------------------------------
+describe("액션 격리", () => {
+  it("폭우 처리가 터져도 같은 tick의 폭설 판정은 살아남는다", async () => {
+    const approver = await makeEmployee({ name: "사업부장", email: "iso-appr@gonjiam.com", kw: "kw-appr" });
+    await makeAlertRecipient(approver);
+    const staff = await makeEmployee({ name: "객실직원", email: "iso-staff@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", staff);
+    await withService(async (q) => {
+      // 진행 중인 폭우 주의보(반복 발송 대상) — 이 액션이 터진다.
+      const { rows: ev } = await q.query(
+        `insert into weather_events (kind, grade, status, repeat_count)
+         values ('rain','watch','ACTIVE', 1) returning id`);
+      await q.query(
+        "insert into messages (event_id, status, content) values ($1, 'approved', $2::jsonb)",
+        [ev[0].id, JSON.stringify([{ department_id: deptId, department_name: "객실",
+          staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
+          recipients: [{ employee_id: staff, name: "객실직원", kakaowork_user_id: "kw-staff" }],
+          selected: true }])],
+      );
+      // 오늘 누적 적설 6cm — 이 tick에서 폭설 주의보가 새로 떠야 한다.
+      await q.query(
+        `insert into weather_observations (observed_at, rain_mm_per_hr, snow_new_cm, temp_c, wind_ms, missing)
+         values (now() - interval '25 minutes', 6, 6, -1, 2, false)`);
+    });
+
+    // 폭우 메시지 발송에서만 터지는 채널. 폭설 승인 요청은 정상으로 나가야 한다.
+    const sent: string[] = [];
+    const brokenForRain: NotificationChannel = {
+      async send(to: string, text: string) {
+        if (text.includes("폭우")) throw new Error("폭우 처리 중 사고");
+        sent.push(to);
+        return { ok: true };
+      },
+    };
+    stubKma([
+      { category: "RN1", obsrValue: "32.5", baseDate: "20260812", baseTime: "0800" },
+      { category: "PTY", obsrValue: "3" }, { category: "T1H", obsrValue: "-1" },
+      { category: "WSD", obsrValue: "2" }, { category: "REH", obsrValue: "90" },
+    ]);
+    const out = await runWeatherTick({ channel: brokenForRain });
+
+    // 예전에는 여기서 예외가 통째로 새어 나가 폭설 판정이 아예 사라졌다.
+    const events = await withService(async (q) => {
+      const { rows } = await q.query("select kind, grade, status from weather_events order by kind");
+      return rows;
+    });
+    expect(events.map((e: any) => `${e.kind}/${e.grade}`)).toContain("snow/watch");
+    expect(sent).toContain("kw-appr"); // 폭설 승인 요청은 나갔다
+
+    // 실패를 삼키지 않는다 — 하트비트가 ok=false로 찍히고 상태 점검이 그것을 말한다.
+    expect(out.actionFailures).toBe(1);
+    const beat = await withService(async (q) => {
+      const { rows } = await q.query("select ok, note from heartbeats where name = 'weather-tick'");
+      return rows[0];
+    });
+    expect(beat.ok).toBe(false);
+    expect(beat.note).toMatch(/action-failed:1/);
+    expect((await checkHealth()).reasons.join()).toMatch(/마지막 수집·판정이 실패/);
+  });
+
+  // 구체적 유발 경로: 승격 분기가 이미 열린 경보를 보지 않고 createEvent를 부른다
+  // (shared/engine.ts, 손댈 수 없다). 예전에는 one_open_event 유니크 위반으로 터졌다.
+  it("이미 경보가 열려 있는데 승격이 일어나도 tick이 죽지 않는다", async () => {
+    const approver = await makeEmployee({ name: "사업부장", email: "iso-esc-appr@gonjiam.com", kw: "kw-appr" });
+    await makeAlertRecipient(approver);
+    const { watchId } = await withService(async (q) => {
+      const { rows: w } = await q.query(
+        "insert into weather_events (kind, grade, status) values ('rain','watch','ACTIVE') returning id");
+      await q.query(
+        "insert into weather_events (kind, grade, status) values ('rain','warning','ACTIVE')");
+      return { watchId: w[0].id as string };
+    });
+
+    stubKma([
+      { category: "RN1", obsrValue: "60", baseDate: "20260812", baseTime: "0800" },
+      { category: "T1H", obsrValue: "22" }, { category: "WSD", obsrValue: "2" }, { category: "REH", obsrValue: "80" },
+    ]);
+    const out = await runWeatherTick({ channel: recorder().channel });
+    expect(out.collected).toBe(true);
+    expect(out.actionFailures).toBe(0);
+
+    const { watch, warnings } = await withService(async (q) => {
+      const { rows: w } = await q.query("select status from weather_events where id = $1", [watchId]);
+      const { rows: wn } = await q.query(
+        "select id from weather_events where kind='rain' and grade='warning' and status in ('PENDING_APPROVAL','ACTIVE')");
+      return { watch: w[0], warnings: wn };
+    });
+    expect(watch.status).toBe("ESCALATED");
+    // 경보는 여전히 한 건이다 — 중복 insert가 아니라 조용히 건너뛴다.
+    expect(warnings).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 반복 발송의 수신자는 얼어붙지 않는다 (QA W-06, 사용자 결정)
 // ---------------------------------------------------------------------------
 //
