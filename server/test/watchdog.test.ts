@@ -1,6 +1,6 @@
-import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, afterAll, vi } from "vitest";
 import request from "supertest";
-import { withService } from "../src/db.ts";
+import { withService, type Querier } from "../src/db.ts";
 import { checkHealth, reportIfUnhealthy, COLLECT_STALE_MIN, MISSING_STREAK } from "../src/jobs/watchdog.ts";
 import type { NotificationChannel } from "../src/shared/channel.ts";
 
@@ -22,12 +22,40 @@ function recorder() {
   return { sent, channel };
 }
 
-// 관측 로그와 하트비트만 지운다. 시드(부서·기준·설정)는 건드리지 않는다.
+// 이 파일이 넣은 관측 행에만 붙이는 표식. weather_observations는 모든 테스트
+// 파일이 공유하는 작업 DB의 실제 관측 이력이라, 통째로 지우면 이 파일을 돌릴
+// 때마다 남의 이력까지 사라진다. raw에 표식을 남기고 그 행만 지운다.
+const MARK = { t: "watchdog-test" };
+
+/** 표식을 붙여 관측을 넣는다. observed_at은 유니크라 테스트마다 다른 시각을 쓴다. */
+async function insertObs(
+  q: Querier,
+  rows: Array<{ ago: string; missing: boolean; temp?: number }>,
+): Promise<void> {
+  for (const r of rows) {
+    await q.query(
+      `insert into weather_observations (observed_at, temp_c, missing, raw)
+       values (now() - ($1)::interval, $2, $3, $4)`,
+      [r.ago, r.temp ?? null, r.missing, JSON.stringify(MARK)],
+    );
+  }
+}
+
+// heartbeats는 'weather-tick'/'remind-tick' 두 행뿐인 런타임 상태값이고, 다음
+// 주기에 다시 채워진다. jobs.test.ts·scheduler.test.ts도 같은 방식으로 지운다.
+// weather_observations는 위 표식이 붙은 이 파일의 행만 지운다.
 beforeEach(async () => {
   await withService(async (q) => {
     await q.query("delete from heartbeats");
-    await q.query("delete from weather_observations");
+    await q.query("delete from weather_observations where raw = $1", [JSON.stringify(MARK)]);
   });
+});
+
+// 파일이 끝나면 이 파일이 넣은 행을 남기지 않는다.
+afterAll(async () => {
+  await withService((q) =>
+    q.query("delete from weather_observations where raw = $1", [JSON.stringify(MARK)]),
+  );
 });
 
 describe("상태 점검", () => {
@@ -44,7 +72,7 @@ describe("상태 점검", () => {
   it("최근에 수집했으면 정상으로 본다", async () => {
     await withService(async (q) => {
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
-      await q.query("insert into weather_observations (observed_at, temp_c, missing) values (now(), 20, false)");
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
     expect((await checkHealth()).ok).toBe(true);
   });
@@ -52,10 +80,11 @@ describe("상태 점검", () => {
   it("수집은 돌지만 결측만 쌓이면 문제로 본다", async () => {
     await withService(async (q) => {
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
-      await q.query(
-        `insert into weather_observations (observed_at, missing) values
-         (now() - interval '2 hours', true), (now() - interval '1 hour', true), (now(), true)`,
-      );
+      await insertObs(q, [
+        { ago: "2 hours", missing: true },
+        { ago: "1 hour", missing: true },
+        { ago: "0 seconds", missing: true },
+      ]);
     });
     const out = await checkHealth();
     expect(out.ok).toBe(false);
@@ -71,32 +100,37 @@ describe("상태 점검", () => {
     expect(out.reasons.join()).toMatch(/수집/);
   });
 
-  // 경계값을 양쪽에서 고정한다. 임계값을 아무 숫자로 바꿔도 통과하는 테스트가
-  // 되지 않게, 기준 바로 앞뒤를 각각 확인한다.
-  it("기준 시간 직전이면 아직 정상이다", async () => {
+  // 경계를 양쪽에서 고정한다. 여기서 상수(COLLECT_STALE_MIN ± 5)를 참조하면
+  // 임계값을 130에서 1로 바꿔도 테스트가 함께 따라 움직여 그대로 통과한다 —
+  // 실제로 그 변이가 살아남았다. 그래서 구체적인 분(分)으로 못박는다.
+  // 130분이 이 두 값 사이에 있다는 것이 계약이다.
+  it("수집한 지 100분 지났으면 아직 정상이다", async () => {
     await withService(async (q) => {
       await q.query(
-        `insert into heartbeats (name, last_run_at)
-         values ('weather-tick', now() - ($1 || ' minutes')::interval)`,
-        [String(COLLECT_STALE_MIN - 5)],
+        "insert into heartbeats (name, last_run_at) values ('weather-tick', now() - interval '100 minutes')",
       );
-      await q.query("insert into weather_observations (observed_at, temp_c, missing) values (now(), 20, false)");
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
     expect((await checkHealth()).ok).toBe(true);
   });
 
-  it("기준 시간을 막 넘기면 문제로 본다", async () => {
+  it("수집한 지 140분 지났으면 문제로 본다", async () => {
     await withService(async (q) => {
       await q.query(
-        `insert into heartbeats (name, last_run_at)
-         values ('weather-tick', now() - ($1 || ' minutes')::interval)`,
-        [String(COLLECT_STALE_MIN + 5)],
+        "insert into heartbeats (name, last_run_at) values ('weather-tick', now() - interval '140 minutes')",
       );
-      await q.query("insert into weather_observations (observed_at, temp_c, missing) values (now(), 20, false)");
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
     const out = await checkHealth();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/수집/);
+  });
+
+  // 임계값은 운영 안내서(§3-3 표)와 알림 문구에 숫자 그대로 노출된다.
+  // 값을 바꾸면 문서도 함께 바꿔야 하므로 값 자체를 여기서 고정한다.
+  it("임계값이 운영 안내서에 적힌 값과 같다", () => {
+    expect(COLLECT_STALE_MIN).toBe(130);
+    expect(MISSING_STREAK).toBe(3);
   });
 
   // 결측 연속 판정이 "최근 N회"를 실제로 보는지 확인한다. 가장 최근 한 건이
@@ -104,29 +138,48 @@ describe("상태 점검", () => {
   it("가장 최근 관측이 정상이면 그 앞이 결측이어도 정상이다", async () => {
     await withService(async (q) => {
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
-      await q.query(
-        `insert into weather_observations (observed_at, temp_c, missing) values
-         (now() - interval '3 hours', null, true),
-         (now() - interval '2 hours', null, true),
-         (now() - interval '1 hour',  null, true),
-         (now(),                      20,   false)`,
-      );
+      await insertObs(q, [
+        { ago: "3 hours", missing: true },
+        { ago: "2 hours", missing: true },
+        { ago: "1 hour", missing: true },
+        { ago: "0 seconds", missing: false, temp: 20 },
+      ]);
     });
     const out = await checkHealth();
     expect(out.ok).toBe(true);
     expect(out.reasons.join()).not.toMatch(/결측/);
   });
 
-  // 관측이 아직 MISSING_STREAK 회보다 적게 쌓였을 때 결측이라고 단정하면,
-  // 설치 첫 시간에 "결측만 쌓인다"는 헛경보가 나간다.
-  it("관측 표본이 기준 횟수보다 적으면 결측으로 단정하지 않는다", async () => {
-    await withService(async (q) => {
-      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
-      await q.query("insert into weather_observations (observed_at, missing) values (now(), true)");
+  // 관측이 아직 3회보다 적게 쌓였을 때 결측이라고 단정하면, 설치 첫 시간에
+  // "결측만 쌓인다"는 헛경보가 나간다.
+  //
+  // 이 판정만은 "표 전체에 관측이 몇 행 있는가"를 보기 때문에, 실제 DB로
+  // 재현하려면 모든 테스트 파일이 공유하는 weather_observations를 통째로
+  // 비워야 한다. 남의 관측 이력을 지우지 않으려고 여기서는 질의 결과만
+  // 갈아 끼운다(checkHealth의 runner 주입 지점).
+  function stubbedHealth(rows: Array<{ missing: boolean }>) {
+    return checkHealth({
+      runner: (fn) =>
+        fn({
+          async query(text: string) {
+            // 첫 질의는 하트비트 정체 여부, 둘째는 최근 관측 목록이다.
+            if (text.includes("heartbeats")) return { rows: [{ stale: false }] };
+            return { rows };
+          },
+        }),
     });
-    const out = await checkHealth();
+  }
+
+  it("결측 관측이 2회뿐이면 아직 결측으로 단정하지 않는다", async () => {
+    const out = await stubbedHealth([{ missing: true }, { missing: true }]);
+    expect(out.ok).toBe(true);
     expect(out.reasons.join()).not.toMatch(/결측/);
-    expect(MISSING_STREAK).toBeGreaterThan(1);
+  });
+
+  it("결측 관측이 3회가 되면 그때 문제로 본다", async () => {
+    const out = await stubbedHealth([{ missing: true }, { missing: true }, { missing: true }]);
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/결측/);
   });
 
   // 두 사고가 동시에 나면 둘 다 보고해야 한다. 첫 사유에서 빠져나가면
@@ -134,10 +187,11 @@ describe("상태 점검", () => {
   it("사유가 여러 개면 모두 담는다", async () => {
     await withService(async (q) => {
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now() - interval '5 hours')");
-      await q.query(
-        `insert into weather_observations (observed_at, missing) values
-         (now() - interval '2 hours', true), (now() - interval '1 hour', true), (now(), true)`,
-      );
+      await insertObs(q, [
+        { ago: "2 hours", missing: true },
+        { ago: "1 hour", missing: true },
+        { ago: "0 seconds", missing: true },
+      ]);
     });
     const out = await checkHealth();
     expect(out.reasons).toHaveLength(2);
@@ -203,7 +257,7 @@ describe("문제가 있으면 알린다", () => {
     await makeRecipient();
     await withService(async (q) => {
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
-      await q.query("insert into weather_observations (observed_at, temp_c, missing) values (now(), 20, false)");
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
     const { sent, channel } = recorder();
     await reportIfUnhealthy({ channel });
@@ -227,7 +281,7 @@ describe("GET /api/health/deep", () => {
   it("정상이면 200과 ok:true를 준다", async () => {
     await withService(async (q) => {
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
-      await q.query("insert into weather_observations (observed_at, temp_c, missing) values (now(), 20, false)");
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
     const { app } = await import("../src/index.ts");
     const res = await request(app).get("/api/health/deep");
@@ -253,7 +307,7 @@ describe("GET /api/health/deep", () => {
   it("로그인하지 않아도 닿는다", async () => {
     await withService(async (q) => {
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
-      await q.query("insert into weather_observations (observed_at, temp_c, missing) values (now(), 20, false)");
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
     const { app } = await import("../src/index.ts");
     const res = await request(app).get("/api/health/deep");
