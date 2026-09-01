@@ -1,11 +1,37 @@
 import { Router } from "express";
 import { UUID, withUser, withService } from "../db.ts";
 import { requireAuth, requireAdmin } from "../auth/middleware.ts";
-import { isAllowedEmailDomain } from "../auth/emailDomain.ts";
+import { isAllowedEmailDomain, isValidEmailShape } from "../auth/emailDomain.ts";
 import { linkKakaoworkUserId, clearKakaoworkUserId } from "../kakaoLink.ts";
 
 export const orgRouter = Router();
 orgRouter.use(requireAuth);
+
+// 직원 행이 없는 세션은 이 라우터 전체를 쓸 수 없다(QA W-01b).
+//
+// 예전에는 직원을 삭제해도 로그인 계정이 남았고, 그 계정(role: null)이 여기 모든
+// GET을 200으로 통과해 **전 직원의 이름·이메일·전화번호·카카오워크 ID**를 계속
+// 읽었다. RLS의 r_all 정책도 auth.uid() is not null만 보므로 막지 못한다
+// (db/migrations/0002_rls.sql:34).
+//
+// 삭제가 계정을 함께 지우게 고쳤으니(아래 DELETE) 이 상태는 원칙적으로 생기지
+// 않는다. 그래도 남겨 둔다 — 이 라우터가 개인정보의 유일한 출입구이고, 반쪽 상태를
+// 만드는 새 경로가 언제 생길지는 아무도 보장할 수 없다. 정상 사용자는 가입이든
+// 사전 등록이든 반드시 직원 행을 갖는다.
+//
+// 경로를 명시해 이 라우터가 실제로 가진 자원에만 건다. app.use("/api", orgRouter)로
+// 마운트돼 있어서 경로 없는 use()는 **뒤에 등록된 다른 /api 라우트까지**(예:
+// POST /api/send) 이 미들웨어를 통과하게 만든다 — 실제로 그렇게 되어 send 라우트가
+// 자기 문구 대신 이 문구를 돌려줬다. 새 자원을 추가하면 이 목록에도 넣을 것.
+orgRouter.use(
+  ["/departments", "/employees", "/recipients", "/alert-recipients", "/alert-settings"],
+  (req, res, next) => {
+    if (!req.user?.employeeId) {
+      return res.status(403).json({ error: "직원 정보가 없는 계정입니다. 관리자에게 문의해 주세요" });
+    }
+    next();
+  },
+);
 
 const EMP_COLS = "id, auth_user_id, name, email, kakaowork_user_id, department_id, role, phone, created_at";
 
@@ -189,6 +215,13 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
   if ("email" in body) {
     const email = String(body.email ?? "").trim().toLowerCase();
     if (!email) return res.status(400).json({ error: "이메일이 비어 있습니다" });
+    // 형식과 도메인을 다른 문구로 가른다(QA W-20) — `a@`·`@b`·`x@x`·공백이 든 값이
+    // 그대로 저장됐고, 형식이 틀렸을 때 나가는 문구는 "회사 이메일만 등록할 수
+    // 있습니다"라 **도메인 제한을 켜지도 않은 배포에서 도메인 탓을 했다.**
+    // 형식이 깨진 이메일은 그 주소로 아무도 가입할 수 없어 영영 계정과 못 붙는다.
+    if (!isValidEmailShape(email)) {
+      return res.status(400).json({ error: "이메일 형식이 올바르지 않습니다" });
+    }
     // 도메인 규칙도 가입 경로와 같아야 한다. 여기가 비어 있으면 관리자가 사내 도메인이
     // 아닌 주소를 넣을 수 있고, 그 직원은 가입해도 이 행에 병합되지 않는다.
     if (!isAllowedEmailDomain(email)) {
@@ -198,22 +231,77 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
     sets.push(`email = $${vals.length}`);
   }
   if (sets.length === 0) return res.status(400).json({ error: "변경할 값이 없습니다" });
+
+  // 이 라우트는 여기서부터 withUser가 아니라 withService로 간다(QA W-01f).
+  //
+  // 이메일을 고치면 **로그인 이메일(auth_accounts.email)도 같은 트랜잭션에서**
+  // 따라가야 한다. 예전에는 employees만 바뀌어서 명부와 계정이 갈라졌다: 당사자는
+  // 그날부터 로그인하지 못하는데(옛 이메일이 여전히 유일한 열쇠) 관리자 화면에는
+  // 새 이메일만 보였고, 비워진 새 이메일로 제3자가 가입하면 그 직원의 부서·역할을
+  // 통째로 물려받았다. auth_accounts는 RLS상 app_user 경로에서 항상 0행이라
+  // (0011_auth_rls.sql) withUser로는 손댈 수 없고, 두 풀로 나눠 쓰면 한 트랜잭션이
+  // 되지 않는다 — 중간 상태가 곧 지금 고치는 그 유령이다.
+  // 권한 관문은 그대로 requireAdmin이다(위 미들웨어). RLS의 w_admin_upd 정책이
+  // 보던 것과 같은 조건을 애플리케이션 층에서 이미 강제한다.
   let rows: any[];
   // 바꾸기 **전**의 이메일을 같은 트랜잭션에서 함께 읽는다. 아래에서 "이메일이 실제로
   // 바뀌었는가"를 판정하는 데 쓴다 — 화면의 수정 폼은 바뀌지 않은 이메일도 매번 함께
   // 보내므로, 그 구분 없이 다시 조회하면 무관한 저장 한 번마다 연결이 흔들린다.
   let prevEmail: string | null = null;
+  let outcome: "ok" | "not_found" | "last_admin";
   try {
-    rows = await withUser(req.user!.accountId, async (q) => {
-      const { rows: before } = await q.query("select email from employees where id = $1", [req.params.id]);
-      prevEmail = (before[0]?.email ?? null) as string | null;
+    const result = await withService(async (q) => {
+      const { rows: before } = await q.query(
+        "select id, email, auth_user_id, role from employees where id = $1",
+        [req.params.id],
+      );
+      if (before.length === 0) return { kind: "not_found" as const, rows: [] as any[] };
+      prevEmail = (before[0].email ?? null) as string | null;
+
+      // 마지막 관리자가 스스로 관리자에서 내려오는 것을 막는다(QA W-19).
+      // 관리자가 1명뿐인 배포가 기본값이고(ops/make-admin.sh가 1명을 지정한다),
+      // 그 사람이 자기 역할을 staff로 바꾸면 관리자 0명이 되어 설정·직원 관리·지침
+      // 등록이 전부 막힌다. 복구 경로가 제품 안에 없다(서버 터미널 SQL뿐).
+      // 같은 파일의 계정 비활성화에는 이미 자기대상 가드가 있는데
+      // (auth/routes.ts) 역할 강등에만 없었다.
+      if (
+        "role" in body &&
+        body.role !== "admin" &&
+        before[0].role === "admin" &&
+        before[0].auth_user_id !== null &&
+        String(before[0].auth_user_id).toLowerCase() === req.user!.accountId.toLowerCase()
+      ) {
+        const { rows: adminRows } = await q.query(
+          "select count(*)::int as n from employees where role = 'admin'",
+        );
+        if (adminRows[0].n <= 1) return { kind: "last_admin" as const, rows: [] as any[] };
+      }
+
       const { rows } = await q.query(
         `update employees set ${sets.join(", ")} where id = $1 returning ${EMP_COLS}`,
         vals,
       );
-      return rows;
+      // 로그인 이메일을 같은 트랜잭션에서 따라가게 한다. 계정이 아직 없는(사전 등록)
+      // 직원은 따라갈 대상이 없다.
+      if (before[0].auth_user_id && rows[0].email !== prevEmail) {
+        await q.query("update auth_accounts set email = $2 where id = $1", [
+          before[0].auth_user_id,
+          rows[0].email,
+        ]);
+      }
+      return { kind: "ok" as const, rows };
     });
+    outcome = result.kind;
+    rows = result.rows;
   } catch (e: any) {
+    // unique 위반이 두 테이블에서 날 수 있다 — 어느 쪽인지 말해 주지 않으면 관리자는
+    // "이미 등록된 이메일입니다"를 보고 직원 명부만 뒤진다. 원인이 로그인 계정 쪽이면
+    // 명부에는 그 이메일이 없다.
+    if (e?.code === "23505" && e?.constraint === "auth_accounts_email_key") {
+      return res.status(409).json({
+        error: "그 이메일을 쓰는 로그인 계정이 이미 있습니다. 직원 이메일을 바꾸지 않았습니다",
+      });
+    }
     // employees.email은 unique다. 이미 다른 직원이 쓰는 이메일로 바꾸려 한 경우로,
     // 클라이언트 잘못이므로 500이 아니라 409다(POST /employees와 같은 처리).
     if (e?.code === "23505") return res.status(409).json({ error: "이미 등록된 이메일입니다" });
@@ -223,6 +311,11 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
       return res.status(400).json({ error: `department_id ${body.department_id}에 해당하는 부서가 없습니다` });
     }
     throw e;
+  }
+  if (outcome === "last_admin") {
+    return res.status(403).json({
+      error: "마지막 관리자입니다. 다른 사람을 관리자로 지정한 뒤에 역할을 바꾸세요",
+    });
   }
   if (rows.length === 0) return res.status(404).json({ error: "직원을 찾을 수 없습니다" });
   // 이메일이 바뀌면 카카오워크 연결도 다시 맞춰야 한다 — 옛 이메일로 조회한 id가
@@ -248,12 +341,67 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
   res.json(rows[0]);
 });
 
+// 직원을 지우면 **로그인 계정도 함께 지운다**(QA W-01a·b·c, 사용자 결정 D-1).
+//
+// 예전에는 employees 행만 지웠다. 그러면 두 가지 중 하나가 일어났다:
+//   - 그 사람이 특보를 승인한 적이 없으면 → 계정이 그대로 남아 계속 로그인했다.
+//     퇴사자가 전 직원의 이름·이메일·전화번호·카카오워크 ID를 계속 읽었고,
+//     그 계정을 끄는 유일한 버튼은 방금 사라진 그 행에 달려 있었다.
+//   - 승인한 적이 있으면 → weather_events.approved_by가 NO ACTION 외래키라
+//     삭제 자체가 실패하고 관리자 화면에는 "서버 오류가 발생했습니다"(500)만 떴다.
+//
+// 사용자 결정: 계정도 함께 지우되 **승인자 이름은 이력에 남긴다.** 외래키는
+// 0013_actor_name_snapshot.sql이 on delete set null로 바꿔 두었고, 여기서 지우기
+// 직전에 이름을 스냅샷한다. 안전 경보 시스템에서 "누가 이 특보를 승인했는가"는
+// 그 사람이 퇴사했다고 사라져서는 안 된다.
+//
+// 반드시 한 트랜잭션이어야 한다 — 직원만 지워지고 계정이 남는 중간 상태가 곧
+// 지금 고치고 있는 그 유령이다. auth_accounts는 withUser 경로에서 항상 0행이므로
+// (0011_auth_rls.sql) 통로는 withService 하나뿐이고, 권한 관문은 requireAdmin이다.
 orgRouter.delete("/employees/:id", requireAdmin, async (req, res) => {
-  const rows = await withUser(req.user!.accountId, async (q) => {
-    const { rows } = await q.query("delete from employees where id = $1 returning id", [req.params.id]);
-    return rows;
+  const id = String(req.params.id ?? "");
+  if (!UUID.test(id)) return res.status(400).json({ error: "id 형식이 올바르지 않습니다" });
+
+  const outcome = await withService(async (q) => {
+    const { rows: found } = await q.query("select id, name, auth_user_id from employees where id = $1", [id]);
+    if (found.length === 0) return "not_found" as const;
+    const emp = found[0];
+
+    // 자기 자신은 지울 수 없다(QA W-01c). 계정 비활성화·임시 비밀번호 발급에는
+    // 이미 같은 가드가 있는데(auth/routes.ts) 삭제에만 없었다 — 관리자가 1명뿐인
+    // 배포에서 자기 행을 지우면 그 순간 관리자 0명에 자기 계정까지 사라진다.
+    if (emp.auth_user_id !== null && String(emp.auth_user_id).toLowerCase() === req.user!.accountId.toLowerCase()) {
+      return "self" as const;
+    }
+
+    // 이름 스냅샷. coalesce로 이미 채워진 값은 덮지 않는다 — 승인 시점의 이름이
+    // 그 뒤의 개명보다 이력으로서 정확하다.
+    await q.query(
+      "update weather_events set approved_by_name = coalesce(approved_by_name, $2) where approved_by = $1",
+      [id, emp.name],
+    );
+    await q.query(
+      "update messages set updated_by_name = coalesce(updated_by_name, $2) where updated_by = $1",
+      [id, emp.name],
+    );
+    await q.query(
+      "update action_guidelines set updated_by_name = coalesce(updated_by_name, $2) where updated_by = $1",
+      [id, emp.name],
+    );
+
+    await q.query("delete from employees where id = $1", [id]);
+    // 계정을 지우면 auth_sessions는 on delete cascade로 함께 사라진다
+    // (0009_auth_local.sql) — 남은 세션이 끊기는 것이 이 삭제의 핵심이다.
+    if (emp.auth_user_id) {
+      await q.query("delete from auth_accounts where id = $1", [emp.auth_user_id]);
+    }
+    return "ok" as const;
   });
-  if (rows.length === 0) return res.status(404).json({ error: "직원을 찾을 수 없습니다" });
+
+  if (outcome === "not_found") return res.status(404).json({ error: "직원을 찾을 수 없습니다" });
+  if (outcome === "self") {
+    return res.status(403).json({ error: "본인 계정은 스스로 삭제할 수 없습니다" });
+  }
   res.status(204).end();
 });
 
@@ -266,7 +414,11 @@ orgRouter.post("/employees", requireAdmin, async (req, res) => {
   const name = String(body.name ?? "").trim();
   const email = String(body.email ?? "").trim().toLowerCase();
   if (!name || !email) return res.status(400).json({ error: "이름과 이메일이 필요합니다" });
-  // 사전 등록도 같은 도메인 규칙을 받는다 — PATCH와 같은 이유다(병합 키).
+  // 사전 등록도 같은 형식·도메인 규칙을 받는다 — PATCH와 같은 이유다(병합 키).
+  // 형식과 도메인은 다른 문구다(QA W-20).
+  if (!isValidEmailShape(email)) {
+    return res.status(400).json({ error: "이메일 형식이 올바르지 않습니다" });
+  }
   if (!isAllowedEmailDomain(email)) {
     return res.status(400).json({ error: "회사 이메일만 등록할 수 있습니다" });
   }

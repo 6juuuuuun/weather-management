@@ -26,3 +26,28 @@ export function isAllowedEmailDomain(email: string): boolean {
   const allowed = allowedDomains();
   return allowed.length === 0 || allowed.includes(domain);
 }
+
+/**
+ * 최소한의 형식 검증(QA W-20). 도메인 규칙과 **의도적으로 분리**한다.
+ *
+ * 예전에는 검사가 isAllowedEmailDomain() 하나뿐이었다. 그 함수는 @ 뒤에 무엇이든
+ * 있으면 통과시키므로 `a@b@gonjiam.com`·`has space@gonjiam.com`·`x@x`가 전부
+ * 저장됐고, @가 아예 없으면 목록을 보기도 전에 false로 빠져 호출부가
+ * "회사 이메일만 등록할 수 있습니다"라고 답했다 — **도메인 제한을 켜지도 않은
+ * 배포에서 도메인 탓을 하는** 문구다. 관리자는 .env를 뒤지게 된다.
+ *
+ * employees.email은 가입이 직원 행에 계정을 이어 붙이는 병합 키다. 오타가 든 행은
+ * 그 주소로 아무도 가입할 수 없으므로 **영원히 계정과 못 붙는 유령 행**이 된다.
+ * 그래서 형식은 저장 전에 막는다.
+ *
+ * 규칙은 일부러 좁게 잡지 않는다(RFC 전체를 흉내 내면 멀쩡한 주소를 거부한다):
+ *   - @가 정확히 하나, 앞뒤가 모두 비어 있지 않을 것
+ *   - 공백이 없을 것
+ *   - 도메인에 점이 하나 이상 있을 것(`x@x` 같은 값을 막는다)
+ *   - 전체 길이 254자 이하(메일 주소의 실질적 상한)
+ * 이미 정규화된(trim + toLowerCase) 값을 받는 것은 위 함수와 같다.
+ */
+export function isValidEmailShape(email: string): boolean {
+  if (email.length === 0 || email.length > 254) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}

@@ -23,7 +23,11 @@ const EVENT_GRADES = ["watch", "warning"] as const;
 contentRouter.get("/guidelines", async (req, res) => {
   const rows = await withUser(req.user!.accountId, async (q) => {
     const { rows } = await q.query(
-      `select id, department_id, kind, grade, staff_actions, guest_notice, updated_at, updated_by
+      // updated_by_name은 수정 시점에 함께 저장한 이름 스냅샷이다(0013_actor_name_snapshot.sql).
+      // 화면은 지금까지 직원 목록에서 updated_by를 찾아 이름을 그렸는데, 그 사람이
+      // 삭제되면 이름이 통째로 사라졌다 — 삭제가 계정까지 지우게 된 지금은 더 자주
+      // 그렇게 된다. 서버가 스냅샷을 함께 주면 "홍길동(삭제된 직원)"을 그릴 수 있다.
+      `select id, department_id, kind, grade, staff_actions, guest_notice, updated_at, updated_by, updated_by_name
          from action_guidelines
         order by department_id, kind, grade`,
     );
@@ -77,13 +81,16 @@ contentRouter.put("/guidelines", requireAdmin, async (req, res) => {
       // 직접 채운다 — 클라이언트가 보낸 값을 신뢰하면 다른 직원 행세로 기록을
       // 남길 수 있다.
       await q.query(
-        `insert into action_guidelines (department_id, kind, grade, staff_actions, guest_notice, updated_at, updated_by)
-         values ($1, $2, $3, $4, $5, now(), current_emp_id())
+        `insert into action_guidelines
+           (department_id, kind, grade, staff_actions, guest_notice, updated_at, updated_by, updated_by_name)
+         values ($1, $2, $3, $4, $5, now(), current_emp_id(),
+                 (select name from employees where id = current_emp_id()))
          on conflict (department_id, kind, grade) do update
            set staff_actions = excluded.staff_actions,
                guest_notice = excluded.guest_notice,
                updated_at = excluded.updated_at,
-               updated_by = excluded.updated_by`,
+               updated_by = excluded.updated_by,
+               updated_by_name = excluded.updated_by_name`,
         [r.department_id, r.kind, r.grade, Array.isArray(r.staff_actions) ? r.staff_actions : [], r.guest_notice ?? ""],
       );
     }
@@ -103,7 +110,7 @@ contentRouter.get("/messages", async (req, res) => {
   if (!UUID.test(eventId)) return res.status(400).json({ error: "event_id가 필요합니다" });
   const rows = await withUser(req.user!.accountId, async (q) => {
     const { rows } = await q.query(
-      `select id, event_id, status, content, updated_at, updated_by
+      `select id, event_id, status, content, updated_at, updated_by, updated_by_name
          from messages
         where event_id = $1
         order by updated_at`,
@@ -139,9 +146,11 @@ contentRouter.patch("/messages/:id", async (req, res) => {
     // 초안 상태에서만 허용한다.
     if (existing[0].status !== "draft") return { kind: "not_draft" as const };
     const { rows } = await q.query(
-      `update messages set content = $2, updated_at = now(), updated_by = current_emp_id()
+      `update messages
+          set content = $2, updated_at = now(), updated_by = current_emp_id(),
+              updated_by_name = (select name from employees where id = current_emp_id())
         where id = $1
-        returning id, event_id, status, content, updated_at, updated_by`,
+        returning id, event_id, status, content, updated_at, updated_by, updated_by_name`,
       [id, JSON.stringify(req.body.content)],
     );
     if (rows.length === 0) return { kind: "forbidden" as const };

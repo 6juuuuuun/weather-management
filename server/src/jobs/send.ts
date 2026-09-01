@@ -87,7 +87,10 @@ export async function runSend(
 
   const { emp, siteName } = await withService(async (q) => {
     const { rows } = await q.query(
-      "select id, role, kakaowork_user_id from employees where id = $1", [actorEmployeeId]);
+      // name도 읽는다 — 승인·수정 시점의 이름을 이력에 함께 스냅샷한다
+      // (0013_actor_name_snapshot.sql). 그 사람이 나중에 삭제되면 외래키는
+      // null이 되지만 "누가 승인했는가"는 이 이름으로 남는다.
+      "select id, role, name, kakaowork_user_id from employees where id = $1", [actorEmployeeId]);
     const { rows: siteRows } = await q.query("select site_name from site_settings limit 1");
     // 단일 행 시드가 항상 존재하지만 타입상 null 가드
     return { emp: rows[0] ?? null, siteName: (siteRows[0]?.site_name as string) ?? "날씨경영" };
@@ -115,15 +118,19 @@ export async function runSend(
       const ev = evRows[0];
       if (!ev || ev.status !== "PENDING_APPROVAL") return null;
       const { rows: msgRows } = await q.query(
-        `update messages set content = $2::jsonb, status = 'approved', updated_by = $3, updated_at = now()
+        `update messages
+            set content = $2::jsonb, status = 'approved', updated_by = $3, updated_by_name = $4,
+                updated_at = now()
           where event_id = $1 returning id, event_id`,
-        [ev.id, JSON.stringify(body.content), emp.id],
+        [ev.id, JSON.stringify(body.content), emp.id, emp.name],
       );
       // 회차 채번은 weather_events.repeat_count 단일 소스 — 승인 발송이 1회차.
       await q.query(
-        `update weather_events set status = 'ACTIVE', approved_by = $2, repeat_count = 1, approved_at = now()
+        `update weather_events
+            set status = 'ACTIVE', approved_by = $2, approved_by_name = $3,
+                repeat_count = 1, approved_at = now()
           where id = $1`,
-        [ev.id, emp.id],
+        [ev.id, emp.id, emp.name],
       );
       return { ev, msg: msgRows[0], obsLine: await obsLineFor(q, ev) };
     });
@@ -136,9 +143,9 @@ export async function runSend(
   if (body.mode === "resend") {
     const prepared = await withService(async (q) => {
       const { rows: msgRows } = await q.query(
-        `update messages set content = $2::jsonb, updated_by = $3, updated_at = now()
+        `update messages set content = $2::jsonb, updated_by = $3, updated_by_name = $4, updated_at = now()
           where id = $1 returning id, event_id`,
-        [body.message_id, JSON.stringify(body.content), emp.id],
+        [body.message_id, JSON.stringify(body.content), emp.id, emp.name],
       );
       const msg = msgRows[0];
       if (!msg) return null;

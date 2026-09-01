@@ -89,8 +89,11 @@ dashboardRouter.get("/observations/:id", async (req, res) => {
 dashboardRouter.get("/events/open", async (req, res) => {
   const rows = await withUser(req.user!.accountId, async (q) => {
     const { rows } = await q.query(
+      // approved_by_name은 승인 시점에 함께 저장한 이름 스냅샷이다
+      // (0013_actor_name_snapshot.sql) — 승인자가 퇴사해 삭제되면 approved_by는
+      // null이 되지만 "누가 승인했는가"는 남아야 한다.
       `select id, kind, grade, status, detected_at, closed_at, trigger_observation_id,
-              approved_by, approved_at, last_reminded_at, repeat_count
+              approved_by, approved_by_name, approved_at, last_reminded_at, repeat_count
          from weather_events
         where status in ('PENDING_APPROVAL', 'ACTIVE')
         order by detected_at desc`,

@@ -3,7 +3,7 @@ import { withService, UUID } from "../db.ts";
 import { hash, verify, temporaryPassword } from "./password.ts";
 import { issue, lookup, revoke } from "./session.ts";
 import { COOKIE, requireAuth, requireAdmin } from "./middleware.ts";
-import { isAllowedEmailDomain } from "./emailDomain.ts";
+import { isAllowedEmailDomain, isValidEmailShape } from "./emailDomain.ts";
 import { linkKakaoworkUserId } from "../kakaoLink.ts";
 
 const MAX_ATTEMPTS = 5;
@@ -40,6 +40,13 @@ authRouter.post("/signup", async (req, res) => {
   // 들어가 특보가 두 번 나가는 등 발송 대상이 어긋난다.
   const email = String(emailRaw).trim().toLowerCase();
 
+  // 형식과 도메인을 **다른 문구로** 가른다(QA W-20). 예전에는 둘이 한 검사에
+  // 묶여 있어서, @가 없는 값을 넣으면 도메인 제한을 켜지도 않은 서버가
+  // "회사 이메일로만 가입할 수 있습니다"라고 답했다 — 원인을 정확히 반대로
+  // 가리키는 문구다. 형식이 먼저다: 형식이 깨진 값은 도메인을 볼 수조차 없다.
+  if (!isValidEmailShape(email)) {
+    return res.status(400).json({ error: "이메일 형식이 올바르지 않습니다" });
+  }
   if (!isAllowedEmailDomain(email)) {
     return res.status(400).json({ error: "회사 이메일로만 가입할 수 있습니다" });
   }
@@ -58,18 +65,38 @@ authRouter.post("/signup", async (req, res) => {
       // 관리자의 역할 부여이지 가입이 아니다. name만 coalesce 없이 그대로 덮어쓰는
       // 이유는 name이 가입 필수값이라 excluded.name이 null일 수 없고, 본인이 지금
       // 입력한 이름이 관리자가 미리 적어 둔 이름보다 정확하다고 보기 때문이다.
-      await q.query(
+      //
+      // do update에 `where employees.auth_user_id is null`을 단다(QA W-01g). 이 조건이
+      // 없으면 **이미 다른 사람의 로그인 계정이 붙어 있는 직원 행**까지 새 계정이
+      // 인수한다. 실제 경로가 있었다: 관리자가 직원 이메일만 고치면 명부와 계정이
+      // 갈라지고(그 자체는 아래 PATCH /api/employees에서 막았다), 비워진 새 이메일로
+      // 제3자가 가입하면 원래 직원 행의 부서·역할을 통째로 물려받았다 — role은 SET
+      // 절에 없어 **원래 사람의 역할(승인권자 포함)이 그대로 새 계정에 붙었다.**
+      // 원래 사람은 role: null 유령이 되어 계속 로그인했다.
+      // 두 겹으로 막는다: 갈라지지 않게 하고(PATCH), 갈라져 있더라도 인수는 막는다.
+      const { rows: merged } = await q.query(
         `insert into employees (auth_user_id, name, email, phone, department_id, role)
          values ($1, $2, $3, $4, $5, 'staff')
          on conflict (email) do update
            set auth_user_id = excluded.auth_user_id,
                name = excluded.name,
                phone = coalesce(excluded.phone, employees.phone),
-               department_id = coalesce(excluded.department_id, employees.department_id)`,
+               department_id = coalesce(excluded.department_id, employees.department_id)
+           where employees.auth_user_id is null
+         returning id`,
         [rows[0].id, name, email, phone ?? null, department_id ?? null],
       );
+      // where가 걸리면 아무 행도 돌아오지 않는다. 그대로 두면 계정만 만들어지고
+      // 직원 행이 없는 반쪽 상태(= 유령 계정)가 커밋된다 — 지금 고치고 있는 바로
+      // 그 상태다. 던져서 트랜잭션을 통째로 되돌린다.
+      if (merged.length === 0) throw new Error("EMPLOYEE_ALREADY_LINKED");
     });
   } catch (e: any) {
+    if (e?.message === "EMPLOYEE_ALREADY_LINKED") {
+      return res.status(409).json({
+        error: "이 이메일은 이미 다른 로그인 계정에 연결돼 있습니다. 관리자에게 문의해 주세요",
+      });
+    }
     if (e?.code === "23505") return res.status(409).json({ error: "이미 가입된 이메일입니다" });
     throw e;
   }
