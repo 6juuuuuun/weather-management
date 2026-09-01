@@ -1,68 +1,100 @@
 name: CI
 
+# 사내 서버 이식 이후의 CI다. 예전 워크플로는 supabase/functions의 Deno 테스트만
+# 돌렸는데, 그 코드는 이제 **참고용으로만 남아 있고 배포되지 않는다** — 즉 초록불이
+# "지금 돌아가는 시스템이 멀쩡하다"를 뜻하지 않았다. 검증하지 않으면서 초록불을
+# 띄우는 체크는 체크가 없는 것보다 나쁘므로, 실제로 돌아가는 두 가지만 본다:
+# server(Express + Postgres)와 apps/web.
 on:
   push:
     branches: [main]
   pull_request:
 
 jobs:
-  backend-unit:
-    name: 백엔드 순수 로직 테스트 (Deno)
+  server:
+    name: 서버 테스트 (Express + Postgres)
     runs-on: ubuntu-latest
+
+    # 서버 테스트는 목이 아니라 **실제 Postgres**에 붙는다(RLS 정책이 진짜로
+    # 적용되는지가 이 시스템의 권한 모델 전체이고, 그건 실물 없이는 검증할 수 없다).
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: ci-postgres-pw
+          POSTGRES_DB: weather
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # 러너에서 서비스 컨테이너는 localhost로 매핑된다(운영의 compose 네트워크와 다르다).
+      DATABASE_URL: postgres://postgres:ci-postgres-pw@127.0.0.1:5432/weather
+      # 0010_role_login.sql이 app_user/app_service에 부여할 비밀번호.
+      # CI 전용 일회성 값이라 그대로 적어 둔다 — 이 DB는 잡이 끝나면 사라진다.
+      APP_USER_PASSWORD: ciuserpw
+      APP_SERVICE_PASSWORD: ciservicepw
+      # withUser는 정책이 적용되는 접속, withService는 우회하는 접속. 갈라 둔다.
+      DATABASE_URL_USER: postgres://app_user:ciuserpw@127.0.0.1:5432/weather
+      DATABASE_URL_SERVICE: postgres://app_service:ciservicepw@127.0.0.1:5432/weather
+      ALLOWED_EMAIL_DOMAINS: gonjiam.com
+      # 비워 두면 카카오워크로 실제 발송하지 않는다. CI가 외부로 나가면 안 된다.
+      KAKAOWORK_BOT_KEY: ""
+      KMA_API_KEY: ci-placeholder
+      COOKIE_SECURE: "false"
+
     steps:
       - uses: actions/checkout@v4
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-      # 순수 함수 단위 테스트 (외부 의존 없음 — 판정 엔진·파생값·클라이언트·템플릿·채널)
-      - name: deno test (unit)
-        run: |
-          deno test \
-            supabase/functions/_shared/engine_test.ts \
-            supabase/functions/_shared/derive_test.ts \
-            supabase/functions/_shared/kma_test.ts \
-            supabase/functions/_shared/template_test.ts \
-            supabase/functions/_shared/kakaowork_test.ts \
-            supabase/functions/_shared/cors_test.ts
-      # 공유 모듈 + Edge Function 엔트리포인트 전체 타입체크
-      # (엔트리포인트를 빼면 함수 본문의 타입 오류가 CI를 통과해 런타임에서 터진다)
-      - name: deno check (shared modules + edge functions)
-        run: |
-          deno check \
-            supabase/functions/_shared/engine.ts \
-            supabase/functions/_shared/derive.ts \
-            supabase/functions/_shared/kma.ts \
-            supabase/functions/_shared/template.ts \
-            supabase/functions/_shared/kakaowork.ts \
-            supabase/functions/_shared/cors.ts \
-            supabase/functions/weather-tick/index.ts \
-            supabase/functions/send/index.ts \
-            supabase/functions/remind-tick/index.ts \
-            supabase/functions/auth-kakaowork/index.ts
 
-  # 통합 테스트(RLS·Edge Functions)는 Supabase 로컬 스택이 필요해 로컬 실행 대상:
-  #   supabase start && supabase db reset && supabase functions serve --env-file .env.test
-  #   deno test --allow-net --allow-env supabase/functions/**/index_test.ts
-
-  web-build:
-    name: 웹 빌드 (apps/web 존재 시)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check web exists
-        id: web
-        run: test -f apps/web/package.json && echo "exists=true" >> "$GITHUB_OUTPUT" || echo "exists=false" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
-        if: steps.web.outputs.exists == 'true'
         with:
           node-version: 22
-      - name: Build
-        if: steps.web.outputs.exists == 'true'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      # migrate.sh는 psql로 마이그레이션을 적용한다. 러너에 클라이언트를 깔아 준다.
+      - name: psql 설치
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      # 운영과 **같은 스크립트**로 스키마를 올린다. 여기서 깨지면 사내 서버에서도 깨진다.
+      - name: 스키마 적용 (운영과 동일한 ops/migrate.sh)
+        run: DB_DIR=./db sh ops/migrate.sh
+
+      - name: 의존성 설치
+        working-directory: server
+        run: npm ci
+
+      - name: 서버 테스트
+        working-directory: server
+        run: npx vitest run
+
+  web:
+    name: 웹 테스트와 빌드
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: 의존성 설치
         working-directory: apps/web
-        run: |
-          npm ci
-          npx vitest run --if-present || npx vitest run
-          npm run build
-        env:
-          VITE_SUPABASE_URL: http://127.0.0.1:54321
-          VITE_SUPABASE_ANON_KEY: ci-placeholder
+        run: npm ci
+
+      - name: 웹 테스트
+        working-directory: apps/web
+        run: npm test
+
+      # npm run build는 tsc -b까지 돈다. npx tsc --noEmit보다 엄격해서
+      # 실제 누락을 잡아낸 전례가 있으므로 반드시 build로 확인한다.
+      # 예전 워크플로가 주입하던 VITE_SUPABASE_*는 이제 쓰이지 않아 지웠다.
+      - name: 웹 빌드
+        working-directory: apps/web
+        run: npm run build

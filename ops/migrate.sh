@@ -233,5 +233,7 @@ fi
 if [ "$changed" = "0" ]; then
   echo "스키마가 이미 최신입니다."
 else
-  echo "마이그레이션 $changed개를 적용했습니다."
+  # ${...}로 감싼다: 변수 바로 뒤에 한글이 붙으면 셸에 따라 그 한글까지 변수명으로
+  # 읽어 `changed개: unbound variable`로 죽는다(macOS의 sh에서 실제로 재현했다).
+  echo "마이그레이션 ${changed}개를 적용했습니다."
 fi
