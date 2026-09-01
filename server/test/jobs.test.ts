@@ -436,6 +436,102 @@ describe("승인 재알림", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 반복 발송의 수신자는 얼어붙지 않는다 (QA W-06, 사용자 결정)
+// ---------------------------------------------------------------------------
+//
+// 승인 시점 스냅샷만 읽으면 밤 10시에 승인된 폭설 특보가 새벽 2시에 교대한 야간
+// 담당자에게는 끝까지 가지 않고, 그날 퇴사 처리된 사람에게는 매시간 계속 간다.
+describe("반복 발송 수신자 갱신", () => {
+  /** ACTIVE + 승인된 메시지(스냅샷 수신자 = 주간 담당자 한 명)를 만든다. */
+  async function activeWithSnapshot(deptId: string, dayShiftId: string) {
+    return withService(async (q) => {
+      const { rows: ev } = await q.query(
+        `insert into weather_events (kind, grade, status, repeat_count)
+         values ('rain','watch','ACTIVE', 1) returning id`);
+      await q.query(
+        "insert into messages (event_id, status, content) values ($1, 'approved', $2::jsonb)",
+        [ev[0].id, JSON.stringify([{ department_id: deptId, department_name: "객실",
+          staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
+          recipients: [{ employee_id: dayShiftId, name: "주간담당", kakaowork_user_id: "kw-day" }],
+          selected: true }])],
+      );
+      return ev[0].id as string;
+    });
+  }
+
+  it("승인 뒤에 교대한 담당자에게 반복 발송이 간다", async () => {
+    const day = await makeEmployee({ name: "주간담당", email: "shift-day@gonjiam.com", kw: "kw-day" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", day);
+    const eventId = await activeWithSnapshot(deptId, day);
+
+    // 교대: 주간 담당자를 부서 수신자에서 빼고 야간 담당자를 넣는다.
+    const night = await makeEmployee({ name: "야간담당", email: "shift-night@gonjiam.com", kw: "kw-night" });
+    await withService(async (q) => {
+      await q.query("delete from recipients where department_id = $1", [deptId]);
+      await q.query("insert into recipients (department_id, employee_id) values ($1, $2)", [deptId, night]);
+    });
+
+    stubKma(RAIN_32MM);
+    const rec = recorder();
+    await runWeatherTick({ channel: rec.channel });
+
+    // 스냅샷의 주간 담당자가 아니라 지금 근무 중인 야간 담당자에게 간다.
+    expect(rec.sent.map((x) => x.to)).toEqual(["kw-night"]);
+
+    // 감사 추적: 이 회차가 실제로 누구에게 갔는지가 이력에 남아야 한다.
+    const d = await withService(async (q) => {
+      const { rows } = await q.query("select results, content from dispatches where event_id = $1", [eventId]);
+      return rows[0];
+    });
+    expect(d.results).toEqual([{ employee_id: night, name: "야간담당", ok: true }]);
+    expect(d.content[0].recipients).toEqual([
+      { employee_id: night, name: "야간담당", kakaowork_user_id: "kw-night" },
+    ]);
+    // 메시지 내용(승인된 문구)은 그대로다 — 바뀌는 것은 받는 사람뿐이다.
+    expect(d.content[0].staff_actions).toEqual(["수건 2개 배포"]);
+  });
+
+  it("부서 수신자가 비면 그 회차는 0명에게 가고 이력에 그렇게 남는다", async () => {
+    const day = await makeEmployee({ name: "주간담당", email: "shift-empty@gonjiam.com", kw: "kw-day" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", day);
+    const eventId = await activeWithSnapshot(deptId, day);
+    await withService((q) => q.query("delete from recipients where department_id = $1", [deptId]));
+
+    stubKma(RAIN_32MM);
+    const rec = recorder();
+    await runWeatherTick({ channel: rec.channel });
+
+    // 스냅샷을 그대로 썼다면 여기서 주간 담당자에게 한 통 나갔을 것이다.
+    expect(rec.sent).toEqual([]);
+    const d = await withService(async (q) => {
+      const { rows } = await q.query("select results from dispatches where event_id = $1", [eventId]);
+      return rows[0];
+    });
+    expect(d.results).toEqual([]);
+  });
+
+  it("해제 알림도 지금 근무 중인 사람에게 간다", async () => {
+    const day = await makeEmployee({ name: "주간담당", email: "shift-res-day@gonjiam.com", kw: "kw-day" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", day);
+    await activeWithSnapshot(deptId, day);
+    const night = await makeEmployee({ name: "야간담당", email: "shift-res-night@gonjiam.com", kw: "kw-night" });
+    await withService(async (q) => {
+      await q.query("delete from recipients where department_id = $1", [deptId]);
+      await q.query("insert into recipients (department_id, employee_id) values ($1, $2)", [deptId, night]);
+    });
+
+    stubKma([
+      { category: "RN1", obsrValue: "0", baseDate: "20260812", baseTime: "0900" },
+      { category: "T1H", obsrValue: "22" }, { category: "WSD", obsrValue: "2" }, { category: "REH", obsrValue: "80" },
+    ]);
+    const rec = recorder();
+    await runWeatherTick({ channel: rec.channel });
+    expect(rec.sent.map((x) => x.to)).toEqual(["kw-night"]);
+    expect(rec.sent[0]!.text).toContain("해제");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 폭설 반복·해제 — 눈이 그쳤는데 자정까지 매시간 반복되던 문제 (QA W-04)
 // ---------------------------------------------------------------------------
 //

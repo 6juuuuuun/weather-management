@@ -86,6 +86,31 @@ export async function upsertHeartbeat(name: string, ok: boolean, note: string | 
   );
 }
 
+// 반복 발송의 수신자를 **그 회차 시점의 현재 명단**으로 갈아 끼운다 (QA W-06, 사용자 결정).
+//
+// 승인 시점의 messages.content는 부서 블록·문구·수신자를 통째로 스냅샷한다. 그 스냅샷만
+// 읽으면 밤 10시에 승인된 폭설 특보가 새벽 2시에 교대한 야간 담당자에게는 끝까지 가지 않고,
+// 그날 퇴사 처리된 사람에게는 매시간 계속 간다. **바뀌는 것은 받는 사람뿐이고, 메시지 내용은
+// 승인된 그대로 둔다.** 잃는 것은 "승인자가 본 명단 = 실제 받은 사람"이라는 감사 보증이므로,
+// 회차마다 실제로 누구에게 갔는지를 dispatches.content·results에 남겨 그 손실을 메운다.
+export async function refreshRecipients(q: Querier, blocks: DeptBlock[]): Promise<DeptBlock[]> {
+  const deptIds = blocks.map((b) => b.department_id);
+  if (deptIds.length === 0) return blocks;
+  const { rows } = await q.query(
+    `select r.department_id, r.employee_id, e.name, e.kakaowork_user_id
+       from recipients r
+       join employees e on e.id = r.employee_id
+      where r.department_id = any($1::uuid[])`,
+    [deptIds],
+  );
+  return blocks.map((b) => ({
+    ...b,
+    recipients: rows
+      .filter((r: any) => r.department_id === b.department_id)
+      .map((r: any) => ({ employee_id: r.employee_id, name: r.name, kakaowork_user_id: r.kakaowork_user_id })),
+  }));
+}
+
 export type WeatherTickResult = { collected: boolean; events: number; actions: Action[] };
 
 export async function runWeatherTick(
@@ -219,8 +244,17 @@ export async function runWeatherTick(
         return rows[0] ?? null;
       });
       if (msg) {
+        // 매 회차 현재 수신자를 다시 조회한다(QA W-06). 내용은 승인된 그대로다.
+        const blocks = await withService((q) => refreshRecipients(q, msg.content as DeptBlock[]));
+        const targets = blocks.filter((b) => b.selected).reduce((n, b) => n + b.recipients.length, 0);
+        if (targets === 0)
+          // 이 회차는 아무에게도 가지 않는다. 이력에는 results가 빈 배열로 남아 화면이
+          // "수신자 0명"으로 그리고(History.tsx), 상태 점검도 같은 상태를 사유로 잡는다.
+          console.error(
+            `[weather-tick] 반복 발송 대상이 0명입니다 (event=${a.eventId}) — 부서 수신자를 확인하세요`,
+          );
         const results: unknown[] = [];
-        for (const b of (msg.content as DeptBlock[]).filter((b) => b.selected))
+        for (const b of blocks.filter((b) => b.selected))
           for (const r of b.recipients)
             results.push({ employee_id: r.employee_id, name: r.name,
               ...(r.kakaowork_user_id
@@ -231,10 +265,12 @@ export async function runWeatherTick(
           // 회차 채번은 weather_events.repeat_count 단일 소스 (승인 발송이 1회차 → 이후 +1씩).
           const { rows: evRows } = await q.query("select repeat_count from weather_events where id = $1", [a.eventId]);
           const repeatNo = (evRows[0]?.repeat_count ?? 0) + 1;
+          // content에는 **이번 회차에 실제로 쓴 블록**(갱신된 수신자 포함)을 남긴다 —
+          // 승인 스냅샷을 그대로 남기면 "누가 받았나"를 사후에 알 수 없다.
           await q.query(
             `insert into dispatches (message_id, event_id, repeat_no, results, content)
              values ($1, $2, $3, $4::jsonb, $5::jsonb)`,
-            [msg.id, a.eventId, repeatNo, JSON.stringify(results), JSON.stringify(msg.content)],
+            [msg.id, a.eventId, repeatNo, JSON.stringify(results), JSON.stringify(blocks)],
           );
           await q.query("update weather_events set repeat_count = $2 where id = $1", [a.eventId, repeatNo]);
         });
@@ -252,7 +288,11 @@ export async function runWeatherTick(
       });
       if (approvedMsg) {
         if (site.resolve_notice) {
-          for (const b of ((approvedMsg.content ?? []) as DeptBlock[]).filter((b) => b.selected))
+          // 해제 알림도 반복 발송과 같은 명단을 쓴다(QA W-06). 승인 시점 스냅샷으로 보내면
+          // 방금 교대해 실제로 대응 중인 사람은 "끝났다"는 말을 못 듣고, 퇴근한 사람만 받는다.
+          const closing = await withService((q) =>
+            refreshRecipients(q, (approvedMsg.content ?? []) as DeptBlock[]));
+          for (const b of closing.filter((b) => b.selected))
             for (const r of b.recipients) if (r.kakaowork_user_id)
               await channel.send(r.kakaowork_user_id,
                 `[날씨경영] ${KIND_LABEL[a.kind]} ${GRADE_LABEL[a.grade]} 상황이 해제되었습니다. 조치해 주셔서 감사합니다.`);
