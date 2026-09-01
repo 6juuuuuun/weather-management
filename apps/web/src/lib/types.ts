@@ -49,6 +49,11 @@ export type Employee = {
   // 아예 없는(사전 등록만 된) 직원은 null, PATCH/POST /employees 응답에는 이 필드
   // 자체가 없다(그래서 옵셔널이다).
   account_status?: "active" | "disabled" | null;
+  // 같은 곳에서 함께 온다. 잠금은 지금까지 어느 화면에도 보이지 않아서, 이메일만
+  // 아는 사람이 승인권자를 반복해서 잠가 둬도 관리자가 알 방법이 없었다(QA W-17).
+  // 누적 횟수까지 보여야 "한 번 잊었다"와 "누가 겨냥하고 있다"를 구분할 수 있다.
+  account_locked?: boolean;
+  account_lock_count?: number;
 };
 
 export type WeatherEvent = {
@@ -60,6 +65,9 @@ export type WeatherEvent = {
   closed_at: string | null;
   trigger_observation_id: number | null;
   approved_by: string | null;
+  // 승인 시점에 함께 저장한 이름(0013_actor_name_snapshot.sql). 승인자가 퇴사해
+  // 삭제되면 approved_by는 null이 되지만 "누가 승인했는가"는 이 값으로 남는다.
+  approved_by_name: string | null;
   approved_at: string | null;
   last_reminded_at: string | null;
   repeat_count: number;

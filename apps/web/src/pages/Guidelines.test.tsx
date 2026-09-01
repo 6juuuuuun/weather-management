@@ -130,4 +130,69 @@ describe("Guidelines", () => {
     expect(await screen.findByText("폭우 대응 지침")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "지침 저장" })).not.toBeInTheDocument();
   });
+
+  // 직원 삭제가 이제 로그인 계정까지 지운다(QA W-01, 결정 D-1). 그 대신 서버가
+  // 수정 시점의 이름을 스냅샷해 준다 — 화면이 그 이름을 쓰지 않으면 "마지막 수정"
+  // 옆이 그냥 비어, 누가 고쳤는지가 통째로 사라진다.
+  it("수정자가 명부에 없으면 스냅샷된 이름에 (삭제된 직원)을 붙여 보여준다", async () => {
+    mocks.authState.employee = adminEmployee();
+    mocks.listDepartments.mockResolvedValue([
+      { id: "g1", parent_id: null, name: "리조트", sort_order: 0 },
+      { id: "l1", parent_id: "g1", name: "객실", sort_order: 0 },
+    ]);
+    // 명부에는 관리자만 남아 있다 — 지침을 고친 emp-gone은 지워졌다.
+    mocks.listEmployees.mockResolvedValue([adminEmployee()]);
+    mocks.guidelines.mockResolvedValue([
+      {
+        id: "g-1",
+        department_id: "l1",
+        kind: "rain",
+        grade: "watch",
+        staff_actions: [],
+        guest_notice: "",
+        updated_at: "2026-03-01T00:00:00Z",
+        updated_by: "emp-gone",
+        updated_by_name: "홍길동",
+      },
+    ]);
+
+    render(
+      <MemoryRouter>
+        <Guidelines />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/홍길동\(삭제된 직원\)/)).toBeInTheDocument();
+  });
+
+  it("수정자가 명부에 있으면 명부의 이름을 그대로 보여준다", async () => {
+    mocks.authState.employee = adminEmployee();
+    mocks.listDepartments.mockResolvedValue([
+      { id: "g1", parent_id: null, name: "리조트", sort_order: 0 },
+      { id: "l1", parent_id: "g1", name: "객실", sort_order: 0 },
+    ]);
+    mocks.listEmployees.mockResolvedValue([adminEmployee()]);
+    mocks.guidelines.mockResolvedValue([
+      {
+        id: "g-1",
+        department_id: "l1",
+        kind: "rain",
+        grade: "watch",
+        staff_actions: [],
+        guest_notice: "",
+        updated_at: "2026-03-01T00:00:00Z",
+        updated_by: "admin-1",
+        updated_by_name: "김운영",
+      },
+    ]);
+
+    render(
+      <MemoryRouter>
+        <Guidelines />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/김운영/)).toBeInTheDocument();
+    expect(screen.queryByText(/삭제된 직원/)).not.toBeInTheDocument();
+  });
 });

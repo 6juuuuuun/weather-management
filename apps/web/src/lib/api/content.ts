@@ -11,6 +11,9 @@ export type GuidelineRow = {
   guest_notice: string;
   updated_at: string;
   updated_by: string | null;
+  // 서버가 수정 시점에 스냅샷한 이름이다. updated_by(직원 id)는 그 사람이 삭제되면
+  // null이 되므로, 화면이 이름을 그리려면 이 값이 필요하다(QA W-01 · 결정 D-1).
+  updated_by_name: string | null;
 };
 
 export const guidelines = () => apiGet<GuidelineRow[]>("/api/guidelines");
@@ -25,6 +28,7 @@ export type MessageRow = {
   content: DeptBlock[];
   updated_at: string;
   updated_by: string | null;
+  updated_by_name: string | null;
 };
 
 export const messagesOf = (eventId: string) => apiGet<MessageRow[]>(`/api/messages?event_id=${encodeURIComponent(eventId)}`);

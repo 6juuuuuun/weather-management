@@ -98,4 +98,32 @@ describe("비밀번호 변경", () => {
     await waitFor(() => expect(screen.getByText(/10자/)).toBeInTheDocument());
     expect(fetchMock.mock.calls.some(([path]) => path === "/api/auth/change-password")).toBe(false);
   });
+
+  // 임시 비밀번호를 받은 사람이 쪽지의 값을 두 칸에 그대로 옮겨 적는 것이 가장 쉬운
+  // 길이었고, 예전에는 그게 통과했다(QA W-05a) — 비밀번호는 임시 값 그대로인데
+  // must_change_password가 풀리고 72시간 만료가 지워져 그 값이 영구히 유효해졌다.
+  it("현재 비밀번호와 같은 값이면 서버에 변경 요청을 보내지 않는다", async () => {
+    const { fetchMock, push } = makeFetchQueue();
+    vi.stubGlobal("fetch", fetchMock);
+    push("/api/auth/me", meMustChange);
+    renderPage();
+
+    await screen.findByLabelText("현재 비밀번호");
+    fillAndSubmit("W_OATBWhFGtt", "W_OATBWhFGtt");
+
+    await waitFor(() => expect(screen.getByText(/다른 값이어야 합니다/)).toBeInTheDocument());
+    expect(fetchMock.mock.calls.some(([path]) => path === "/api/auth/change-password")).toBe(false);
+  });
+
+  // 화면에도 서버에도 안내가 없어서 사용자가 그 길로 걸어갔다. 안내를 화면에 둔다.
+  it("임시 비밀번호와 다른 값이어야 한다는 것과 다른 기기가 끊긴다는 것을 안내한다", async () => {
+    const { fetchMock, push } = makeFetchQueue();
+    vi.stubGlobal("fetch", fetchMock);
+    push("/api/auth/me", meMustChange);
+    renderPage();
+
+    await screen.findByLabelText("현재 비밀번호");
+    expect(screen.getByText(/다른 값/)).toBeInTheDocument();
+    expect(screen.getByText(/다른 기기에 남아 있는/)).toBeInTheDocument();
+  });
 });

@@ -109,6 +109,7 @@ const baseEvent: WeatherEvent = {
   closed_at: null,
   trigger_observation_id: 10,
   approved_by: null,
+  approved_by_name: null,
   approved_at: null,
   last_reminded_at: null,
   repeat_count: 0,
@@ -121,6 +122,7 @@ const baseMessage = {
   content,
   updated_at: "2026-08-12T06:00:00Z",
   updated_by: null,
+  updated_by_name: null,
 };
 
 // id는 /observations/:id 전용으로 함께 내려온다(baseEvent.trigger_observation_id와 같은 값).

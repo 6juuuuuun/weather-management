@@ -26,6 +26,13 @@ export default function ChangePassword() {
       setError(`비밀번호는 ${MIN_PASSWORD}자 이상이어야 합니다`);
       return;
     }
+    // 서버도 거부하지만(QA W-05a) 화면이 먼저 말해 주는 편이 낫다. 임시 비밀번호를
+    // 받은 사람이 쪽지의 값을 두 칸에 그대로 옮겨 적는 것이 가장 쉬운 길이었고,
+    // 예전에는 그게 통과해 임시 비밀번호가 영구히 유효해졌다.
+    if (next === current) {
+      setError("지금 쓰는 비밀번호와 다른 값이어야 합니다");
+      return;
+    }
     setBusy(true);
     try {
       // AuthProvider.changePassword가 서버 호출 뒤 refresh()까지 마친다 — 그래서
@@ -45,6 +52,10 @@ export default function ChangePassword() {
     <div className="signup">
       <h1>비밀번호 변경</h1>
       <p>계속 이용하려면 새 비밀번호를 설정해야 합니다.</p>
+      <p>
+        받은 임시 비밀번호와 <strong>다른 값</strong>으로 정하세요. 바꾸면 다른 기기에 남아 있는
+        로그인은 모두 끊깁니다.
+      </p>
       <form onSubmit={submit}>
         <label htmlFor="current-password">현재 비밀번호</label>
         <input

@@ -303,6 +303,13 @@
   font-weight: 600;
 }
 
+/* 반복 잠금은 "누가 이 계정을 겨냥하고 있다"는 신호다(QA W-17) — 상태 한 줄
+   아래에 누적 횟수를 조용히 덧붙인다. */
+.employees-account-lockinfo {
+  font-size: 11px;
+  color: var(--ink-muted-80);
+}
+
 .employees-account-actions {
   display: flex;
   gap: 6px;

@@ -8,7 +8,15 @@ import { StatusDot } from "../components/StatusDot";
 import { DeptModal } from "../components/DeptModal";
 import { useAuth } from "../auth/AuthProvider";
 import { ApiError } from "../lib/api/client";
-import { listDepartments, listEmployees, updateEmployee, deleteEmployee as deleteEmployeeApi, createEmployee } from "../lib/api/org";
+import {
+  listDepartments,
+  listEmployees,
+  updateEmployee,
+  deleteEmployee as deleteEmployeeApi,
+  createEmployee,
+  alertRecipients as listAlertRecipients,
+  saveAlertRecipients,
+} from "../lib/api/org";
 import { setAccountStatus, resetPassword } from "../lib/api/auth";
 import type { DepartmentRow, EmployeeRow } from "../lib/api/org";
 import type { EmpRole } from "../lib/types";
@@ -68,6 +76,14 @@ export default function Employees() {
     { name: string; password: string; expiresInHours: number | null } | null
   >(null);
 
+  // Alert 수신자 목록. 두 곳에서 쓴다: 삭제 확인창이 "승인 권한자가 줄어든다"를
+  // 말할 수 있게(QA W-01d — 삭제는 alert_recipients를 cascade로 지운다), 그리고
+  // staff로 강등할 때 수신자에서도 뺄지 묻기 위해(사용자 결정 D-3c).
+  const [alertRecipientIds, setAlertRecipientIds] = useState<string[]>([]);
+  // 강등 확인창. window.confirm은 예/아니오뿐이라 "역할만 변경 / 수신자에서도 제외 /
+  // 취소" 세 갈래를 물을 수 없다.
+  const [demoteAsk, setDemoteAsk] = useState<{ employee: EmployeeRow; role: EmpRole } | null>(null);
+
   const [deptModalOpen, setDeptModalOpen] = useState(searchParams.get("dept") === "open" && isAdmin);
   const [toast, setToast] = useState<ToastState>(null);
 
@@ -77,7 +93,13 @@ export default function Employees() {
   async function loadAll() {
     setLoadError(null);
     try {
-      const [emps, depts] = await Promise.all([listEmployees(), listDepartments()]);
+      const [emps, depts, recips] = await Promise.all([
+        listEmployees(),
+        listDepartments(),
+        // 실패해도 화면 전체를 막지 않는다 — 이 목록은 확인창의 경고에만 쓰인다.
+        listAlertRecipients().catch(() => []),
+      ]);
+      setAlertRecipientIds(recips.map((r) => r.employee_id));
       // employees API는 정렬 순서를 강제하지 않는다(org.ts: order by name) — 화면은
       // "최근 가입 우선"을 기대했으므로 created_at 내림차순으로 다시 정렬한다.
       setEmployees([...emps].sort((a, b) => b.created_at.localeCompare(a.created_at)));
@@ -130,6 +152,11 @@ export default function Employees() {
     }
     return options;
   }, [departments]);
+
+  // 자기 행인지, 그리고 관리자가 몇 명인지 — 마지막 관리자가 스스로 내려오는 것을
+  // 화면에서도 막기 위해 쓴다(QA W-19).
+  const isSelf = (e: EmployeeRow) => e.auth_user_id !== null && e.auth_user_id === me?.auth_user_id;
+  const adminCount = useMemo(() => employees.filter((e) => e.role === "admin").length, [employees]);
 
   const unassignedCount = useMemo(
     () => employees.filter((e) => e.department_id === null).length,
@@ -199,10 +226,21 @@ export default function Employees() {
     }
   }
 
+  // 확인창이 실제로 벌어지는 일을 전부 말해야 한다(QA W-01d·e). 예전 문구는
+  // "지침 수신자 지정에서도 함께 제외됩니다" 한 줄이라 **로그인 계정 이야기도,
+  // 특보 승인 권한이 줄어든다는 이야기도** 하지 않았다. 지금은 삭제가 계정까지
+  // 지우므로(되돌릴 수 없다) 더더욱 말해야 한다.
   async function deleteEmployee(e: EmployeeRow) {
-    const ok = window.confirm(
-      `${e.name} 님을 삭제하시겠습니까?\n지침 수신자 지정에서도 함께 제외됩니다.`,
-    );
+    const lines = [`${e.name} 님을 삭제하시겠습니까?`, ""];
+    if (e.auth_user_id) {
+      lines.push("· 로그인 계정도 함께 삭제됩니다(되돌릴 수 없습니다).");
+    }
+    lines.push("· 지침 수신자 지정에서도 함께 제외됩니다.");
+    if (alertRecipientIds.includes(e.id)) {
+      lines.push("· 이 사람은 특보 승인권자입니다 — 승인할 수 있는 사람이 한 명 줄어듭니다.");
+    }
+    lines.push("· 지금까지의 승인·수정 이력에는 이름이 그대로 남습니다.");
+    const ok = window.confirm(lines.join("\n"));
     if (!ok) return;
     try {
       await deleteEmployeeApi(e.id);
@@ -225,10 +263,45 @@ export default function Employees() {
 
   // 가입은 열려 있고 권한만 관리자가 준다 — 이 역할 변경이 실제 승인 권한을 여닫는
   // 관문이다. 화면이 없으면 아무도 특보를 승인할 수 없다.
-  async function changeRole(employeeId: string, role: EmpRole) {
+  //
+  // 여기에 확인 절차가 하나도 없었다(QA W-19): 관리자가 자기 행의 셀렉트에서 한 칸
+  // 잘못 고르면 그대로 저장됐고, 관리자가 한 명뿐인 배포에서는 그 순간 설정·직원
+  // 관리·지침 등록이 전부 막혔다. 삭제·비활성화·임시 비밀번호에는 전부 확인창이 있다.
+  function requestRoleChange(e: EmployeeRow, role: EmpRole) {
+    if (role === e.role) return;
+    // 서버도 막지만(마지막 관리자 403), 화면이 먼저 말해 주는 편이 낫다.
+    if (isSelf(e) && e.role === "admin" && role !== "admin" && adminCount <= 1) {
+      setToast({
+        kind: "error",
+        message: "마지막 관리자입니다. 다른 사람을 관리자로 지정한 뒤에 역할을 바꾸세요",
+      });
+      loadAll();
+      return;
+    }
+    // staff로 내리는데 그 사람이 Alert 수신자면 수신자에서도 뺄지 묻는다
+    // (사용자 결정 D-3c). 자동으로 빼지는 않는다 — 승인 권한이 역할이 아니라
+    // 수신자 등록에서만 나온다는 규칙은 그대로 두고, 관리자의 의도만 확인한다.
+    if (role === "staff" && alertRecipientIds.includes(e.id)) {
+      setDemoteAsk({ employee: e, role });
+      return;
+    }
+    if (!window.confirm(`${e.name} 님의 역할을 ${ROLE_LABEL[role]}(으)로 바꾸시겠습니까?`)) {
+      loadAll(); // 네이티브 select가 이미 바꿔 둔 표시값을 서버 값으로 되돌린다
+      return;
+    }
+    changeRole(e.id, role);
+  }
+
+  async function changeRole(employeeId: string, role: EmpRole, alsoRemoveRecipient = false) {
     try {
       await updateEmployee(employeeId, { role });
-      setToast({ kind: "ok", message: "역할을 변경했습니다" });
+      if (alsoRemoveRecipient) {
+        await saveAlertRecipients(alertRecipientIds.filter((id) => id !== employeeId));
+      }
+      setToast({
+        kind: "ok",
+        message: alsoRemoveRecipient ? "역할을 변경하고 특보 수신자에서 제외했습니다" : "역할을 변경했습니다",
+      });
       await loadAll();
     } catch (err) {
       setToast({ kind: "error", message: err instanceof ApiError ? err.message : "역할 변경에 실패했습니다" });
@@ -289,6 +362,19 @@ export default function Employees() {
     } finally {
       setAccountBusyId(null);
     }
+  }
+
+  // 강등 확인창의 세 갈래. 취소·닫기는 서버 값을 다시 읽어 네이티브 select가
+  // 이미 바꿔 둔 표시값을 되돌린다(리뷰 F7과 같은 이유).
+  function cancelDemote() {
+    setDemoteAsk(null);
+    loadAll();
+  }
+
+  function confirmDemote(alsoRemoveRecipient: boolean) {
+    const ask = demoteAsk;
+    setDemoteAsk(null);
+    if (ask) changeRole(ask.employee.id, ask.role, alsoRemoveRecipient);
   }
 
   function closeDeptModal() {
@@ -392,8 +478,9 @@ export default function Employees() {
               {filtered.map((e) => {
                 const unassigned = e.department_id === null;
                 const accountId = e.auth_user_id;
-                const isSelf = accountId !== null && accountId === me?.auth_user_id;
+                const self = isSelf(e);
                 const disabled = e.account_status === "disabled";
+                const locked = e.account_locked === true;
                 return (
                   <tr key={e.id} className={disabled ? "employees-row-disabled" : undefined}>
                     <td>
@@ -409,7 +496,7 @@ export default function Employees() {
                           className="employees-role-select"
                           value={e.role}
                           aria-label={`${e.name} 역할`}
-                          onChange={(ev) => changeRole(e.id, ev.target.value as EmpRole)}
+                          onChange={(ev) => requestRoleChange(e, ev.target.value as EmpRole)}
                         >
                           {ROLE_ORDER.map((r) => (
                             <option key={r} value={r}>
@@ -430,10 +517,18 @@ export default function Employees() {
                         <span className="employees-account-none">미가입</span>
                       ) : (
                         <div className="employees-account-cell">
-                          <span className={disabled ? "employees-account-disabled" : "employees-account-active"}>
-                            {disabled ? "비활성화됨" : "사용 중"}
+                          <span className={disabled || locked ? "employees-account-disabled" : "employees-account-active"}>
+                            {disabled ? "비활성화됨" : locked ? "잠김" : "사용 중"}
                           </span>
-                          {isAdmin && !isSelf && (
+                          {/* 잠금은 지금까지 화면에 없었고, 이 셀은 잠긴 계정도
+                              "사용 중"이라고 말했다(QA W-17). 누적 횟수를 함께 보여야
+                              반복 잠금(= 누가 겨냥하고 있다)을 알아볼 수 있다. */}
+                          {(e.account_lock_count ?? 0) > 0 && (
+                            <span className="employees-account-lockinfo">
+                              잠금 누적 {e.account_lock_count}회{locked ? " · 지금 잠김" : ""}
+                            </span>
+                          )}
+                          {isAdmin && !self && (
                             <div className="employees-account-actions">
                               <button
                                 type="button"
@@ -443,14 +538,19 @@ export default function Employees() {
                               >
                                 {disabled ? "활성화" : "비활성화"}
                               </button>
-                              <button
-                                type="button"
-                                className="employees-account-btn"
-                                disabled={accountBusyId === e.id}
-                                onClick={() => issueTempPassword(e)}
-                              >
-                                임시 비밀번호 발급
-                              </button>
+                              {/* 비활성 계정에는 발급하지 않는다(QA W-27) — 서버도
+                                  409로 거부한다. 버튼을 그대로 두면 관리자는 발급에
+                                  성공했다고 믿고 쓸 수 없는 값을 전달한다. */}
+                              {!disabled && (
+                                <button
+                                  type="button"
+                                  className="employees-account-btn"
+                                  disabled={accountBusyId === e.id}
+                                  onClick={() => issueTempPassword(e)}
+                                >
+                                  임시 비밀번호 발급
+                                </button>
+                              )}
                             </div>
                           )}
                         </div>
@@ -633,6 +733,33 @@ export default function Employees() {
               다시 발급해야 합니다.
             </p>
           )}
+        </Modal>
+      )}
+
+      {demoteAsk && (
+        <Modal
+          title="역할 강등"
+          desc={`${demoteAsk.employee.name} 님을 ${ROLE_LABEL[demoteAsk.role]}(으)로 바꿉니다`}
+          onClose={cancelDemote}
+          footer={
+            <>
+              <Button variant="ghost" onClick={cancelDemote}>
+                취소
+              </Button>
+              <Button variant="ghost" onClick={() => confirmDemote(false)}>
+                역할만 변경
+              </Button>
+              <Button variant="primary" onClick={() => confirmDemote(true)}>
+                수신자에서도 제외
+              </Button>
+            </>
+          }
+        >
+          <p>
+            이 사람은 지금 <strong>특보 승인권자</strong>입니다. 승인 권한은 역할이 아니라 특보 수신자
+            등록에서 나오므로, 역할만 바꾸면 승인 권한은 그대로 남습니다.
+          </p>
+          <p>특보 수신자에서도 뺄까요?</p>
         </Modal>
       )}
 

@@ -72,12 +72,22 @@ describe("Login", () => {
     expect(screen.queryByText("홈 화면")).not.toBeInTheDocument();
   });
 
-  it("423이면 서버 문구와 무관하게 잠시 후 다시 시도하라는 고정 문구를 보여준다", async () => {
-    mocks.login.mockRejectedValue(new ApiError(423, "Locked"));
+  // 잠금(423)만은 서버 문구를 그대로 보여준다(QA W-18). 예전에는 여기서도 고정
+  // 문구("잠시 후 다시 시도해 주세요")를 썼는데, 그 문구는 잠겼다는 말도 15분이라는
+  // 말도 하지 않는다 — 사용자는 서버가 바쁜 줄 알고 계속 시도해 잠금을 연장했다.
+  // 남은 시간은 서버만 아는 값이라 화면이 문구를 고정하면 영영 보여줄 수 없다.
+  it("423이면 서버가 준 잠금 문구(남은 시간 포함)를 그대로 보여준다", async () => {
+    mocks.login.mockRejectedValue(
+      new ApiError(423, "비밀번호를 5회 잘못 입력해 계정이 잠겼습니다. 약 12분 뒤에 다시 시도하거나 관리자에게 문의해 주세요"),
+    );
     renderLogin();
     fillAndSubmit("a@gonjiam.com", "wrong-password");
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("잠시 후 다시 시도해 주세요");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("계정이 잠겼습니다");
+    expect(alert).toHaveTextContent("12분");
+    // 옛 고정 문구가 남아 있으면 남은 시간이 사라진다.
+    expect(alert).not.toHaveTextContent("잠시 후 다시 시도해 주세요");
   });
 
   // 계정 존재 여부를 감추기 위해 서버가 401에 이미 사람이 읽을 수 있는 문구를 준다

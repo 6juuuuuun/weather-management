@@ -241,9 +241,18 @@ export default function Guidelines() {
     ? (departments.find((d) => d.id === selectedDept.parent_id) ?? null)
     : null;
   const currentGuideline = selectedDeptId ? guidelineFor(selectedDeptId, grade) : undefined;
-  const updaterName = currentGuideline?.updated_by
-    ? employees.find((e) => e.id === currentGuideline.updated_by)?.name
-    : undefined;
+  // 수정자 이름. 예전에는 직원 목록에서 updated_by로 찾기만 해서, 그 사람이 삭제되면
+  // 이름이 통째로 사라졌다(그리고 이제 삭제는 계정까지 지운다 — QA W-01, 결정 D-1).
+  // 서버가 수정 시점에 스냅샷한 updated_by_name을 함께 내려주므로, 명부에 없는
+  // 사람이면 그 이름에 "(삭제된 직원)"을 붙여 사실을 드러낸다.
+  const updaterName = (() => {
+    if (!currentGuideline) return undefined;
+    const inRoster = currentGuideline.updated_by
+      ? employees.find((e) => e.id === currentGuideline.updated_by)?.name
+      : undefined;
+    if (inRoster) return inRoster;
+    return currentGuideline.updated_by_name ? `${currentGuideline.updated_by_name}(삭제된 직원)` : undefined;
+  })();
   const deptEmployees = selectedDeptId
     ? employees.filter((e) => e.department_id === selectedDeptId)
     : [];
