@@ -64,7 +64,7 @@ describe("회원가입", () => {
   it("비밀번호가 10자 미만이면 가입 요청(POST /api/auth/signup)을 보내지 않는다", async () => {
     const { fetchMock, push } = makeFetchQueue();
     vi.stubGlobal("fetch", fetchMock);
-    push("/api/departments", () => jsonResponse([]));
+    push("/api/public/departments", () => jsonResponse([]));
     renderSignup();
     fireEvent.change(screen.getByLabelText("회사 이메일"), { target: { value: "a@gonjiam.com" } });
     fireEvent.change(screen.getByLabelText("비밀번호"), { target: { value: "short" } });
@@ -83,7 +83,7 @@ describe("회원가입", () => {
   it("고른 부서의 id를 그대로 department_id로 보낸다", async () => {
     const { fetchMock, push } = makeFetchQueue();
     vi.stubGlobal("fetch", fetchMock);
-    push("/api/departments", () => jsonResponse([{ id: "d1", parent_id: null, name: "객실", sort_order: 1 }]));
+    push("/api/public/departments", () => jsonResponse([{ id: "d1", parent_id: null, name: "객실", sort_order: 1 }]));
     push("/api/auth/signup", () => jsonResponse({ ok: true }, 201));
     renderSignup();
 
@@ -109,13 +109,13 @@ describe("회원가입", () => {
   it("부서 목록을 불러오지 못하면 오류와 재시도 버튼을 보여주고, 재시도하면 다시 불러온다", async () => {
     const { fetchMock, push } = makeFetchQueue();
     vi.stubGlobal("fetch", fetchMock);
-    push("/api/departments", () => jsonResponse({ error: "서버 오류가 발생했습니다" }, 500));
+    push("/api/public/departments", () => jsonResponse({ error: "서버 오류가 발생했습니다" }, 500));
     renderSignup();
 
     expect(await screen.findByText(/부서 목록을 불러오지 못했습니다/)).toBeInTheDocument();
     expect(screen.getByLabelText("부서")).toHaveDisplayValue("선택하지 않음");
 
-    push("/api/departments", () => jsonResponse([{ id: "d1", parent_id: null, name: "객실", sort_order: 1 }]));
+    push("/api/public/departments", () => jsonResponse([{ id: "d1", parent_id: null, name: "객실", sort_order: 1 }]));
     fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
 
     await waitFor(() => expect(screen.queryByText(/부서 목록을 불러오지 못했습니다/)).not.toBeInTheDocument());

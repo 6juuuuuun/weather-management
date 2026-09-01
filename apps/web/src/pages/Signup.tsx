@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError } from "../lib/api/client";
 import { signup } from "../lib/api/auth";
-import { listDepartments } from "../lib/api/org";
+import { listDepartmentsForSignup } from "../lib/api/org";
 import "./Signup.css";
 
 const MIN_PASSWORD = 10;
@@ -27,7 +27,7 @@ export default function Signup() {
   // 고른 채 가입하면 department_id: null이 되어 requireDepartment 라우트가 막힌다.
   function loadDepts() {
     setDeptsError(false);
-    listDepartments()
+    listDepartmentsForSignup()
       // 응답이 배열이 아니면(예상 밖의 응답 포함) 조용히 빈 목록으로 둔다 — select가
       // 배열이 아닌 값에 .map을 호출해 화면 전체가 무너지는 것보다 안전한 실패다.
       .then((rows) => setDepts(Array.isArray(rows) ? rows : []))

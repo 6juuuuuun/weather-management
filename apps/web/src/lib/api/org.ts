@@ -32,6 +32,12 @@ export type AlertRecipientRow = {
 export type AlertSettingRow = AlertSetting;
 
 export const listDepartments = () => apiGet<DepartmentRow[]>("/api/departments");
+
+// 가입 화면 전용. /api/departments는 로그인을 요구하므로 가입하려는 사람은 401만
+// 받는다 — 그래서 부서 드롭다운이 영영 비어 있었다(실제 브라우저에서 재현). 서버가
+// 이 경로로 id와 이름만 따로 내보낸다. 로그인한 화면은 계속 listDepartments를 쓴다.
+export const listDepartmentsForSignup = () =>
+  apiGet<{ id: string; name: string }[]>("/api/public/departments");
 export const createDepartment = (name: string, opts?: { parentId?: string | null; sortOrder?: number }) =>
   apiSend<DepartmentRow>("POST", "/api/departments", {
     name,

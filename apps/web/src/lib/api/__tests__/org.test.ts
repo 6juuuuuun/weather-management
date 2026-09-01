@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, vi } from "vitest";
 import { record } from "./contract";
 import {
   listDepartments,
+  listDepartmentsForSignup,
   createDepartment,
   renameDepartment,
   deleteDepartment,
@@ -24,6 +25,13 @@ describe("lib/api/org HTTP 계약", () => {
   it("listDepartments는 GET /api/departments다", async () => {
     const req = await record(() => listDepartments());
     expect(req).toEqual({ path: "/api/departments", method: "GET", body: undefined });
+  });
+
+  // 가입 화면은 로그인 전이라 /api/departments를 부르면 401만 받는다 — 그래서 부서
+  // 드롭다운이 영영 비어 있었다(실제 브라우저에서 재현). 공개 경로를 부르는지 고정한다.
+  it("listDepartmentsForSignup은 인증이 필요 없는 GET /api/public/departments다", async () => {
+    const req = await record(() => listDepartmentsForSignup());
+    expect(req).toEqual({ path: "/api/public/departments", method: "GET", body: undefined });
   });
 
   // 부서 계층(2라운드에 복원)을 서버가 parent_id로 받는다. 이름만 보내면 자식 부서를

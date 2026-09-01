@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterAll, vi } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, afterAll, vi } from "vitest";
 import request from "supertest";
 import { app } from "../src/index.ts";
 import { withService } from "../src/db.ts";
@@ -364,5 +364,72 @@ describe("세션", () => {
     const agent = await loginAgent();
     await withService((q) => q.query("update auth_sessions set expires_at = now() - interval '1 second'"));
     expect((await agent.get("/api/auth/me")).status).toBe(401);
+  });
+});
+
+// 빈 ALLOWED_EMAIL_DOMAINS를 "전부 거부"로 해석하던 시절, 설정을 비워 둔 운영자는
+// 아무도 가입할 수 없는 시스템을 받았다 — 게다가 화면에 나가는 문구가 "회사
+// 이메일로만 가입할 수 있습니다"라, 원인이 설정 누락이라는 걸 알 방법이 없었다.
+// 실제로 사내 도메인이 gonjiam.com이 아닌 곳에서 가입을 시도하다 발견했다.
+describe("가입 허용 도메인", () => {
+  const saved = process.env.ALLOWED_EMAIL_DOMAINS;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.ALLOWED_EMAIL_DOMAINS;
+    else process.env.ALLOWED_EMAIL_DOMAINS = saved;
+  });
+
+  it("목록을 비워 두면 제한 없이 가입된다", async () => {
+    process.env.ALLOWED_EMAIL_DOMAINS = "";
+    const res = await request(app)
+      .post("/api/auth/signup")
+      .send({ email: "nodomain@dnocorp.com", password: "a".repeat(MIN_PASSWORD), name: "무제한" });
+    expect(res.status).toBe(201);
+  });
+
+  it("목록에 값이 있으면 그 도메인만 가입된다", async () => {
+    process.env.ALLOWED_EMAIL_DOMAINS = "gonjiam.com";
+    const ok = await request(app)
+      .post("/api/auth/signup")
+      .send({ email: "indomain@gonjiam.com", password: "a".repeat(MIN_PASSWORD), name: "허용" });
+    expect(ok.status).toBe(201);
+
+    const no = await request(app)
+      .post("/api/auth/signup")
+      .send({ email: "outdomain@other.com", password: "a".repeat(MIN_PASSWORD), name: "거부" });
+    expect(no.status).toBe(400);
+  });
+
+  afterAll(async () => {
+    await withService((q) =>
+      q.query(
+        "delete from employees where email in ('nodomain@dnocorp.com','indomain@gonjiam.com','outdomain@other.com')",
+      ),
+    );
+  });
+});
+
+// 가입 화면은 로그인 전이라 /api/departments(orgRouter, requireAuth)를 부르면 401만
+// 받는다. 그래서 부서 드롭다운이 영영 비어 있었고, 모두가 부서 없이 가입해
+// requireDepartment가 지키는 화면들이 통째로 막혔다 — 실제 브라우저에서 재현했다.
+describe("가입 화면용 공개 부서 목록", () => {
+  it("로그인 없이도 부서를 내려준다", async () => {
+    const res = await request(app).get("/api/public/departments");
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body.length).toBeGreaterThan(0);
+    expect(res.body[0]).toHaveProperty("id");
+    expect(res.body[0]).toHaveProperty("name");
+  });
+
+  it("id와 이름 말고는 내보내지 않는다", async () => {
+    const res = await request(app).get("/api/public/departments");
+    expect(Object.keys(res.body[0]).sort()).toEqual(["id", "name"]);
+  });
+
+  // 인증이 걸린 원래 경로는 그대로여야 한다 — 공개 경로를 만들면서 조직도 전체가
+  // 열려 버리면 고친 것보다 잃은 것이 크다.
+  it("인증이 걸린 /api/departments는 여전히 로그인을 요구한다", async () => {
+    const res = await request(app).get("/api/departments");
+    expect(res.status).toBe(401);
   });
 });

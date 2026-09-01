@@ -6,6 +6,7 @@ import { dashboardRouter } from "./api/dashboard.ts";
 import { orgRouter } from "./api/org.ts";
 import { contentRouter } from "./api/content.ts";
 import { requireAuth } from "./auth/middleware.ts";
+import { withService } from "./db.ts";
 import { runSend } from "./jobs/send.ts";
 import { startScheduler } from "./jobs/scheduler.ts";
 import { checkHealth } from "./jobs/watchdog.ts";
@@ -27,6 +28,23 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health/deep", async (_req, res) => {
   const h = await checkHealth();
   res.status(h.ok ? 200 : 503).json(h);
+});
+
+// 가입 화면(로그인 전)이 부서 드롭다운을 채우는 데 쓰는 유일한 공개 조회다.
+// /api/departments는 orgRouter 안에 있고 orgRouter는 통째로 requireAuth라, 가입하려는
+// 사람은 그 목록을 절대 받을 수 없었다 — 화면은 "부서 목록을 불러오지 못했습니다"만
+// 띄우고 모두가 부서 없이 가입하게 되고, 그러면 requireDepartment가 지키는
+// /criteria·/guidelines·/events/:id가 통째로 막힌다. 실제 브라우저에서 재현했다.
+//
+// 인증 라우터들보다 **앞에** 둔다. 뒤로 밀리면 orgRouter의 requireAuth가 먼저 401로 끊는다.
+// 내보내는 값은 id와 이름뿐이다 — 조직도의 다른 정보(상위 부서·수신자 설정 등)는
+// 로그인한 뒤 /api/departments로만 나간다.
+app.get("/api/public/departments", async (_req, res) => {
+  const rows = await withService(async (q) => {
+    const { rows } = await q.query("select id, name from departments order by name");
+    return rows;
+  });
+  res.json(rows);
 });
 
 app.use("/api/auth", authRouter);
