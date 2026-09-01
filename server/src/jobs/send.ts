@@ -27,7 +27,17 @@ export type SendResult = {
   repeat_no?: number;
   obs_line?: string;
   fail_count?: number;
+  // fail_count만으로는 "10명에게 성공"과 "0명에게 성공"이 구분되지 않는다 —
+  // 대상이 0명이면 실패한 사람도 0명이라 fail_count도 0이다(QA W-02). 실제 대상
+  // 인원과 실제로 성공한 인원을 함께 실어, 화면이 그 둘을 구분해 그릴 수 있게 한다.
+  recipient_count?: number;
+  sent_count?: number;
 };
+
+/** 선택된 부서 블록의 실제 수신 대상 수. 발송 가능 여부의 유일한 기준이다. */
+export function countTargets(blocks: DeptBlock[]): number {
+  return blocks.filter((b) => b.selected).reduce((n, b) => n + b.recipients.length, 0);
+}
 
 // 승인 권한은 역할이 아니라 alert_recipients 등록 여부가 결정한다(스펙 2026-08-13).
 // send는 withService(정책 우회)로 동작하므로 current_emp_is_approver()에 기대지 않고 직접 조회한다.
@@ -56,26 +66,91 @@ async function dispatch(
   repeatNo: number,
   isTest = false,
 ): Promise<SendResult> {
-  const results: unknown[] = [];
+  const results: { ok: boolean }[] = [];
+  const targetCount = countTargets(blocks);
   // 발송(네트워크)은 트랜잭션 밖에서 하고, 결과만 모아 한 번에 기록한다.
-  for (const b of blocks.filter((b) => b.selected))
-    for (const r of b.recipients)
-      results.push({ employee_id: r.employee_id, name: r.name,
-        ...(r.kakaowork_user_id
-          ? await channel.send(r.kakaowork_user_id, renderMessage(b, {
-              kindLabel: KIND_LABEL[ctx.kind as never], gradeLabel: GRADE_LABEL[ctx.grade as never],
-              siteName: ctx.site, obsLine: ctx.obsLine }))
-          : { ok: false, error: "카카오워크 미연결" }) });
-  const d = await withService(async (q) => {
-    const { rows } = await q.query(
-      `insert into dispatches (message_id, event_id, repeat_no, is_test, results, content)
-       values ($1, $2, $3, $4, $5::jsonb, $6::jsonb) returning id`,
-      [msg.id, msg.event_id, repeatNo, isTest, JSON.stringify(results), JSON.stringify(blocks)],
-    );
-    return rows[0];
-  });
-  return { ok: true, dispatch_id: Number(d.id), repeat_no: repeatNo, obs_line: ctx.obsLine,
-    fail_count: (results as any[]).filter((r) => !r.ok).length };
+  //
+  // 발송 루프와 기록을 분리해 둔다(QA W-09). 이 둘을 한 덩어리로 두면 "이미 나간
+  // 발송"과 "아직 안 나간 발송"을 호출부가 구분할 수 없어, 승인 상태를 되돌려야
+  // 할지 말지를 판단할 수 없다. 카카오워크 채널은 스스로 예외를 삼키고
+  // { ok:false }를 돌려주므로(shared/kakaowork.ts) 보통은 여기서 던지지 않지만,
+  // 주입된 채널이 던질 수 있으므로 그 경우까지 결과로 바꿔 돌려준다.
+  let sendError: unknown = null;
+  try {
+    for (const b of blocks.filter((b) => b.selected))
+      for (const r of b.recipients)
+        results.push({ employee_id: r.employee_id, name: r.name,
+          ...(r.kakaowork_user_id
+            ? await channel.send(r.kakaowork_user_id, renderMessage(b, {
+                kindLabel: KIND_LABEL[ctx.kind as never], gradeLabel: GRADE_LABEL[ctx.grade as never],
+                siteName: ctx.site, obsLine: ctx.obsLine }))
+            : { ok: false, error: "카카오워크 미연결" }) } as { ok: boolean });
+  } catch (e) {
+    sendError = e;
+  }
+  const sentCount = results.filter((r) => r.ok).length;
+  const failCount = results.length - sentCount;
+
+  // 기록에 실패해도 이미 나간 DM은 되돌릴 수 없다. 그 사실을 삼키지 않고 결과에 싣는다.
+  //
+  // 한 명도 **시도조차** 못 한 경우(첫 발송에서 예외)에는 이력을 남기지 않는다.
+  // 남길 발송 결과가 없을뿐더러, dispatches는 (event_id, repeat_no)가 유니크라
+  // (0005_dispatch_repeat_no.sql) 빈 행을 남기면 같은 회차의 재시도가 통째로
+  // 막힌다 — 되돌려 놓고 다시 승인할 수 없게 되므로 W-09를 반쯤만 고치는 셈이다.
+  let dispatchId: number | undefined;
+  let recordError: unknown = null;
+  if (results.length === 0 && sendError) {
+    return { ok: false, status: 500, error: "발송에 실패했습니다 (0명 발송됨).",
+      repeat_no: repeatNo, obs_line: ctx.obsLine, fail_count: 0,
+      recipient_count: targetCount, sent_count: 0 };
+  }
+  try {
+    const d = await withService(async (q) => {
+      const { rows } = await q.query(
+        `insert into dispatches (message_id, event_id, repeat_no, is_test, results, content)
+         values ($1, $2, $3, $4, $5::jsonb, $6::jsonb) returning id`,
+        [msg.id, msg.event_id, repeatNo, isTest, JSON.stringify(results), JSON.stringify(blocks)],
+      );
+      return rows[0];
+    });
+    dispatchId = Number(d.id);
+  } catch (e) {
+    recordError = e;
+    console.error("[send] 발송 이력을 기록하지 못했습니다", e);
+  }
+
+  const base = { dispatch_id: dispatchId, repeat_no: repeatNo, obs_line: ctx.obsLine,
+    fail_count: failCount, recipient_count: targetCount, sent_count: sentCount };
+  if (sendError) {
+    return { ok: false, status: 500,
+      error: `발송 도중 오류가 발생했습니다 (${sentCount}/${targetCount}명 발송됨)`, ...base };
+  }
+  if (recordError) {
+    return { ok: false, status: 500,
+      error: `${sentCount}명에게 발송은 됐지만 발송 이력을 남기지 못했습니다. 담당자에게 알려 주세요.`, ...base };
+  }
+  return { ok: true, ...base };
+}
+
+// 승인 발송이 한 명에게도 닿지 못했을 때 상태를 되돌린다. 이것이 없으면 특보는
+// "승인·발송됨"으로 굳고 실제 발송은 0건인데, 재승인은 PENDING_APPROVAL이 아니라
+// 409로 막힌다 — 화면 안에 복구 수단이 하나도 없는 상태가 된다(QA W-09).
+async function unapprove(eventId: string, messageId: string): Promise<void> {
+  try {
+    await withService(async (q) => {
+      await q.query(
+        `update weather_events
+            set status = 'PENDING_APPROVAL', approved_by = null, approved_by_name = null,
+                approved_at = null, repeat_count = 0
+          where id = $1 and status = 'ACTIVE'`,
+        [eventId],
+      );
+      await q.query("update messages set status = 'draft' where id = $1", [messageId]);
+    });
+  } catch (e) {
+    // 되돌리기까지 실패하면 남길 수 있는 것은 로그뿐이다. 삼키면 아무도 모른다.
+    console.error("[send] 승인 되돌리기에 실패했습니다", eventId, e);
+  }
 }
 
 export async function runSend(
@@ -113,6 +188,21 @@ export async function runSend(
   if (!recipient) return { ok: false, status: 403, error: "권한이 없습니다" };
 
   if (body.mode === "approve") {
+    // 발송 대상이 0명이면 승인이 아니다(QA W-02).
+    //
+    // 예전에는 이 상태에서도 상태 전이가 커밋되고 dispatch가 `results = []`,
+    // `fail_count = 0`, `ok:true`를 돌려줬다 — 이력에는 초록 "성공 0"이 남고
+    // 승인자는 폭설 특보가 나갔다고 믿은 채 자리를 뜬다. **실패한 사람이 없어서
+    // 0인 것이 아니라 대상이 아예 없어서 0이다.** 상태를 바꾸기 전에 막는다.
+    const targetCount = countTargets(body.content);
+    if (targetCount === 0) {
+      const selected = body.content.filter((b) => b.selected).length;
+      return { ok: false, status: 400, recipient_count: 0, sent_count: 0,
+        error: selected === 0
+          ? "발송할 부서를 한 곳 이상 선택해 주세요."
+          : "선택한 부서에 수신자가 한 명도 없습니다 — 승인해도 아무에게도 발송되지 않습니다. 조직·수신자 화면에서 부서 수신자를 먼저 지정해 주세요." };
+    }
+
     const prepared = await withService(async (q) => {
       const { rows: evRows } = await q.query("select * from weather_events where id = $1", [body.event_id]);
       const ev = evRows[0];
@@ -135,8 +225,27 @@ export async function runSend(
       return { ev, msg: msgRows[0], obsLine: await obsLineFor(q, ev) };
     });
     if (!prepared) return { ok: false, status: 409, error: "승인 가능한 상태가 아닙니다" };
-    const out = await dispatch(channel, prepared.msg, body.content,
-      { kind: prepared.ev.kind, grade: prepared.ev.grade, site: siteName, obsLine: prepared.obsLine }, 1);
+
+    // 승인(상태 전이)과 발송은 한 트랜잭션에 넣을 수 없다 — 네트워크를 트랜잭션
+    // 안에 두지 않는 것이 이 프로젝트의 규칙이다(weatherTick.ts 주석). 그래서
+    // **어긋날 수 있는 한 가지 경우에 어느 쪽이 진실인지 정한다**(QA W-09):
+    //  - 한 명에게도 못 나갔다 → 승인을 없던 일로 되돌린다. 그래야 재시도가
+    //    409가 아니라 정상 승인으로 다시 돈다.
+    //  - 일부라도 나갔다 → 되돌리지 않는다(나간 DM은 회수할 수 없다). 상태는
+    //    ACTIVE로 두고 화면에 "몇 명에게 나갔는지"를 그대로 말한다.
+    let out: SendResult;
+    try {
+      out = await dispatch(channel, prepared.msg, body.content,
+        { kind: prepared.ev.kind, grade: prepared.ev.grade, site: siteName, obsLine: prepared.obsLine }, 1);
+    } catch (e) {
+      console.error("[send] 승인 발송이 예외로 끝났습니다", e);
+      out = { ok: false, status: 500, sent_count: 0, recipient_count: targetCount,
+        error: "발송에 실패했습니다." };
+    }
+    if (!out.ok && (out.sent_count ?? 0) === 0) {
+      await unapprove(prepared.ev.id, prepared.msg.id);
+      return { ...out, error: `${out.error ?? "발송에 실패했습니다."} 승인은 취소했습니다 — 상태를 확인한 뒤 다시 승인해 주세요.` };
+    }
     return out;
   }
 

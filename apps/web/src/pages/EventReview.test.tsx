@@ -294,6 +294,71 @@ describe("EventReview", () => {
     expect(await screen.findByRole("button", { name: /승인 및 발송/ })).not.toBeDisabled();
   });
 
+  // -------------------------------------------------------------------------
+  // "0명에게 성공" — QA W-02
+  // -------------------------------------------------------------------------
+  //
+  // 지침은 있는데 그 부서에 수신자가 없으면 승인 버튼이 그대로 켜지고, 발송이
+  // {ok:true, fail_count:0}으로 끝나고, 이력에 초록 "성공 0"이 남는다.
+  // 승인자는 폭설 특보가 나갔다고 믿고 자리를 뜬다.
+  it("선택한 부서에 수신자가 한 명도 없으면 승인 버튼을 막고 이유를 말한다", async () => {
+    setupApi({
+      message: {
+        ...baseMessage,
+        content: content.map((b) => ({ ...b, recipients: [] })),
+      },
+    });
+    renderPage();
+    const approveBtn = await screen.findByRole("button", { name: /승인 및 발송/ });
+    expect(approveBtn).toBeDisabled();
+    expect(screen.getByText(/수신자가 0명이라 승인할 수 없습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/0명에게 발송됩니다/)).toBeInTheDocument();
+    // 버튼이 막혔으므로 /api/send는 한 번도 불리지 않는다.
+    expect(sendRequests()).toEqual([]);
+  });
+
+  // 한 부서만 비어 있는 경우는 승인 자체는 가능해야 한다(다른 부서는 나가야 하므로).
+  // 다만 그 부서 몫이 0명이라는 것은 승인 **전에** 보여야 한다.
+  it("일부 부서만 수신자가 없으면 승인은 되지만 그 부서를 짚어 준다", async () => {
+    setupApi({
+      message: {
+        ...baseMessage,
+        content: [content[0]!, { ...content[1]!, recipients: [] }],
+      },
+    });
+    renderPage();
+    const approveBtn = await screen.findByRole("button", { name: /승인 및 발송/ });
+    expect(approveBtn).not.toBeDisabled();
+    expect(screen.getByText(/수신자가 지정되지 않은 부서가 있습니다:\s*조리/)).toBeInTheDocument();
+  });
+
+  // 내용을 비운 지침은 제목만 있는 DM이 된다(QA W-22).
+  it("지침 내용이 비어 있는 부서를 승인 전에 알려 준다", async () => {
+    setupApi({
+      message: {
+        ...baseMessage,
+        content: [{ ...content[0]!, staff_actions: [], guest_notice: "" }, content[1]!],
+      },
+    });
+    renderPage();
+    await screen.findByRole("button", { name: /승인 및 발송/ });
+    expect(screen.getByText(/지침 내용이 비어 있는 부서가 있습니다:\s*객실/)).toBeInTheDocument();
+  });
+
+  // 서버가 거부 사유를 주는데 화면이 "승인 및 발송에 실패했습니다"만 띄우면,
+  // 승인자는 무엇을 고쳐야 하는지 모른 채 새벽에 같은 버튼을 다시 누른다.
+  it("서버가 거부한 사유를 그대로 보여준다", async () => {
+    send.push("/api/send", () =>
+      jsonResponse(
+        { ok: false, error: "선택한 부서에 수신자가 한 명도 없습니다 — 승인해도 아무에게도 발송되지 않습니다." },
+        400,
+      ),
+    );
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /승인 및 발송/ }));
+    expect(await screen.findByText(/수신자가 한 명도 없습니다/)).toBeInTheDocument();
+  });
+
   it("fail_count가 있으면 danger 배너를 보여주고 이동하지 않는다", async () => {
     send.push("/api/send", () => jsonResponse({ ok: true, dispatch_id: 2, fail_count: 1 }));
     renderPage();

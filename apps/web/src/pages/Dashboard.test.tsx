@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   heartbeat: vi.fn(),
   listDepartments: vi.fn(),
   alertRecipients: vi.fn(),
+  listRecipients: vi.fn(),
   guidelines: vi.fn(),
   dispatches: vi.fn(),
   authState: {
@@ -40,6 +41,7 @@ vi.mock("../lib/api/dashboard", () => ({
 vi.mock("../lib/api/org", () => ({
   listDepartments: (...args: unknown[]) => mocks.listDepartments(...args),
   alertRecipients: (...args: unknown[]) => mocks.alertRecipients(...args),
+  listRecipients: (...args: unknown[]) => mocks.listRecipients(...args),
 }));
 
 vi.mock("../lib/api/content", () => ({
@@ -87,6 +89,7 @@ beforeEach(() => {
   mocks.heartbeat.mockReset().mockResolvedValue(null);
   mocks.listDepartments.mockReset().mockResolvedValue([]);
   mocks.alertRecipients.mockReset().mockResolvedValue([]);
+  mocks.listRecipients.mockReset().mockResolvedValue([]);
   mocks.guidelines.mockReset().mockResolvedValue([]);
   mocks.dispatches.mockReset().mockResolvedValue([]);
 });
@@ -179,8 +182,8 @@ describe("Dashboard 셋업 체크리스트", () => {
     ]);
     // 리프 2곳에만 지침이 있다.
     mocks.guidelines.mockResolvedValue([
-      { department_id: "leaf1", kind: "rain", grade: "watch" },
-      { department_id: "leaf2", kind: "rain", grade: "watch" },
+      { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
+      { department_id: "leaf2", kind: "rain", grade: "watch", staff_actions: ["점검"], guest_notice: "" },
     ]);
     mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
     mocks.criteria.mockResolvedValue(
@@ -191,11 +194,66 @@ describe("Dashboard 셋업 체크리스트", () => {
     mocks.alertRecipients.mockResolvedValue([
       { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
     ]);
+    // 지침을 등록한 부서에는 부서 수신자도 있어야 한다 — 없으면 그 부서 몫이
+    // 0명에게 나간다(QA W-02). 체크리스트가 그것까지 본다.
+    mocks.listRecipients.mockResolvedValue([
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", kakaowork_user_id: "kw-2" },
+      { department_id: "leaf2", employee_id: "e3", name: "시설담당", role: "staff", kakaowork_user_id: "kw-3" },
+    ]);
 
     const { container } = renderDashboard();
-    // 6개 항목이 모두 충족되면 스트립 자체가 사라진다(setup.done < setup.total일 때만 렌더).
+    // 7개 항목이 모두 충족되면 스트립 자체가 사라진다(setup.done < setup.total일 때만 렌더).
     await waitFor(() => expect(mocks.guidelines).toHaveBeenCalled());
     await waitFor(() => expect(container.querySelector(".setup-strip")).toBeNull());
+  });
+
+  // "0명에게 성공"의 뿌리(QA W-02). 지침을 다 채워도 그 부서에 수신자가 없으면
+  // 승인 발송은 0명에게 나간다 — 그런데 체크리스트는 6/6 초록이었다.
+  it("지침은 있는데 부서 수신자가 없으면 체크리스트가 완료되지 않는다", async () => {
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
+    ]);
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
+    ]);
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+    ]);
+    mocks.listRecipients.mockResolvedValue([]); // 부서 수신자 0명
+
+    const { container } = renderDashboard();
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
+    expect(container.querySelector(".setup-strip")!.textContent).toMatch(/부서 수신자/);
+  });
+
+  // 내용을 비운 지침은 제목만 있는 DM이 된다 — "등록됨"으로 세면 안 된다(QA W-22).
+  it("내용이 빈 지침은 등록된 것으로 세지 않는다", async () => {
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
+    ]);
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: [], guest_notice: "" },
+    ]);
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+    ]);
+    mocks.listRecipients.mockResolvedValue([
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", kakaowork_user_id: "kw-2" },
+    ]);
+
+    const { container } = renderDashboard();
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
+    expect(container.querySelector(".setup-strip")!.textContent).toMatch(/부서별 지침 1개 부서 미등록/);
   });
 
   // 위 테스트가 "항상 스트립이 없다"로 통과하지 않도록, 리프 하나가 비면
@@ -206,7 +264,9 @@ describe("Dashboard 셋업 체크리스트", () => {
       { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
       { id: "leaf2", parent_id: "root1", name: "시설", sort_order: 2 },
     ]);
-    mocks.guidelines.mockResolvedValue([{ department_id: "leaf1", kind: "rain", grade: "watch" }]);
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
+    ]);
     mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
@@ -228,7 +288,9 @@ describe("Dashboard 셋업 체크리스트", () => {
       { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
       { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
     ]);
-    mocks.guidelines.mockResolvedValue([{ department_id: "leaf1", kind: "rain", grade: "watch" }]);
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
+    ]);
     mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),

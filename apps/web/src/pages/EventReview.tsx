@@ -450,12 +450,20 @@ export default function EventReview() {
       const res = await callSend({ mode: "approve", event_id: event.id, content });
       if (res.fail_count && res.fail_count > 0) {
         setEvent((ev) => (ev ? { ...ev, status: "ACTIVE" } : ev));
-        setBanner({ type: "danger", text: `${res.fail_count}명 발송 실패 — 발송 이력에서 확인하세요.` });
+        setBanner({
+          type: "danger",
+          text: `${res.fail_count}명 발송 실패 — 발송 이력에서 확인하세요.`
+            + (res.sent_count != null ? ` (실제 발송 ${res.sent_count}명)` : ""),
+        });
       } else {
         navigate("/history");
       }
-    } catch {
-      setActionError("승인 및 발송에 실패했습니다. 최신 상태를 확인한 뒤 다시 시도해 주세요.");
+    } catch (err) {
+      // 서버가 왜 거부했는지를 그대로 보여준다. 예전에는 문구가 항상 "승인 및 발송에
+      // 실패했습니다"뿐이라, "선택한 부서에 수신자가 한 명도 없습니다"처럼 승인자가
+      // 바로 조치할 수 있는 사유가 화면에 한 글자도 나오지 않았다(QA W-02).
+      const detail = err instanceof ApiError ? ` ${err.message}` : "";
+      setActionError(`승인 및 발송에 실패했습니다.${detail} 최신 상태를 확인한 뒤 다시 시도해 주세요.`);
     } finally {
       setSending(false);
     }
@@ -500,6 +508,14 @@ export default function EventReview() {
     .filter((b) => b.selected)
     .reduce((sum, b) => sum + b.recipients.length, 0);
   const allSelected = content.length > 0 && content.every((b) => b.selected);
+
+  // "0명에게 성공"을 승인 **전에** 보여준다(QA W-02). 서버도 같은 조건을 거부하지만,
+  // 승인자가 버튼을 누른 뒤에야 알게 되면 이미 폭설 새벽에 시간을 버린 뒤다.
+  const emptyRecipientDepts = content.filter((b) => b.selected && b.recipients.length === 0);
+  // 내용을 비운 지침은 제목만 있는 DM이 된다 — 발송 전에 그 부서를 짚어 준다(QA W-22).
+  const emptyGuidelineDepts = content.filter(
+    (b) => b.selected && b.staff_actions.filter((a) => a.trim() !== "").length === 0 && b.guest_notice.trim() === "",
+  );
 
   const summaryText = content
     .filter((b) => b.selected && b.recipients.length > 0)
@@ -553,6 +569,20 @@ export default function EventReview() {
             </div>
           )}
           {actionError && <div className="review-banner review-banner-danger">{actionError}</div>}
+
+          {emptyRecipientDepts.length > 0 && (
+            <div className="review-banner review-banner-danger">
+              수신자가 지정되지 않은 부서가 있습니다:{" "}
+              {emptyRecipientDepts.map((b) => b.department_name).join(", ")} — 이 부서 몫은 0명에게 발송됩니다.
+              부서 수신자를 지정하거나 그 부서의 선택을 해제해 주세요.
+            </div>
+          )}
+          {emptyGuidelineDepts.length > 0 && (
+            <div className="review-banner review-banner-info">
+              지침 내용이 비어 있는 부서가 있습니다:{" "}
+              {emptyGuidelineDepts.map((b) => b.department_name).join(", ")} — 제목만 있는 메시지가 나갑니다.
+            </div>
+          )}
 
           <div className="review-grid">
             <div className="review-main">
@@ -717,12 +747,16 @@ export default function EventReview() {
                       <Button
                         variant="hero"
                         onClick={handleApprove}
-                        disabled={sending || selectedCount === 0}
+                        disabled={sending || selectedCount === 0 || recipientCount === 0}
                       >
                         <IconSend /> 승인 및 발송
                       </Button>
                     </div>
-                    <p className="rail-cta-note">발송 즉시 선택된 {selectedCount}개 부서 담당자에게 전달됩니다</p>
+                    <p className="rail-cta-note">
+                      {recipientCount === 0
+                        ? "수신자가 0명이라 승인할 수 없습니다 — 지금 승인해도 아무에게도 전달되지 않습니다"
+                        : `발송 즉시 선택된 ${selectedCount}개 부서 수신자 ${recipientCount}명에게 전달됩니다`}
+                    </p>
                     <div className="rail-secondary-actions">
                       <Button variant="ghost" onClick={handleSaveDraft} disabled={savingDraft}>
                         임시 저장

@@ -7,7 +7,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { ApiError } from "../lib/api/client";
 import { latestObservation, observationsSince, openEvents, criteria as fetchCriteria, siteSettings } from "../lib/api/dashboard";
 import type { CriteriaRow, ObservationRow } from "../lib/api/dashboard";
-import { listDepartments, alertRecipients } from "../lib/api/org";
+import { listDepartments, alertRecipients, listRecipients } from "../lib/api/org";
 import { guidelines as fetchGuidelines, dispatches as fetchDispatches } from "../lib/api/content";
 import type { DispatchRow } from "../lib/api/content";
 import { computeSetupChecklist } from "../lib/setup";
@@ -105,7 +105,9 @@ export default function Dashboard() {
   const { employee, isApprover } = useAuth();
   const [data, setData] = useState<DashboardData | null>(null);
   const [setup, setSetup] = useState<SetupChecklist | null>(null);
-  const [setupDetail, setSetupDetail] = useState<{ missingDeptCount: number }>({ missingDeptCount: 0 });
+  const [setupDetail, setSetupDetail] = useState<{ missingDeptCount: number; deptWithoutRecipientCount: number }>(
+    { missingDeptCount: 0, deptWithoutRecipientCount: 0 },
+  );
   const [siteName, setSiteName] = useState("곤지암");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -150,18 +152,30 @@ export default function Dashboard() {
       });
 
       if (isAdmin) {
-        const [depts, guidelineRows, alertRecipientRows] = await Promise.all([
+        const [depts, guidelineRows, alertRecipientRows, deptRecipientRows] = await Promise.all([
           listDepartments(),
           fetchGuidelines(),
           alertRecipients(),
+          // 부서 수신자(발송 대상)는 Alert 수신자(승인자)와 다른 명단이다. 이걸 세지
+          // 않으면 지침을 다 등록해도 실제 발송이 0명일 수 있다(QA W-02).
+          listRecipients(),
         ]);
         // 지침(action_guidelines)은 리프 부서에만 단다. 모든 부서를 리프로 세면
         // 시드 기준 deptCount가 12가 아니라 16이 되어 guidelineDeptCount >= deptCount가
         // 영원히 참이 될 수 없다 — 리프 12곳을 다 채워도 체크리스트가 4/5에 멈춘다.
         const parentIds = new Set(depts.map((d) => d.parent_id).filter(Boolean));
         const leafIds = new Set(depts.filter((d) => !parentIds.has(d.id)).map((d) => d.id));
+        // 내용이 비어 있는 지침은 제목만 있는 DM을 만들 뿐이라 "등록됐다"고 셀 수
+        // 없다(QA W-22). 서버의 checkHealth·발송 초안과 같은 기준으로 거른다.
         const guidelineDeptIds = new Set(
-          guidelineRows.map((g) => g.department_id).filter((id) => leafIds.has(id)),
+          guidelineRows
+            .filter((g) => (g.staff_actions ?? []).some((a) => a.trim() !== "") || (g.guest_notice ?? "").trim() !== "")
+            .map((g) => g.department_id)
+            .filter((id) => leafIds.has(id)),
+        );
+        const deptIdsWithRecipient = new Set(deptRecipientRows.map((r) => r.department_id));
+        const guidelineDeptWithoutRecipient = [...guidelineDeptIds].filter(
+          (id) => !deptIdsWithRecipient.has(id),
         );
 
         const checklist = computeSetupChecklist({
@@ -173,9 +187,13 @@ export default function Dashboard() {
           // 수신자로 지정만 되고 카카오워크에 연결되지 않았으면 특보가 그 사람에게
           // 가지 않는다. "지정했는가"가 아니라 "닿을 수 있는가"를 센다.
           notifiableAlertRecipientCount: alertRecipientRows.filter((r) => !!r.kakaowork_user_id).length,
+          guidelineDeptWithoutRecipientCount: guidelineDeptWithoutRecipient.length,
         });
         setSetup(checklist);
-        setSetupDetail({ missingDeptCount: Math.max(0, leafIds.size - guidelineDeptIds.size) });
+        setSetupDetail({
+          missingDeptCount: Math.max(0, leafIds.size - guidelineDeptIds.size),
+          deptWithoutRecipientCount: guidelineDeptWithoutRecipient.length,
+        });
       } else {
         setSetup(null);
       }
@@ -300,6 +318,8 @@ export default function Dashboard() {
                         <span className="setup-strip-detail-ok">{item.label}✓</span>
                       ) : item.label === "부서별 지침" ? (
                         `부서별 지침 ${setupDetail.missingDeptCount}개 부서 미등록`
+                      ) : item.label === "부서 수신자" ? (
+                        `부서 수신자 ${setupDetail.deptWithoutRecipientCount}개 부서 미지정 — 그 부서 몫은 0명에게 발송됩니다`
                       ) : (
                         `${item.label} 미지정`
                       )}

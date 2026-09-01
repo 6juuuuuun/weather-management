@@ -73,7 +73,11 @@ function recipientSummary(content: DeptBlock[]): string {
   return `${deptPart} · ${total}명`;
 }
 
+// "10명에게 성공"과 "0명에게 성공"이 화면에서 구분되지 않았다(QA W-02). results가 빈
+// 배열이면 실패한 사람이 없어서가 아니라 **대상이 아무도 없어서**다 — 그 발송은
+// 초록색 성공이 아니라 아무 일도 일어나지 않은 발송이다.
 function statusSummary(results: DispatchResult[]): { ok: boolean; label: string } {
+  if (results.length === 0) return { ok: false, label: "수신자 0명" };
   const okCount = results.filter((r) => r.ok).length;
   const failCount = results.length - okCount;
   if (failCount > 0) return { ok: false, label: `실패 ${failCount} · 성공 ${okCount}` };

@@ -145,8 +145,25 @@ vi.mock("../lib/api/dashboard", () => ({
 }));
 
 import History from "./History";
+import { dispatches as fetchDispatches } from "../lib/api/content";
 
 describe("History", () => {
+  // "10명에게 성공"과 "0명에게 성공"이 화면에서 똑같이 초록 "성공 0"이었다(QA W-02).
+  // 승인자는 폭설 특보가 나갔다고 믿고 자리를 뜬다. results가 빈 배열인 것은
+  // 실패한 사람이 없어서가 아니라 대상이 아무도 없어서다.
+  it("수신자가 0명인 발송을 초록 성공으로 그리지 않는다", async () => {
+    vi.mocked(fetchDispatches).mockResolvedValueOnce([{ ...dispatchRow, results: [] }] as never);
+    const { container } = render(
+      <MemoryRouter>
+        <History />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("수신자 0명")).toBeInTheDocument());
+    expect(screen.queryByText("성공 0")).toBeNull();
+    expect(container.querySelector(".status-fail")).toBeTruthy();
+    expect(container.querySelector(".status-ok")).toBeNull();
+  });
+
   it("발송 이력 목록을 렌더링한다", async () => {
     render(
       <MemoryRouter>

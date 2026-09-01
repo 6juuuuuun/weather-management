@@ -817,6 +817,121 @@ describe("POST /api/send — 모드별 동작", () => {
     expect(results.find((r) => r.name === "미연결")).toMatchObject({ ok: false, error: "카카오워크 미연결" });
   });
 
+  // -------------------------------------------------------------------------
+  // "0명에게 성공" — QA W-02
+  // -------------------------------------------------------------------------
+  //
+  // 승인자가 폭설 경보를 승인하고 화면이 이력으로 넘어간다. 붉은 배너는 없고
+  // 이력에는 초록 "성공 0"이 찍혀 있다. 실제 수신자는 0명이다. fail_count가 0인
+  // 이유는 실패한 사람이 없어서가 아니라 **대상이 아예 없어서**다.
+  it("선택한 부서에 수신자가 0명이면 승인을 거부하고 특보는 승인 대기로 남는다", async () => {
+    const staff = await makeEmployee({ name: "객실직원", email: "send-zero-staff@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", staff);
+    const { eventId } = await pendingEventWithDraft(deptId, staff);
+    // 부서는 선택돼 있는데 그 안의 수신자가 비었다(부서 수신자 미지정 상태).
+    const content = [{ department_id: deptId, department_name: "객실",
+      staff_actions: ["수건 2개 배포"], guest_notice: "안내문", recipients: [], selected: true }];
+    const agent = await recipientAgent("send-zero-recip@gonjiam.com");
+
+    const res = await agent.post("/api/send").send({ mode: "approve", event_id: eventId, content });
+    expect(res.status).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toMatch(/수신자가 한 명도 없습니다/);
+    // 상태가 바뀌지 않아야 다시 승인할 수 있다 — 여기서 ACTIVE로 굳으면 재시도가 409다.
+    const st = await state();
+    expect(st.event.status).toBe("PENDING_APPROVAL");
+    expect(st.message.status).toBe("draft");
+    expect(st.dispatches).toEqual([]);
+  });
+
+  it("부서를 하나도 선택하지 않으면 승인을 거부한다", async () => {
+    const staff = await makeEmployee({ name: "객실직원", email: "send-nosel-staff@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", staff);
+    const { eventId, content } = await pendingEventWithDraft(deptId, staff);
+    const agent = await recipientAgent("send-nosel-recip@gonjiam.com");
+
+    const res = await agent.post("/api/send")
+      .send({ mode: "approve", event_id: eventId, content: content.map((b) => ({ ...b, selected: false })) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/부서를 한 곳 이상/);
+    expect((await state()).event.status).toBe("PENDING_APPROVAL");
+  });
+
+  // "10명에게 성공"과 "0명에게 성공"을 화면이 구분하려면 서버가 대상 인원을 함께
+  // 줘야 한다. fail_count만으로는 둘이 똑같이 0이다.
+  it("승인 결과에 실제 대상 인원과 성공 인원이 실려 온다", async () => {
+    const staff = await makeEmployee({ name: "객실직원", email: "send-cnt-staff@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", staff);
+    const { eventId, content } = await pendingEventWithDraft(deptId, staff);
+    const agent = await recipientAgent("send-cnt-recip@gonjiam.com");
+
+    const res = await agent.post("/api/send").send({ mode: "approve", event_id: eventId, content });
+    expect(res.status).toBe(200);
+    expect(res.body.recipient_count).toBe(1);
+    expect(res.body.sent_count).toBe(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // 승인과 발송이 어긋날 때 어느 쪽이 진실인가 — QA W-09
+  // -------------------------------------------------------------------------
+  //
+  // 예전에는 발송이 통째로 터져도 특보가 "승인·발송됨"으로 커밋된 채 남고 화면은
+  // 실패라고 말했다. 재시도는 409고 화면 안에 되돌릴 수단이 없었다.
+  it("한 명에게도 못 나가면 승인을 되돌려 다시 승인할 수 있게 한다", async () => {
+    const staff = await makeEmployee({ name: "객실직원", email: "send-rb-staff@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", staff);
+    const { eventId, content } = await pendingEventWithDraft(deptId, staff);
+    const approver = await makeEmployee({ name: "사업부장", email: "send-rb-appr@gonjiam.com", kw: "kw-appr" });
+    await makeAlertRecipient(approver);
+
+    const exploding: NotificationChannel = {
+      async send() { throw new Error("카카오워크 장애"); },
+    };
+    const out = await runSend({ mode: "approve", event_id: eventId, content }, approver, { channel: exploding });
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/승인은 취소했습니다/);
+
+    const st = await state();
+    expect(st.event.status).toBe("PENDING_APPROVAL");
+    expect(st.event.repeat_count).toBe(0);
+    expect(st.message.status).toBe("draft");
+
+    // 되돌렸으니 정상 채널로 다시 승인하면 이번엔 나간다(409로 막히지 않는다).
+    const rec = recorder();
+    const retry = await runSend({ mode: "approve", event_id: eventId, content }, approver, { channel: rec.channel });
+    expect(retry.ok).toBe(true);
+    expect(rec.sent.map((x) => x.to)).toEqual(["kw-staff"]);
+    expect((await state()).event.status).toBe("ACTIVE");
+  });
+
+  // 반대쪽 경계: 일부라도 나갔으면 되돌리지 않는다. 나간 DM은 회수할 수 없으므로
+  // 되돌리면 "받은 사람이 있는데 승인 대기"라는 더 나쁜 상태가 되고, 재승인하면
+  // 같은 사람에게 두 번 간다.
+  it("일부라도 나갔으면 승인을 되돌리지 않는다", async () => {
+    const a = await makeEmployee({ name: "직원A", email: "send-half-a@gonjiam.com", kw: "kw-a" });
+    const b = await makeEmployee({ name: "직원B", email: "send-half-b@gonjiam.com", kw: "kw-b" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", a);
+    const { eventId } = await pendingEventWithDraft(deptId, a);
+    const approver = await makeEmployee({ name: "사업부장", email: "send-half-appr@gonjiam.com", kw: "kw-appr" });
+    await makeAlertRecipient(approver);
+    const content = [{ department_id: deptId, department_name: "객실",
+      staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
+      recipients: [
+        { employee_id: a, name: "직원A", kakaowork_user_id: "kw-a" },
+        { employee_id: b, name: "직원B", kakaowork_user_id: "kw-b" },
+      ], selected: true }];
+
+    let n = 0;
+    const halfBroken: NotificationChannel = {
+      async send() { if (++n > 1) throw new Error("두 번째에서 끊김"); return { ok: true }; },
+    };
+    const out = await runSend({ mode: "approve", event_id: eventId, content }, approver, { channel: halfBroken });
+    expect(out.ok).toBe(false);
+    expect(out.sent_count).toBe(1);
+    expect(out.error).not.toMatch(/승인은 취소/);
+    expect((await state()).event.status).toBe("ACTIVE");
+  });
+
   // 원본은 없는 message_id에 500으로 터졌고(ev.repeat_count 접근), 이식하며 404로 고쳤다.
   // 그 개선을 지키는 테스트가 없으면 `if (!msg) return null` 한 줄이 사라져도 조용하다.
   it("없는 message_id로 재발송하면 404다", async () => {

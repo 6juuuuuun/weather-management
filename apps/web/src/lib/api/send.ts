@@ -22,6 +22,10 @@ export type SendResult = {
   repeat_no?: number;
   obs_line?: string;
   fail_count?: number;
+  // fail_count가 0인 이유가 "실패한 사람이 없어서"인지 "대상이 아예 없어서"인지는
+  // 이 둘로만 갈린다(server/src/jobs/send.ts, QA W-02).
+  recipient_count?: number;
+  sent_count?: number;
   error?: string;
 };
 
