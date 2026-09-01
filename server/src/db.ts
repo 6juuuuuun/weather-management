@@ -25,8 +25,13 @@ const servicePool = new pg.Pool({ connectionString: process.env.DATABASE_URL_SER
 // 다시 띄워 주긴 하지만, 무인 운영 시스템이 그 복구에 기대면 안 된다.
 // 로그만 남기고 흘려보낸다: 끊긴 커넥션은 pg가 알아서 풀에서 버리고, 다음
 // 요청은 새 커넥션으로 정상 처리된다.
+// 에러 객체를 통째로 찍지 않고 한 줄로 줄인다: pg의 에러는 스택과 내부 Client
+// 필드까지 달고 있어 끊김 한 번에 로그가 90줄쯤 늘어난다. 운영 안내서는
+// "로그 마지막 몇 줄에 답이 있다"고 알려 주는데, 그 몇 줄이 이 덤프로 밀려
+// 사라지면 안 된다. 이 부류의 오류는 message 한 줄이 사실상 전부다
+// (예: "terminating connection due to administrator command").
 for (const [name, pool] of [["user", userPool], ["service", servicePool]] as const) {
-  pool.on("error", (err) => console.error(`[db] ${name} 풀의 유휴 커넥션 오류:`, err));
+  pool.on("error", (err: Error) => console.error(`[db] ${name} 풀의 유휴 커넥션 오류: ${err.message}`));
 }
 
 async function inTx<T>(pool: pg.Pool, setup: string | null, fn: (q: Querier) => Promise<T>): Promise<T> {
