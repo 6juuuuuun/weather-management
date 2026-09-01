@@ -426,3 +426,9 @@
 .dash-ticker-spacer {
   height: 54px;
 }
+
+/* 유효 관측이 하나도 없을 때의 안내(QA W-21). 경고와 같은 색을 쓰되 배너처럼
+   화면을 차지하지 않는다 — 카드 바로 위 한 줄이면 이유를 읽기에 충분하다. */
+.obs-stamp-empty {
+  color: var(--warn, #b45309);
+}

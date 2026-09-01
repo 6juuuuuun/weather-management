@@ -128,6 +128,49 @@ describe("Dashboard 관측 카드", () => {
     await screen.findByText(/관측 기준/);
     expect(screen.queryByText(/값이 갱신되지 않았습니다/)).not.toBeInTheDocument();
   });
+
+  // 유효 관측이 하나도 없으면 카드가 전부 "–"인데 이유를 말해 주는 문구가 한 줄도
+  // 없었다(QA W-21) — 관측 시각 스탬프 자체가 관측이 있을 때만 렌더링됐기 때문이다.
+  // 사용자는 시스템이 고장 났는지 날씨 정보가 없는 건지 알 수 없다.
+  it("관측이 하나도 없으면 이유를 말한다 — 수집이 실패한 경우", async () => {
+    mocks.latestObservation.mockResolvedValue(null);
+    mocks.heartbeat.mockResolvedValue({
+      name: "weather-tick",
+      last_run_at: new Date().toISOString(),
+      ok: false,
+      note: "missing",
+    });
+    renderDashboard();
+    expect(await screen.findByText(/표시할 관측값이 없습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/마지막 수집.*실패했습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/missing/)).toBeInTheDocument();
+  });
+
+  it("관측이 하나도 없으면 이유를 말한다 — 수집이 한 번도 안 돈 경우", async () => {
+    mocks.latestObservation.mockResolvedValue(null);
+    mocks.heartbeat.mockResolvedValue(null);
+    renderDashboard();
+    expect(await screen.findByText(/한 번도 실행되지 않았습니다/)).toBeInTheDocument();
+  });
+
+  // 수집은 도는데 기상청이 값을 안 주는 상태. 운영자가 볼 곳이 다르므로 문구도 달라야 한다.
+  it("관측이 하나도 없으면 이유를 말한다 — 수집은 돌았지만 결측인 경우", async () => {
+    mocks.latestObservation.mockResolvedValue(null);
+    mocks.heartbeat.mockResolvedValue({
+      name: "weather-tick",
+      last_run_at: new Date().toISOString(),
+      ok: true,
+      note: null,
+    });
+    renderDashboard();
+    expect(await screen.findByText(/기상청이 값을 주지 않았습니다/)).toBeInTheDocument();
+  });
+
+  it("관측이 있으면 그 안내를 띄우지 않는다", async () => {
+    renderDashboard();
+    await screen.findByText(/관측 기준/);
+    expect(screen.queryByText(/표시할 관측값이 없습니다/)).not.toBeInTheDocument();
+  });
 });
 
 // 항목 1·3(2라운드): 로더가 던지면 화면이 멈추고, 리프 부서 판정이 틀리면

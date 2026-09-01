@@ -5,8 +5,8 @@ import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { useAuth } from "../auth/AuthProvider";
 import { ApiError } from "../lib/api/client";
-import { latestObservation, observationsSince, openEvents, criteria as fetchCriteria, siteSettings } from "../lib/api/dashboard";
-import type { CriteriaRow, ObservationRow } from "../lib/api/dashboard";
+import { latestObservation, observationsSince, openEvents, criteria as fetchCriteria, siteSettings, heartbeat as fetchHeartbeat } from "../lib/api/dashboard";
+import type { CriteriaRow, HeartbeatRow, ObservationRow } from "../lib/api/dashboard";
 import { listDepartments, alertRecipients, listRecipients } from "../lib/api/org";
 import { guidelines as fetchGuidelines, dispatches as fetchDispatches } from "../lib/api/content";
 import type { DispatchRow } from "../lib/api/content";
@@ -30,6 +30,8 @@ type DashboardData = {
   openEvents: WeatherEvent[];
   dispatches: DispatchRow[];
   snowToday: number | null; // 판정 엔진과 동일: 당일(KST) snow_new_cm 합산, 관측 없으면 null
+  // 관측이 null일 때 "왜 비었는지"를 말하려면 수집이 돌긴 했는지를 알아야 한다(QA W-21).
+  heartbeat: HeartbeatRow | null;
   /** 월보드 차트용 최근 24시간 유효 관측 (오래된 것부터) */
   history: ObservationPoint[];
 };
@@ -118,7 +120,7 @@ export default function Dashboard() {
     const isAdmin = employee?.role === "admin";
 
     try {
-      const [obs, openEventRows, dispatchRows, criteriaRows, site, snowTodayRows, historyRows] = await Promise.all([
+      const [obs, openEventRows, dispatchRows, criteriaRows, site, snowTodayRows, historyRows, beat] = await Promise.all([
         // 결측 행(기상청 조회 실패로 기록되는 빈 행)을 제외하고 마지막 '유효' 관측을 읽는다.
         // 이 필터는 서버(dashboard.ts)가 항상 적용한다 — 제외하지 않으면 기상청이 한 번만
         // 삐끗해도 전 카드가 빈 값이 되는데, 상단의 "마지막 수집 N분 전"은 heartbeat(함수
@@ -134,6 +136,9 @@ export default function Dashboard() {
         // 이력은 월보드 차트 전용이다. 일반 대시보드는 쓰지 않으므로 조회하지 않는다 —
         // 운영 화면의 30초 폴링에 쓰지도 않는 요청을 얹지 않기 위해서다.
         boardMode ? observationsSince(new Date(Date.now() - 24 * 3600_000).toISOString()) : Promise.resolve([]),
+        // 관측이 하나도 없을 때 화면이 "왜" 비었는지 말하기 위한 값이다(QA W-21).
+        // 수집이 아예 안 돈 것과, 돌았는데 기상청이 값을 안 준 것은 운영자가 할 일이 다르다.
+        fetchHeartbeat("weather-tick"),
       ]);
 
       const snowToday =
@@ -149,6 +154,7 @@ export default function Dashboard() {
         dispatches: dispatchRows,
         snowToday,
         history: historyRows,
+        heartbeat: beat,
       });
 
       if (isAdmin) {
@@ -375,6 +381,23 @@ export default function Dashboard() {
             {isStaleObservation(data.observation.observed_at) && (
               <span className="obs-stamp-warn"> · 이후 수집이 실패해 값이 갱신되지 않았습니다</span>
             )}
+          </p>
+        )}
+
+        {/* 유효한 관측이 하나도 없으면 카드가 전부 "–"가 되는데, 예전에는 그 이유를
+            말해 주는 문구가 한 줄도 없었다(QA W-21) — 사용자는 시스템이 고장 났는지
+            날씨 정보가 없는 건지 알 수 없었다. 관측 시각 스탬프 자체가 관측이 있을
+            때만 렌더링됐기 때문이다. 수집이 돌았는지(heartbeat)로 이유를 갈라 말한다. */}
+        {data && !data.observation && (
+          <p className="obs-stamp obs-stamp-empty">
+            표시할 관측값이 없습니다 ·{" "}
+            {!data.heartbeat
+              ? "수집이 아직 한 번도 실행되지 않았습니다"
+              : data.heartbeat.ok === false
+                ? `마지막 수집(${formatTime(data.heartbeat.last_run_at)})이 실패했습니다${
+                    data.heartbeat.note ? ` (${data.heartbeat.note})` : ""
+                  }`
+                : `마지막 수집은 ${formatTime(data.heartbeat.last_run_at)}에 돌았지만 기상청이 값을 주지 않았습니다(결측)`}
           </p>
         )}
 
