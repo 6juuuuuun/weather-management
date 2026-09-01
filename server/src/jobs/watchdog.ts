@@ -7,6 +7,7 @@
 // 알림 수신자에게 사람이 읽는 메시지로 알린다.
 import { withService, type Querier } from "../db.ts";
 import { envChannel, alertRecipientKakaoIds } from "./common.ts";
+import { alertRecipientLinkCounts } from "../kakaoLink.ts";
 import type { NotificationChannel } from "../shared/channel.ts";
 
 /** 관측은 매시 1회다. 130분이면 최소 2회를 연속으로 놓친 상태다. */
@@ -78,6 +79,21 @@ export async function checkHealth(deps: { runner?: Runner } = {}): Promise<Healt
         );
       }
 
+      // "알릴 수 있는 사람이 있는가"를 본다. 수집이 아무리 정상이어도 이 값이 0이면
+      // 특보 승인 요청·재알림·워치독 경보가 전부 0명에게 간다 — 시스템은 아무것도
+      // 알리지 못하는데 다른 모든 지표는 초록이다. 이관 직후 이 시스템이 실제로 그
+      // 상태였고(kakaowork_user_id를 채우는 경로 자체가 없었다), 아무 지표도 그것을
+      // 말해 주지 않았다. 값을 채우는 경로를 만든 것(kakaoLink.ts)만으로는 같은 사고가
+      // 다른 이유(봇 키 오타, 카카오워크 계정 삭제, 이메일 불일치)로 되풀이된다.
+      const counts = await alertRecipientLinkCounts(q);
+      if (counts.total === 0) {
+        reasons.push("특보 승인 요청을 받을 Alert 수신자가 한 명도 지정되어 있지 않습니다");
+      } else if (counts.linked === 0) {
+        reasons.push(
+          `Alert 수신자 ${counts.total}명 중 카카오워크에 연결된 사람이 0명입니다 — 특보가 아무에게도 전달되지 않습니다`,
+        );
+      }
+
       return { ok: reasons.length === 0, reasons };
     });
   } catch (e) {
@@ -97,8 +113,22 @@ export async function reportIfUnhealthy(
 
   // 카카오워크 ID가 없는 직원은 애초에 제외된다(alertRecipientKakaoIds).
   const targets = await withService(alertRecipientKakaoIds);
-  const channel = deps.channel ?? envChannel();
   const text = `[날씨경영 점검]\n${health.reasons.join("\n")}`;
+
+  // 보낼 곳이 하나도 없는 경우가 이 시스템에서 가장 위험한 상태다: 문제를 감지했는데
+  // 그것을 알릴 통로 자체가 없다. 특히 사유가 "연결된 사람이 0명"일 때는 그 통로가
+  // 없다는 것이 곧 사유다 — 카카오워크로는 절대 알릴 수 없다. 조용히 지나가면
+  // 아무도 모르므로 서버 로그에 확실히 남긴다. 사람 눈에 보이는 쪽(셋업 체크리스트·
+  // 알림 설정 화면·/api/health/deep)이 이 상태의 주된 통보 수단이다.
+  if (targets.length === 0) {
+    console.error(
+      `[watchdog] 점검에서 문제를 찾았지만 알릴 대상이 없습니다(카카오워크 연결 0명). ` +
+        `화면의 초기 설정 체크리스트와 GET /api/health/deep에서 확인하세요.\n${text}`,
+    );
+    return;
+  }
+
+  const channel = deps.channel ?? envChannel();
   // 발송(네트워크)은 트랜잭션 밖에서 한다 — remindTick과 같은 순서다.
   for (const to of targets) await channel.send(to, text);
 }

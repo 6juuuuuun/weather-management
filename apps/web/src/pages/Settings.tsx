@@ -5,9 +5,14 @@ import { Button } from "../components/Button";
 import { useAuth } from "../auth/AuthProvider";
 import { siteSettings as fetchSiteSettings, saveSiteSettings, heartbeat as fetchHeartbeat } from "../lib/api/dashboard";
 import type { HeartbeatRow, SiteSettingsRow } from "../lib/api/dashboard";
-import { alertSettings as fetchAlertSettings, saveAlertSettings } from "../lib/api/org";
+import {
+  alertSettings as fetchAlertSettings,
+  saveAlertSettings,
+  alertRecipients as fetchAlertRecipients,
+} from "../lib/api/org";
 import { ApiError } from "../lib/api/client";
 import { callSend } from "../lib/api/send";
+import type { AlertRecipientRow } from "../lib/api/org";
 import type { AlertSetting, Kind } from "../lib/types";
 import "./Settings.css";
 
@@ -138,18 +143,24 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [sendingTest, setSendingTest] = useState(false);
   const [toast, setToast] = useState<ToastState>(null);
+  // null = 아직 모른다/조회 실패. 배열이면 그 길이와 연결 수를 그대로 쓴다.
+  const [alertRecipientRows, setAlertRecipients] = useState<AlertRecipientRow[] | null>(null);
 
   useEffect(() => {
     let active = true;
     (async () => {
       setLoadError(null);
       try {
-        const [alertRows, site, hb] = await Promise.all([
+        const [alertRows, site, hb, recipients] = await Promise.all([
           fetchAlertSettings(),
           fetchSiteSettings(),
           fetchHeartbeat("weather-tick"),
+          // 이 조회만 실패해도 화면 전체가 못 뜨면 안 된다 — 아래 카카오워크 줄이
+          // "확인 안 됨"으로 내려가는 것으로 충분하다.
+          fetchAlertRecipients().catch(() => null),
         ]);
         if (!active) return;
+        setAlertRecipients(recipients);
         const map = {} as Record<Kind, AlertSetting>;
         for (const row of alertRows) map[row.kind] = row;
         setAlertSettings(map);
@@ -252,6 +263,10 @@ export default function Settings() {
       </AppLayout>
     );
   }
+
+  // 특보를 실제로 받을 수 있는 사람 수. 카카오워크 user id가 없는 수신자에게는
+  // 발송이 "카카오워크 미연결"로 실패한다(server/src/jobs/send.ts).
+  const notifiableCount = (alertRecipientRows ?? []).filter((r) => !!r.kakaowork_user_id).length;
 
   return (
     <AppLayout
@@ -446,12 +461,33 @@ export default function Settings() {
                 {weatherHeartbeat && ` · 마지막 수집 ${minutesAgo(weatherHeartbeat.last_run_at)}`}
               </span>
             </div>
+            {/* 예전에는 이 자리에 "연결됨 · 봇 이름 날씨경영"이 **조건 없이 초록으로
+                하드코딩**돼 있었다. 정보가 없는 것이 아니라 반대 사실을 적극적으로
+                주장하는 결함이었다 — 실제로 이 시스템은 특보를 한 명에게도 전달하지
+                못하는 상태에서 이 화면이 "연결됨"이라고 말하고 있었다.
+                봇 키가 살아 있는지는 화면에서 확인할 방법이 없다(발송해 봐야 안다).
+                대신 확인할 수 있는 것을 말한다: 특보를 받을 사람이 실제로 몇 명
+                연결돼 있는가. 그 수가 0이면 특보는 아무에게도 가지 않는다. */}
             <div className="settings-heartbeat-row">
-              <span>카카오워크 봇</span>
-              <span className="settings-heartbeat-value ok">
-                <span className="settings-heartbeat-dot" aria-hidden="true" />
-                연결됨 · 봇 이름 날씨경영
-              </span>
+              <span>카카오워크 연결</span>
+              {alertRecipientRows === null ? (
+                <span className="settings-heartbeat-value unknown">
+                  <span className="settings-heartbeat-dot" aria-hidden="true" />
+                  확인 안 됨
+                </span>
+              ) : notifiableCount > 0 ? (
+                <span className="settings-heartbeat-value ok">
+                  <span className="settings-heartbeat-dot" aria-hidden="true" />
+                  Alert 수신자 {alertRecipientRows.length}명 중 {notifiableCount}명 연결됨
+                </span>
+              ) : (
+                <span className="settings-heartbeat-value fail">
+                  <span className="settings-heartbeat-dot" aria-hidden="true" />
+                  {alertRecipientRows.length === 0
+                    ? "Alert 수신자가 없습니다 · 특보가 전달되지 않습니다"
+                    : "연결된 수신자 0명 · 특보가 전달되지 않습니다"}
+                </span>
+              )}
             </div>
             {/* 서버(dashboard.ts)의 /observations 조회는 missing=false를 무조건 강제해
                 결측 행을 받을 방법 자체가 없다 — 결측 횟수를 셀 수 없다. 예전에는

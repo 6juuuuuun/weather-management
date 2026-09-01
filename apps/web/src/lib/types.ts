@@ -1,5 +1,17 @@
-// supabase/migrations/0001_schema.sql 의 테이블과 1:1 대응 (필드명 = 컬럼명 그대로).
-// DeptBlock은 supabase/functions/_shared/template.ts 와 동일 정의.
+// 화면 여러 곳이 함께 쓰는 도메인 타입.
+//
+// 예전에는 db 테이블 전부를 여기에 1:1로 옮겨 적었는데, 이관하면서 각 엔드포인트의
+// 응답 모양을 lib/api/{dashboard,org,content}.ts가 `…Row`로 다시 정의했고, 이 파일의
+// 테이블 타입 10개(SiteSettings·WeatherCriteria·Department·Recipient·AlertRecipient·
+// ActionGuideline·WeatherObservation·Message·Dispatch·Heartbeat)는 참조 0건인 죽은
+// 코드가 됐다. 죽은 정의는 그냥 쓸모없는 데서 끝나지 않는다 — 살아 있는 쪽과 조용히
+// 어긋나기 시작한다(실제로 Employee가 phone·account_status를 잃은 채 남아 있었고,
+// AuthProvider가 그 타입으로 들고 있어 useAuth().employee로는 두 필드에 접근할 수
+// 없었다). 그래서 지금 남은 것은 **실제로 참조되는 타입뿐**이고, 서버 응답 모양은
+// lib/api/*.ts가 이 파일의 타입을 재사용한다(중복 정의를 만들지 않는다).
+//
+// 기준이 되는 스키마는 db/migrations/0001_schema.sql이다(자체 호스팅 이관 후).
+// DeptBlock은 server/src/shared/template.ts 와 동일 정의.
 
 export type Kind = "rain" | "snow" | "wind" | "heat";
 export type Grade = "watch" | "warning";
@@ -11,24 +23,6 @@ export type EventStatus =
   | "DISMISSED";
 export type EmpRole = "admin" | "approver" | "staff";
 
-export type SiteSettings = {
-  id: number;
-  site_name: string;
-  address: string;
-  nx: number;
-  ny: number;
-  remind_interval_min: number;
-  resolve_notice: boolean;
-  updated_at: string;
-};
-
-export type WeatherCriteria = {
-  kind: Kind;
-  grade: Grade;
-  threshold: Record<string, number>;
-  updated_at: string;
-};
-
 export type AlertSetting = {
   kind: Kind;
   enabled: boolean;
@@ -38,13 +32,9 @@ export type AlertSetting = {
   updated_at: string;
 };
 
-export type Department = {
-  id: string;
-  parent_id: string | null;
-  name: string;
-  sort_order: number;
-};
-
+// GET/POST/PATCH /api/employees가 돌려주는 행 그대로다(server/src/api/org.ts의 EMP_COLS).
+// lib/api/org.ts의 EmployeeRow가 이 타입을 그대로 재사용한다 — 두 벌로 적어 두면
+// 한쪽만 필드가 늘어나 조용히 어긋난다(실제로 phone·account_status에서 그랬다).
 export type Employee = {
   id: string;
   auth_user_id: string | null;
@@ -53,40 +43,12 @@ export type Employee = {
   kakaowork_user_id: string | null;
   department_id: string | null;
   role: EmpRole;
+  phone: string | null;
   created_at: string;
-};
-
-export type Recipient = {
-  department_id: string;
-  employee_id: string;
-};
-
-export type AlertRecipient = {
-  employee_id: string;
-};
-
-export type ActionGuideline = {
-  id: string;
-  department_id: string;
-  kind: Kind;
-  grade: Grade;
-  staff_actions: string[];
-  guest_notice: string;
-  updated_at: string;
-  updated_by: string | null;
-};
-
-export type WeatherObservation = {
-  id: number;
-  observed_at: string;
-  rain_mm_per_hr: number | null;
-  temp_c: number | null;
-  wind_ms: number | null;
-  humidity_pct: number | null;
-  snow_new_cm: number | null;
-  feels_c: number | null;
-  raw: Record<string, unknown> | null;
-  missing: boolean;
+  // GET /employees에서만 채워진다(server/src/api/org.ts의 withAccountStatus) — 계정이
+  // 아예 없는(사전 등록만 된) 직원은 null, PATCH/POST /employees 응답에는 이 필드
+  // 자체가 없다(그래서 옵셔널이다).
+  account_status?: "active" | "disabled" | null;
 };
 
 export type WeatherEvent = {
@@ -114,32 +76,5 @@ export type DeptBlock = {
   selected: boolean;
 };
 
-export type Message = {
-  id: string;
-  event_id: string;
-  status: "draft" | "approved";
-  content: DeptBlock[];
-  updated_at: string;
-  updated_by: string | null;
-};
-
 export type DispatchResult = { employee_id: string; name: string; ok: boolean; error?: string };
 
-export type Dispatch = {
-  id: number;
-  message_id: string;
-  event_id: string;
-  sent_at: string;
-  channel: string;
-  repeat_no: number;
-  is_test: boolean;
-  results: DispatchResult[];
-  content: DeptBlock[] | null;
-};
-
-export type Heartbeat = {
-  name: string;
-  last_run_at: string;
-  ok: boolean;
-  note: string | null;
-};

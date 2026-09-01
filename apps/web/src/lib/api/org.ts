@@ -1,26 +1,14 @@
 // server/src/api/org.ts의 엔드포인트에 대응한다.
 import { apiGet, apiSend } from "./client";
-import type { AlertSetting, EmpRole } from "../types";
+import type { AlertSetting, EmpRole, Employee } from "../types";
 
 export type DepartmentRow = { id: string; parent_id: string | null; name: string; sort_order: number };
 
-// EMP_COLS 그대로. employees 테이블에는 phone도 있다(브리프에는 없던 필드).
-export type EmployeeRow = {
-  id: string;
-  auth_user_id: string | null;
-  name: string;
-  email: string;
-  kakaowork_user_id: string | null;
-  department_id: string | null;
-  role: EmpRole;
-  phone: string | null;
-  created_at: string;
-  // GET /employees에서만 채워진다(server/src/api/org.ts의 withAccountStatus) — 계정이
-  // 아예 없는(사전 등록만 된) 직원은 null, PATCH/POST /employees 응답에는 이 필드
-  // 자체가 없다(옵셔널로 둔 이유). 수정 라운드 1 · 리뷰 F3: 이 필드가 없어서 화면이
-  // "비활성화됨"을 세션 로컬 상태로만 흉내 냈고, 새로고침하면 거짓으로 "사용 중"이 됐다.
-  account_status?: "active" | "disabled" | null;
-};
+// EMP_COLS 그대로. 정의는 lib/types.ts의 Employee 하나뿐이다 — 여기서 같은 모양을
+// 다시 적으면 한쪽만 필드가 늘어나 조용히 어긋난다(AuthProvider가 이 행을 Employee
+// 타입 필드에 담는데, 예전에는 그쪽에 phone·account_status가 없어 useAuth().employee로는
+// 두 필드에 접근할 수 없었다). 이름은 다른 …Row들과 맞춰 그대로 둔다.
+export type EmployeeRow = Employee;
 
 // GET /recipients, /alert-recipients 모두 평면 형태다 — 예전의
 // `{ employee_id, employees: { id, name, role } }` 중첩이 아니라
@@ -32,7 +20,14 @@ export type RecipientRow = {
   role: EmpRole;
   kakaowork_user_id: string | null;
 };
-export type AlertRecipientRow = { employee_id: string; name: string; role: EmpRole };
+// kakaowork_user_id도 함께 온다 — 화면이 "특보를 받을 수 있는 사람이 실제로 있는가"를
+// 이 값으로 센다(대시보드 셋업 체크리스트·알림 설정의 카카오워크 연결 표시).
+export type AlertRecipientRow = {
+  employee_id: string;
+  name: string;
+  role: EmpRole;
+  kakaowork_user_id: string | null;
+};
 
 export type AlertSettingRow = AlertSetting;
 

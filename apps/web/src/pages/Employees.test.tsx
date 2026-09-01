@@ -47,6 +47,7 @@ const admin: Employee = {
   kakaowork_user_id: null,
   department_id: null,
   role: "admin",
+  phone: null,
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -221,6 +222,17 @@ describe("Employees 계정 관리", () => {
 
     await waitFor(() => expect(mocks.resetPassword).toHaveBeenCalledWith("u-target"));
     expect(await screen.findByText("temp-abc123")).toBeInTheDocument();
+  });
+
+  // 임시 비밀번호는 만료된다(스펙 §6.4). 만료가 있다는 사실이 화면에 안 보이면
+  // 관리자는 "왜 로그인이 안 되죠"라는 문의로만 만료를 알게 된다.
+  it("임시 비밀번호의 만료 시간을 함께 안내한다", async () => {
+    mocks.resetPassword.mockResolvedValue({ temporary_password: "temp-abc123", expires_in_hours: 72 });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "임시 비밀번호 발급" }));
+
+    expect(await screen.findByText(/72시간 뒤에 만료/)).toBeInTheDocument();
   });
 
   // 계정이 없는(사전 등록만 된) 직원에게는 계정 관리 버튼을 보여줄 수 없다 — 대상 계정이

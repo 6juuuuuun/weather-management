@@ -186,10 +186,14 @@ describe("Dashboard 셋업 체크리스트", () => {
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
-    mocks.alertRecipients.mockResolvedValue([{ employee_id: "e1", name: "김승인", role: "approver" }]);
+    // 카카오워크에 연결된 수신자여야 "연결" 항목까지 충족된다 — 지정만 되고
+    // 연결이 없으면 특보가 아무에게도 안 가므로 체크리스트가 완료되면 안 된다.
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+    ]);
 
     const { container } = renderDashboard();
-    // 5개 항목이 모두 충족되면 스트립 자체가 사라진다(setup.done < setup.total일 때만 렌더).
+    // 6개 항목이 모두 충족되면 스트립 자체가 사라진다(setup.done < setup.total일 때만 렌더).
     await waitFor(() => expect(mocks.guidelines).toHaveBeenCalled());
     await waitFor(() => expect(container.querySelector(".setup-strip")).toBeNull());
   });
@@ -207,10 +211,36 @@ describe("Dashboard 셋업 체크리스트", () => {
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
-    mocks.alertRecipients.mockResolvedValue([{ employee_id: "e1", name: "김승인", role: "approver" }]);
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+    ]);
 
     const { container } = renderDashboard();
     await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
+  });
+
+  // F-0의 절반: 값을 채우는 경로를 만드는 것만으로는 같은 사고가 다른 이유로
+  // 되풀이된다(봇 키 오타, 카카오워크 계정 삭제, 이메일 불일치). 수신자가 지정돼
+  // 있어도 아무도 연결돼 있지 않으면 특보는 한 명에게도 가지 않는다 —
+  // 그때 체크리스트가 "완료"라고 말하면 운영자는 준비가 끝난 줄 안다.
+  it("Alert 수신자가 카카오워크에 연결돼 있지 않으면 체크리스트가 완료되지 않는다", async () => {
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
+    ]);
+    mocks.guidelines.mockResolvedValue([{ department_id: "leaf1", kind: "rain", grade: "watch" }]);
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    // 지정은 됐지만 연결이 없다 — 이 상태가 정확히 이관 직후의 실제 상태였다.
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: null },
+    ]);
+
+    const { container } = renderDashboard();
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
+    expect(container.querySelector(".setup-strip")!.textContent).toMatch(/카카오워크/);
   });
 });
 

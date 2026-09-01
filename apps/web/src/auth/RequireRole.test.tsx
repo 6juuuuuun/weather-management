@@ -35,6 +35,7 @@ function makeEmployee(overrides: Partial<Employee>): Employee {
     kakaowork_user_id: "kw-1",
     department_id: null,
     role: "staff",
+    phone: null,
     created_at: "2026-01-01T00:00:00Z",
     ...overrides,
   };

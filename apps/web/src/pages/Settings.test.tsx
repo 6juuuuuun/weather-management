@@ -8,6 +8,7 @@ import type { AlertSetting, Employee } from "../lib/types";
 
 const mocks = vi.hoisted(() => ({
   alertSettings: vi.fn(),
+  alertRecipients: vi.fn(),
   saveAlertSettings: vi.fn(),
   siteSettings: vi.fn(),
   saveSiteSettings: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock("../auth/AuthProvider", () => ({ useAuth: () => mocks.authState }));
 vi.mock("../lib/api/org", () => ({
   alertSettings: (...a: unknown[]) => mocks.alertSettings(...a),
   saveAlertSettings: (...a: unknown[]) => mocks.saveAlertSettings(...a),
+  alertRecipients: (...a: unknown[]) => mocks.alertRecipients(...a),
 }));
 
 vi.mock("../lib/api/dashboard", () => ({
@@ -36,6 +38,7 @@ const admin: Employee = {
   kakaowork_user_id: null,
   department_id: null,
   role: "admin",
+  phone: null,
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -78,6 +81,10 @@ function renderPage() {
 beforeEach(() => {
   mocks.authState = { employee: admin, loading: false, isApprover: false };
   mocks.alertSettings.mockReset().mockResolvedValue(alertRows);
+  // 기본값은 "연결된 수신자 1명" — 각 테스트가 필요하면 이 값만 바꾼다.
+  mocks.alertRecipients
+    .mockReset()
+    .mockResolvedValue([{ employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" }]);
   mocks.saveAlertSettings.mockReset().mockResolvedValue(alertRows);
   mocks.siteSettings.mockReset().mockResolvedValue(site);
   mocks.saveSiteSettings.mockReset().mockResolvedValue(site);
@@ -126,6 +133,66 @@ describe("Settings 수집 건전성", () => {
     expect(value.classList.contains("ok")).toBe(false);
     expect(value.classList.contains("unknown")).toBe(true);
     expect(container).toBeTruthy();
+  });
+});
+
+// 예전에는 이 자리에 "카카오워크 봇 · 연결됨 · 봇 이름 날씨경영"이 조건 없이
+// 초록으로 하드코딩돼 있었다. 정보 부재가 아니라 반대 사실의 적극적 주장이라,
+// 특보가 한 명에게도 전달되지 않는 상태에서 화면이 "연결됨"이라고 말했다.
+describe("Settings 카카오워크 연결 표시", () => {
+  function kakaoRow() {
+    const label = screen.getByText("카카오워크 연결");
+    return label.parentElement!;
+  }
+
+  it("연결된 Alert 수신자가 0명이면 초록이 아니라 경고로 보여준다", async () => {
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: null },
+    ]);
+    renderPage();
+    await screen.findByText("카카오워크 연결");
+    const value = kakaoRow().querySelector(".settings-heartbeat-value")!;
+    expect(value.classList.contains("ok")).toBe(false);
+    expect(value.classList.contains("fail")).toBe(true);
+    expect(kakaoRow().textContent).toMatch(/특보가 전달되지 않습니다/);
+  });
+
+  it("수신자가 아예 없어도 경고로 보여준다", async () => {
+    mocks.alertRecipients.mockResolvedValue([]);
+    renderPage();
+    await screen.findByText("카카오워크 연결");
+    expect(kakaoRow().textContent).toMatch(/Alert 수신자가 없습니다/);
+    expect(kakaoRow().querySelector(".settings-heartbeat-value")!.classList.contains("ok")).toBe(false);
+  });
+
+  it("연결된 사람이 있으면 몇 명인지 보여준다", async () => {
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+      { employee_id: "e2", name: "박승인", role: "approver", kakaowork_user_id: null },
+    ]);
+    renderPage();
+    await screen.findByText("카카오워크 연결");
+    expect(kakaoRow().textContent).toMatch(/2명 중 1명 연결됨/);
+    expect(kakaoRow().querySelector(".settings-heartbeat-value")!.classList.contains("ok")).toBe(true);
+  });
+
+  // 조회가 실패했을 때 초록으로 칠하면 예전의 거짓 초록으로 되돌아간다.
+  it("수신자 조회가 실패하면 '확인 안 됨'이고, 화면 자체는 뜬다", async () => {
+    mocks.alertRecipients.mockRejectedValue(new ApiError(500, "서버 오류"));
+    renderPage();
+    await screen.findByText("카카오워크 연결");
+    const value = kakaoRow().querySelector(".settings-heartbeat-value")!;
+    expect(kakaoRow().textContent).toMatch(/확인 안 됨/);
+    expect(value.classList.contains("ok")).toBe(false);
+    expect(value.classList.contains("unknown")).toBe(true);
+  });
+
+  // "연결됨"이라는 무조건 초록 문구가 다시 들어오면 잡는다.
+  it("봇이 연결됐다는 단정을 화면에 쓰지 않는다", async () => {
+    mocks.alertRecipients.mockResolvedValue([]);
+    const { container } = renderPage();
+    await screen.findByText("카카오워크 연결");
+    expect(container.textContent).not.toMatch(/봇 이름 날씨경영/);
   });
 });
 

@@ -1,30 +1,28 @@
 import { describe, expect, test } from "vitest";
 import { computeSetupChecklist } from "../setup";
 
+// 완전히 준비된 상태. 각 테스트는 여기서 한 가지만 어긋뜨린다.
+const READY = {
+  site: true,
+  criteria: true,
+  deptCount: 3,
+  guidelineDeptCount: 3,
+  alertRecipientCount: 1,
+  notifiableAlertRecipientCount: 1,
+};
+
 describe("computeSetupChecklist", () => {
-  test("모두 완료면 done=5", () => {
-    const r = computeSetupChecklist({
-      site: true,
-      criteria: true,
-      deptCount: 3,
-      guidelineDeptCount: 3,
-      alertRecipientCount: 1,
-    });
-    expect(r.done).toBe(5);
-    expect(r.total).toBe(5);
+  test("모두 완료면 done=6", () => {
+    const r = computeSetupChecklist(READY);
+    expect(r.done).toBe(6);
+    expect(r.total).toBe(6);
     expect(r.items.every((i) => i.ok)).toBe(true);
   });
 
   test("지침 미등록 부서가 있으면 해당 항목 미완료", () => {
-    const r = computeSetupChecklist({
-      site: true,
-      criteria: true,
-      deptCount: 4,
-      guidelineDeptCount: 2,
-      alertRecipientCount: 0,
-    });
+    const r = computeSetupChecklist({ ...READY, deptCount: 4, guidelineDeptCount: 2 });
     expect(r.items.find((i) => i.label.includes("지침"))!.ok).toBe(false);
-    expect(r.done).toBe(3);
+    expect(r.done).toBe(5);
   });
 
   test("아무것도 안 되어 있으면 done=0", () => {
@@ -34,20 +32,34 @@ describe("computeSetupChecklist", () => {
       deptCount: 0,
       guidelineDeptCount: 0,
       alertRecipientCount: 0,
+      notifiableAlertRecipientCount: 0,
     });
     expect(r.done).toBe(0);
-    expect(r.items).toHaveLength(5);
+    expect(r.items).toHaveLength(6);
   });
 
   test("특보 기준 8행 미만이면 특보 기준 항목 미완료", () => {
-    const r = computeSetupChecklist({
-      site: true,
-      criteria: false,
-      deptCount: 3,
-      guidelineDeptCount: 3,
-      alertRecipientCount: 1,
-    });
+    const r = computeSetupChecklist({ ...READY, criteria: false });
     expect(r.items.find((i) => i.label.includes("특보 기준"))!.ok).toBe(false);
-    expect(r.done).toBe(4);
+    expect(r.done).toBe(5);
+  });
+
+  // 이 항목이 없던 동안 이 시스템은 "설치 완료 5/5"를 띄우면서 특보를 한 건도
+  // 전달하지 못했다. 수신자를 "지정했는가"와 그 사람에게 "닿을 수 있는가"는
+  // 다른 질문이다 — 체크리스트가 뒤쪽까지 묻지 않으면 운영자는 준비가 끝난 줄 안다.
+  test("수신자를 지정했어도 카카오워크에 연결된 사람이 0명이면 미완료다", () => {
+    const r = computeSetupChecklist({ ...READY, alertRecipientCount: 2, notifiableAlertRecipientCount: 0 });
+    const item = r.items.find((i) => i.label.includes("카카오워크"))!;
+    expect(item).toBeDefined();
+    expect(item.ok).toBe(false);
+    // "Alert 수신자" 항목은 여전히 완료다 — 두 항목이 서로 다른 것을 본다는 뜻이다.
+    expect(r.items.find((i) => i.label.includes("Alert 수신자"))!.ok).toBe(true);
+    expect(r.done).toBe(5);
+  });
+
+  test("한 명이라도 연결되어 있으면 완료다", () => {
+    const r = computeSetupChecklist({ ...READY, alertRecipientCount: 5, notifiableAlertRecipientCount: 1 });
+    expect(r.items.find((i) => i.label.includes("카카오워크"))!.ok).toBe(true);
+    expect(r.done).toBe(6);
   });
 });

@@ -41,6 +41,36 @@ async function insertObs(
   }
 }
 
+// 이제 checkHealth는 "알릴 수 있는 사람이 있는가"도 본다 — Alert 수신자 중 카카오워크에
+// 연결된 사람이 0명이면 특보가 아무에게도 전달되지 않으므로 그것 자체가 불건강이다.
+// 그래서 "정상"을 확인하는 테스트는 연결된 수신자가 한 명 있는 상태를 먼저 만들어야
+// 한다. 작업 DB의 alert_recipients는 다른 파일도 쓰므로, 이 파일 전용 직원 한 명만
+// 넣고 테스트가 끝나면 지운다.
+const NOTIFIABLE = { email: "zzwatchdog-ok@gonjiam.com", kw: "zzwatchdog-ok-kakao" };
+
+async function ensureNotifiable(): Promise<void> {
+  await withService(async (q) => {
+    const { rows } = await q.query(
+      `insert into employees (name, email, kakaowork_user_id, role)
+       values ('감시정상', $1, $2, 'staff')
+       on conflict (email) do update set kakaowork_user_id = excluded.kakaowork_user_id
+       returning id`,
+      [NOTIFIABLE.email, NOTIFIABLE.kw],
+    );
+    await q.query("insert into alert_recipients (employee_id) values ($1) on conflict do nothing", [rows[0].id]);
+  });
+}
+
+async function clearNotifiable(): Promise<void> {
+  await withService(async (q) => {
+    await q.query(
+      "delete from alert_recipients where employee_id in (select id from employees where email = $1)",
+      [NOTIFIABLE.email],
+    );
+    await q.query("delete from employees where email = $1", [NOTIFIABLE.email]);
+  });
+}
+
 // heartbeats는 'weather-tick'/'remind-tick' 두 행뿐인 런타임 상태값이고, 다음
 // 주기에 다시 채워진다. jobs.test.ts·scheduler.test.ts도 같은 방식으로 지운다.
 // weather_observations는 위 표식이 붙은 이 파일의 행만 지운다.
@@ -59,6 +89,11 @@ afterAll(async () => {
 });
 
 describe("상태 점검", () => {
+  // "정상"을 확인하는 테스트들은 알릴 수 있는 수신자가 있어야 한다(아래 별도
+  // describe가 그 판정 자체를 검증한다).
+  beforeEach(ensureNotifiable);
+  afterEach(clearNotifiable);
+
   // 자체 서버는 조용히 죽는다. 관리형과 달리 아무도 안 알려준다.
   it("수집이 오래 멈췄으면 문제로 본다", async () => {
     await withService((q) =>
@@ -212,8 +247,9 @@ describe("상태 점검", () => {
       runner: (fn) =>
         fn({
           async query(text: string) {
-            // 첫 질의는 하트비트 정체 여부, 둘째는 최근 관측 목록이다.
+            // 질의는 셋이다: 하트비트 정체 여부 / 최근 관측 목록 / 알릴 수 있는 수신자 수.
             if (text.includes("heartbeats")) return { rows: [{ stale: false }] };
+            if (text.includes("alert_recipients")) return { rows: [{ total: 1, linked: 1 }] };
             return { rows };
           },
         }),
@@ -258,6 +294,95 @@ describe("상태 점검", () => {
     });
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/데이터베이스/);
+  });
+});
+
+// 이 시스템이 겪은 가장 큰 사고의 절반이다. 값을 채우는 경로를 만드는 것만으로는
+// 같은 사고가 다른 이유(봇 키 오타, 카카오워크 계정 삭제, 이메일 불일치)로 되풀이된다 —
+// "알릴 수 있는 사람이 0명"이라는 사실이 지표에 보여야 한다.
+describe("알릴 수 있는 사람이 없으면 불건강이다", () => {
+  const UNLINKED = "zzwatchdog-unlinked@gonjiam.com";
+
+  /** 수집은 완전히 정상인 상태를 만든다 — 그래야 "수집 사유"가 아니라 연결 사유만 남는다. */
+  async function healthyCollection(q: Querier) {
+    await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+    await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
+  }
+
+  async function clearRecipients(q: Querier) {
+    await q.query("delete from alert_recipients");
+  }
+
+  afterEach(async () => {
+    await withService(async (q) => {
+      await q.query(
+        "delete from alert_recipients where employee_id in (select id from employees where email in ($1,$2))",
+        [UNLINKED, NOTIFIABLE.email],
+      );
+      await q.query("delete from employees where email in ($1,$2)", [UNLINKED, NOTIFIABLE.email]);
+    });
+  });
+
+  it("수신자가 지정돼 있는데 아무도 카카오워크에 연결돼 있지 않으면 불건강이다", async () => {
+    await withService(async (q) => {
+      await healthyCollection(q);
+      await clearRecipients(q);
+      const { rows } = await q.query(
+        "insert into employees (name, email) values ('미연결', $1) returning id", [UNLINKED]);
+      await q.query("insert into alert_recipients (employee_id) values ($1)", [rows[0].id]);
+    });
+    const out = await checkHealth();
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/카카오워크에 연결된 사람이 0명/);
+  });
+
+  it("한 명이라도 연결돼 있으면 그 사유는 없다", async () => {
+    await withService(async (q) => {
+      await healthyCollection(q);
+      await clearRecipients(q);
+    });
+    await ensureNotifiable();
+    const out = await checkHealth();
+    expect(out.ok).toBe(true);
+    expect(out.reasons.join()).not.toMatch(/카카오워크/);
+  });
+
+  it("수신자가 아예 지정되지 않았어도 불건강이다", async () => {
+    await withService(async (q) => {
+      await healthyCollection(q);
+      await clearRecipients(q);
+    });
+    const out = await checkHealth();
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/Alert 수신자가 한 명도/);
+  });
+
+  // 상태 코드가 바뀌어야 사내 모니터링이 이 사고를 본다.
+  it("/api/health/deep이 503으로 내려간다", async () => {
+    await withService(async (q) => {
+      await healthyCollection(q);
+      await clearRecipients(q);
+    });
+    const { app } = await import("../src/index.ts");
+    const res = await request(app).get("/api/health/deep");
+    expect(res.status).toBe(503);
+    expect(res.body.reasons.join()).toMatch(/Alert 수신자/);
+  });
+
+  // 이 사유일 때는 카카오워크로 알릴 수 없다(그 통로가 없다는 것이 곧 사유다).
+  // 조용히 지나가면 아무도 모르므로 서버 로그에 반드시 남아야 한다.
+  it("알릴 대상이 없으면 서버 로그에 남긴다", async () => {
+    await withService(async (q) => {
+      await healthyCollection(q);
+      await clearRecipients(q);
+    });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { sent, channel } = recorder();
+    await reportIfUnhealthy({ channel });
+    expect(sent).toHaveLength(0);
+    expect(err).toHaveBeenCalled();
+    expect(err.mock.calls.flat().join()).toMatch(/알릴 대상이 없습니다/);
+    err.mockRestore();
   });
 });
 
@@ -328,6 +453,9 @@ describe("문제가 있으면 알린다", () => {
 });
 
 describe("GET /api/health/deep", () => {
+  beforeEach(ensureNotifiable);
+  afterEach(clearNotifiable);
+
   it("정상이면 200과 ok:true를 준다", async () => {
     await withService(async (q) => {
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");

@@ -47,6 +47,7 @@ const empA: Employee = {
   kakaowork_user_id: null,
   department_id: null,
   role: "approver",
+  phone: null,
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -58,6 +59,7 @@ const empB: Employee = {
   kakaowork_user_id: null,
   department_id: null,
   role: "approver",
+  phone: null,
   created_at: "2026-01-01T00:00:00Z",
 };
 

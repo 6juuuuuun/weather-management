@@ -48,6 +48,7 @@ function adminEmployee(): Employee {
     kakaowork_user_id: null,
     department_id: null,
     role: "admin",
+    phone: null,
     created_at: "2026-01-01T00:00:00Z",
   };
 }
@@ -61,6 +62,7 @@ function staffEmployee(): Employee {
     kakaowork_user_id: null,
     department_id: "l1",
     role: "staff",
+    phone: null,
     created_at: "2026-01-01T00:00:00Z",
   };
 }

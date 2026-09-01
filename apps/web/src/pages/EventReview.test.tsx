@@ -50,6 +50,7 @@ const approver: Employee = {
   kakaowork_user_id: "kw-approver",
   department_id: null,
   role: "approver",
+  phone: null,
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -61,6 +62,7 @@ const staff: Employee = {
   kakaowork_user_id: null,
   department_id: "dept-b",
   role: "staff",
+  phone: null,
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -72,6 +74,7 @@ const admin: Employee = {
   kakaowork_user_id: null,
   department_id: null,
   role: "admin",
+  phone: null,
   created_at: "2026-01-01T00:00:00Z",
 };
 

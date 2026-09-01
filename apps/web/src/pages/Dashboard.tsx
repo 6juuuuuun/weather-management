@@ -170,6 +170,9 @@ export default function Dashboard() {
           deptCount: leafIds.size,
           guidelineDeptCount: guidelineDeptIds.size,
           alertRecipientCount: alertRecipientRows.length,
+          // 수신자로 지정만 되고 카카오워크에 연결되지 않았으면 특보가 그 사람에게
+          // 가지 않는다. "지정했는가"가 아니라 "닿을 수 있는가"를 센다.
+          notifiableAlertRecipientCount: alertRecipientRows.filter((r) => !!r.kakaowork_user_id).length,
         });
         setSetup(checklist);
         setSetupDetail({ missingDeptCount: Math.max(0, leafIds.size - guidelineDeptIds.size) });
