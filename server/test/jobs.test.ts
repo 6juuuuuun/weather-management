@@ -6,6 +6,7 @@ import { withService } from "../src/db.ts";
 import { runWeatherTick, upsertHeartbeat } from "../src/jobs/weatherTick.ts";
 import { runRemindTick } from "../src/jobs/remindTick.ts";
 import { runSend } from "../src/jobs/send.ts";
+import { checkHealth } from "../src/jobs/watchdog.ts";
 import type { NotificationChannel } from "../src/shared/channel.ts";
 
 // HTTP 경로(POST /api/send)는 채널을 주입받지 않고 env로 고른다. 루트 .env에는
@@ -427,6 +428,72 @@ describe("승인 재알림", () => {
     const rec = recorder();
     expect((await runRemindTick({ channel: rec.channel })).reminded).toBe(0);
     expect(rec.sent).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 기상청 응답 형식이 바뀌면 — "정상 수집 + 전부 null"로 굳는 조용한 고장
+// ---------------------------------------------------------------------------
+//
+// 공공데이터포털이 category 코드를 바꾸거나(RN1 → RN01) items.item을 빈 배열로 주면
+// HTTP 200 + resultCode "00"이라 shared/kma.ts의 파서가 예외 없이 전부 null을 준다.
+// weatherTick은 그걸 missing=false로 저장하고, heartbeat은 매시간 신선하다.
+// 값만 전부 비어 있어 판정 엔진이 액션을 0건 낸다 — 폭우가 와도 특보가 영원히 안 뜨는데
+// 화면·health·워치독이 전부 초록이다. shared/는 바이트 동일성 때문에 못 고치므로
+// 워치독이 이 상태를 사유로 잡아야 한다. 파서 단위가 아니라 실제 tick → 저장 →
+// checkHealth 경로 전체로 확인한다.
+describe("기상청 응답 형식이 바뀌면", () => {
+  /** 폭우 32.5mm인데 category 이름만 바뀐 응답. */
+  function renamedCategories(baseTime: string) {
+    return [
+      { category: "RN01", obsrValue: "32.5", baseDate: "20260812", baseTime },
+      { category: "T01H", obsrValue: "22" }, { category: "WSD10", obsrValue: "2" },
+      { category: "REH00", obsrValue: "80" }, { category: "PTY0", obsrValue: "1" },
+    ];
+  }
+
+  it("관측은 정상으로 쌓이고 특보는 안 뜨는데, 워치독이 그것을 잡는다", async () => {
+    for (const t of ["0600", "0700", "0800"]) {
+      stubKma(renamedCategories(t));
+      const out = await runWeatherTick({ channel: recorder().channel });
+      // 함정의 핵심: 결측이 아니다. 수집은 "성공"이다.
+      expect(out.collected).toBe(true);
+      // 그런데 32.5mm 폭우인데 액션이 0건이다.
+      expect(out.actions).toEqual([]);
+    }
+
+    const rows = await withService(async (q) => {
+      const { rows } = await q.query(
+        "select missing, rain_mm_per_hr, temp_c from weather_observations order by observed_at desc");
+      return rows;
+    });
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r: any) => r.missing === false)).toBe(true);
+    expect(rows.every((r: any) => r.rain_mm_per_hr === null && r.temp_c === null)).toBe(true);
+
+    const health = await checkHealth();
+    expect(health.ok).toBe(false);
+    expect(health.reasons.join()).toMatch(/값이 전부 비어/);
+  });
+
+  it("대조군 — 형식이 그대로면 특보가 뜨고 상태 점검도 정상이다", async () => {
+    const approver = await makeEmployee({ name: "사업부장", email: "jobs-kma1@gonjiam.com", kw: "kw-appr" });
+    await makeAlertRecipient(approver);
+    for (const t of ["0600", "0700", "0800"]) {
+      stubKma([
+        { category: "RN1", obsrValue: "32.5", baseDate: "20260812", baseTime: t },
+        { category: "T1H", obsrValue: "22" }, { category: "WSD", obsrValue: "2" },
+        { category: "REH", obsrValue: "80" }, { category: "PTY", obsrValue: "1" },
+      ]);
+      await runWeatherTick({ channel: recorder().channel });
+    }
+    const events = await withService(async (q) => {
+      const { rows } = await q.query("select kind from weather_events");
+      return rows;
+    });
+    expect(events.length).toBeGreaterThan(0);
+    const health = await checkHealth();
+    expect(health.reasons.join()).not.toMatch(/값이 전부 비어/);
   });
 });
 

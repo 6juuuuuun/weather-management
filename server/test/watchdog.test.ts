@@ -30,13 +30,13 @@ const MARK = { t: "watchdog-test" };
 /** 표식을 붙여 관측을 넣는다. observed_at은 유니크라 테스트마다 다른 시각을 쓴다. */
 async function insertObs(
   q: Querier,
-  rows: Array<{ ago: string; missing: boolean; temp?: number }>,
+  rows: Array<{ ago: string; missing: boolean; temp?: number; rain?: number }>,
 ): Promise<void> {
   for (const r of rows) {
     await q.query(
-      `insert into weather_observations (observed_at, temp_c, missing, raw)
-       values (now() - ($1)::interval, $2, $3, $4)`,
-      [r.ago, r.temp ?? null, r.missing, JSON.stringify(MARK)],
+      `insert into weather_observations (observed_at, temp_c, rain_mm_per_hr, missing, raw)
+       values (now() - ($1)::interval, $2, $3, $4, $5)`,
+      [r.ago, r.temp ?? null, r.rain ?? null, r.missing, JSON.stringify(MARK)],
     );
   }
 }
@@ -148,6 +148,56 @@ describe("상태 점검", () => {
     const out = await checkHealth();
     expect(out.ok).toBe(true);
     expect(out.reasons.join()).not.toMatch(/결측/);
+  });
+
+  // 이 시스템에서 가장 조용한 고장: 기상청이 category 코드를 바꾸면(RN1 → RN01)
+  // HTTP 200 + resultCode "00"이라 파서가 예외 없이 전부 null을 돌려주고,
+  // weatherTick이 그것을 missing=false로 저장한다. 수집은 "정상"이고 heartbeat도
+  // 신선한데 판정 엔진은 액션을 0건 낸다 — 폭우가 와도 특보가 영원히 안 뜬다.
+  // 워치독이 이걸 못 보면 모든 지표가 초록인 채로 시스템이 죽어 있다.
+  it("수집은 정상인데 값이 전부 비어 있으면 문제로 본다", async () => {
+    await withService(async (q) => {
+      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+      await insertObs(q, [
+        { ago: "2 hours", missing: false },
+        { ago: "1 hour", missing: false },
+        { ago: "0 seconds", missing: false },
+      ]);
+    });
+    const out = await checkHealth();
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/값이 전부 비어/);
+    // 결측이 아니라 "값 없음"이다 — 둘을 섞으면 운영자가 엉뚱한 곳을 본다.
+    expect(out.reasons.join()).not.toMatch(/모두 결측/);
+  });
+
+  it("값이 하나라도 들어 있으면 정상이다", async () => {
+    await withService(async (q) => {
+      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+      await insertObs(q, [
+        { ago: "2 hours", missing: false },
+        { ago: "1 hour", missing: false },
+        { ago: "0 seconds", missing: false, rain: 0 },
+      ]);
+    });
+    const out = await checkHealth();
+    expect(out.reasons.join()).not.toMatch(/값이 전부 비어/);
+  });
+
+  // 결측 행은 원래 값이 비어 있다. 그 상태까지 "값 없음"으로 함께 울리면
+  // 사유가 둘로 늘어 운영자가 두 가지 사고로 오해한다.
+  it("결측만 쌓인 경우에는 값 없음 사유를 붙이지 않는다", async () => {
+    await withService(async (q) => {
+      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+      await insertObs(q, [
+        { ago: "2 hours", missing: true },
+        { ago: "1 hour", missing: true },
+        { ago: "0 seconds", missing: true },
+      ]);
+    });
+    const out = await checkHealth();
+    expect(out.reasons.join()).toMatch(/모두 결측/);
+    expect(out.reasons.join()).not.toMatch(/값이 전부 비어/);
   });
 
   // 관측이 아직 3회보다 적게 쌓였을 때 결측이라고 단정하면, 설치 첫 시간에

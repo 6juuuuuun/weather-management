@@ -16,6 +16,15 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    # 사내 서버는 윈도우 업데이트나 정전으로 재부팅된다. 이 줄이 없으면(도커
+    # 기본값은 no) 도커 데몬이 다시 뜰 때 restart 정책이 있는 app만 되살아나고
+    # postgres는 내려간 채로 남는다. 그 상태가 가장 위험하다: /api/health는 DB를
+    # 건드리지 않으므로 200이고 `docker compose ps`는 Up (healthy)로 보이는데,
+    # 화면의 모든 기능이 500이고 워치독은 DB에 못 닿아 예외를 던지며 guarded가
+    # 그것을 삼킨다 — 아무에게도 알리지 않는다. depends_on: service_healthy는
+    # `docker compose up`에만 적용되고 데몬 기동에는 관여하지 않는다.
+    # 무인 운영 시스템이 "재부팅 후 사람이 up -d를 친다"는 기억에 기대면 안 된다.
+    restart: unless-stopped
   # 스키마를 최신으로 맞추고 끝나는 1회성 컨테이너. 앱보다 먼저 돌고, 성공해야
   # 앱이 뜬다(아래 service_completed_successfully). 이게 없던 동안에는
   # `docker compose up -d --build`로 올린 새 서버의 데이터베이스가 텅 빈 채였고,
@@ -41,6 +50,9 @@ services:
       - ./ops/migrate.sh:/migrate.sh:ro
     entrypoint: ["/bin/sh", "/migrate.sh"]
     # 한 번 성공하면 끝이다. 재시작 정책을 주면 끝난 컨테이너를 계속 되살린다.
+    # 재부팅 뒤에도 이 컨테이너는 뜨지 않는다 — 그래도 괜찮다. 스키마는 이미
+    # 적용돼 있고(schema_migrations에 기록), 앱은 마이그레이션 없이도 그대로
+    # 동작한다. 새 마이그레이션은 다음 `docker compose up -d --build` 때 적용된다.
     restart: "no"
   app:
     build:

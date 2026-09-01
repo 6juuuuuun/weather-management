@@ -47,11 +47,35 @@ export async function checkHealth(deps: { runner?: Runner } = {}): Promise<Healt
       // 수집 자체는 도는데 기상청 응답이 계속 비어 오는 경우가 있다(키 만료,
       // 관측소 점검). heartbeat만 보면 정상으로 보이므로 따로 본다.
       const { rows: recent } = await q.query(
-        "select missing from weather_observations order by observed_at desc limit $1",
+        `select missing, rain_mm_per_hr, temp_c, wind_ms, humidity_pct
+           from weather_observations order by observed_at desc limit $1`,
         [MISSING_STREAK],
       );
       if (recent.length >= MISSING_STREAK && recent.every((r: { missing: boolean }) => r.missing)) {
         reasons.push(`최근 ${MISSING_STREAK}회 관측이 모두 결측입니다`);
+      }
+
+      // "정상 수집인데 값만 전부 비어 있는" 상태를 따로 본다. 이것이 이 시스템에서
+      // 가장 조용한 고장이다: 공공데이터포털이 category 코드를 바꾸거나(RN1 → RN01)
+      // items.item을 빈 배열로 주면 HTTP 200 + resultCode "00"이라 shared/kma.ts의
+      // parseKmaResponse가 예외 없이 전부 null을 돌려주고, weatherTick은 그것을
+      // missing=false로 저장한다. 관측 행은 매시간 정상으로 쌓이고, heartbeat도
+      // 신선하고, 결측 연속도 아니다 — 그런데 판정 엔진은 값이 전부 null이라
+      // 액션을 0건 낸다. 폭우가 와도 특보가 영원히 뜨지 않는데 모든 지표가 초록이다.
+      //
+      // shared/kma.ts는 원본과 바이트 단위로 같아야 해서 거기서 던지게 만들 수 없다.
+      // 워치독은 정확히 이런 "조용히 멈춤"을 잡으려고 새로 만든 안전망이므로
+      // 여기서 닫는다. 판정은 결측과 분리한다(결측 행은 원래 값이 비어 있어
+      // 위 사유와 중복으로 울린다) — missing=false인데 값이 전부 없을 때만이다.
+      const valueless = (r: Record<string, unknown>) =>
+        r.rain_mm_per_hr === null && r.temp_c === null && r.wind_ms === null && r.humidity_pct === null;
+      if (
+        recent.length >= MISSING_STREAK &&
+        recent.every((r: Record<string, unknown>) => r.missing === false && valueless(r))
+      ) {
+        reasons.push(
+          `최근 ${MISSING_STREAK}회 관측이 수집은 됐지만 값이 전부 비어 있습니다 (기상청 응답 형식이 바뀌었을 수 있습니다)`,
+        );
       }
 
       return { ok: reasons.length === 0, reasons };
