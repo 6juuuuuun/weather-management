@@ -137,7 +137,7 @@ describe("로그인", () => {
       .send({ email: SIGNUP.email, password: SIGNUP.password });
 
     expect(res.status).toBe(200);
-    const cookie = res.headers["set-cookie"][0];
+    const cookie = res.headers["set-cookie"]?.[0] ?? "";
     // 스크립트가 읽을 수 있으면 XSS 한 번에 세션이 털린다.
     expect(cookie).toMatch(/HttpOnly/i);
     expect(cookie).toMatch(/SameSite=Lax/i);

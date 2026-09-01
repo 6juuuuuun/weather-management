@@ -17,14 +17,20 @@ const SITE_SETTINGS_COLS = "id, site_name, address, nx, ny, remind_interval_min,
 
 const isText = (v: unknown) => typeof v === "string";
 const isInt = (v: unknown) => typeof v === "number" && Number.isInteger(v);
-const SITE_SETTINGS_TYPES: Record<string, (v: unknown) => boolean> = {
+// Record<string, ...>로 못박지 않고 satisfies를 쓴다 — 그러면 키가 리터럴 유니온으로
+// 남아, 아래 PATCH의 SITE_SETTINGS_TYPES[key] 조회가 "없을 수도 있는 값"이 되지 않는다
+// (tsconfig의 noUncheckedIndexedAccess는 인덱스 시그니처에만 걸린다). 허용 키 목록도
+// 여기 하나로 모인다 — 예전에는 이 객체와 PATCH의 배열 두 곳에 따로 적혀 있어,
+// 한쪽에만 컬럼을 추가하면 조용히 어긋났다.
+const SITE_SETTINGS_TYPES = {
   site_name: isText,
   address: isText,
   nx: isInt,
   ny: isInt,
   remind_interval_min: isInt,
-  resolve_notice: (v) => typeof v === "boolean",
-};
+  resolve_notice: (v: unknown) => typeof v === "boolean",
+} satisfies Record<string, (v: unknown) => boolean>;
+const SITE_SETTINGS_KEYS = Object.keys(SITE_SETTINGS_TYPES) as (keyof typeof SITE_SETTINGS_TYPES)[];
 
 dashboardRouter.get("/observations/latest", async (req, res) => {
   const rows = await withUser(req.user!.accountId, async (q) => {
@@ -153,7 +159,7 @@ dashboardRouter.patch("/site-settings", requireAdmin, async (req, res) => {
   const body = req.body ?? {};
   const sets: string[] = [];
   const vals: unknown[] = [];
-  for (const key of ["site_name", "address", "nx", "ny", "remind_interval_min", "resolve_notice"] as const) {
+  for (const key of SITE_SETTINGS_KEYS) {
     if (key in body) {
       // enum을 허용 목록으로 선검증하는 것과 같은 이유로 타입도 DB에 닿기 전에 막는다 —
       // 그냥 넘기면 Postgres가 22P02(잘못된 입력 구문)를 던져 클라이언트 잘못이

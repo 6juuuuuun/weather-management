@@ -1,3 +1,19 @@
+// tsc --noEmit은 src/shared/에서 오류 8개를 낸다(engine.ts 6, kakaowork.ts 2).
+// 고치지 않고 남겨 둔다:
+//
+//  1. src/shared/의 7개 모듈은 supabase/functions/_shared/의 원본과 바이트 단위로
+//     동일하다(diff로 확인). 그 동일성이 이식(Task 10)의 핵심 보증이라, 깨끗한
+//     타입체크보다 우선한다. 한 글자라도 고치면 "원본과 같다"를 더는 말할 수 없다.
+//  2. 전부 런타임 버그가 아니다. 6개는 noUncheckedIndexedAccess가 Record<string,number>
+//     조회를 넓게 잡아 나는 것이고(호출부가 항상 채워 넣는 임계값이다), 2개는
+//     res.json()이 unknown을 돌려주는 최신 타입 정의 탓이다.
+//  3. 컨테이너는 TypeScript를 그대로 실행한다(node --experimental-transform-types,
+//     server/Dockerfile). tsc는 빌드 단계가 아니므로 이 오류들이 배포를 막지 않는다.
+//
+// "shared/만 이 엄격성에서 빼기"는 tsconfig로는 할 수 없다 — exclude는 include
+// 글롭에만 걸리고, 임포트된 파일은 그대로 검사 대상에 들어온다(실제로 확인함).
+// 그래서 tsc --noEmit의 기대 출력은 "shared/ 8개, 그 외 0개"다. 그 외에서 하나라도
+// 나오면 우리 코드가 깨진 것이다.
 {
   "compilerOptions": {
     "target": "ES2023",
