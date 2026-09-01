@@ -316,6 +316,35 @@ describe("Dashboard 셋업 체크리스트", () => {
     await waitFor(() => expect(container.querySelector(".setup-strip")).toBeNull());
   });
 
+  // 반대 방향도 못 박는다: 자식 없는 최상위 부서를 리프로 **세지 않으면**, 그
+  // 부서에 지침이 없어도 체크리스트가 완료돼 버린다 — 그러면 특보가 떠도 그
+  // 부서 몫은 만들어지지 않는데 화면은 다 됐다고 말한다.
+  it("자식 없는 최상위 부서에 지침이 없으면 체크리스트가 완료되지 않는다", async () => {
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
+      { id: "solo", parent_id: null, name: "안전관리팀", sort_order: 2 },
+    ]);
+    // solo에는 지침이 없다.
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
+    ]);
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+    ]);
+    mocks.listRecipients.mockResolvedValue([
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", kakaowork_user_id: "kw-2" },
+    ]);
+
+    const { container } = renderDashboard();
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
+    expect(container.querySelector(".setup-strip")!.textContent).toMatch(/부서별 지침 1개 부서 미등록/);
+  });
+
   // 3단 부서의 말단이 리프다. 중간 단계(2단)는 리프가 아니므로 세면 안 된다 —
   // 세면 지침을 달 수 없는 부서까지 분모에 들어가 체크리스트가 완료되지 않는다.
   it("3단 부서의 말단만 리프로 센다", async () => {
