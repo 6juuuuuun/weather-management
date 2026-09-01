@@ -7,7 +7,7 @@ import request from "supertest";
 import { app } from "../src/index.ts";
 import { withService } from "../src/db.ts";
 import { runWeatherTick, upsertHeartbeat } from "../src/jobs/weatherTick.ts";
-import { runRemindTick } from "../src/jobs/remindTick.ts";
+import { runRemindTick, REMIND_LIMIT } from "../src/jobs/remindTick.ts";
 import { runSend } from "../src/jobs/send.ts";
 import { checkHealth } from "../src/jobs/watchdog.ts";
 import type { NotificationChannel } from "../src/shared/channel.ts";
@@ -474,7 +474,7 @@ describe("승인 재알림", () => {
     const out = await runRemindTick({ channel: rec.channel });
     expect(out.reminded).toBe(1);
     expect(rec.sent).toHaveLength(1);
-    expect(rec.sent[0]!.text).toContain("(재알림)");
+    expect(rec.sent[0]!.text).toContain("재알림 1/");
     expect(rec.sent[0]!.text).toContain(`/events/${oldId}`);
 
     const rows = await withService(async (q) => {
@@ -490,6 +490,86 @@ describe("승인 재알림", () => {
       return rows[0];
     });
     expect(beat.ok).toBe(true);
+  });
+
+  // 배지가 언제나 "재알림 0회"였다(QA W-26). repeat_count는 **발송 회차**라서 승인 대기
+  // 중에는 0에서 움직이지 않는데 화면이 그 값을 재알림 횟수로 읽고 있었다.
+  it("재알림할 때마다 remind_count를 올린다 (발송 회차와 다른 값이다)", async () => {
+    const approver = await makeEmployee({ name: "사업부장", email: "remind-cnt@gonjiam.com", kw: "kw-appr" });
+    await makeAlertRecipient(approver);
+    const id = await withService(async (q) => {
+      const { rows } = await q.query(
+        `insert into weather_events (kind, grade, status, detected_at)
+         values ('rain','watch','PENDING_APPROVAL', now() - interval '2 hours') returning id`);
+      return rows[0].id as string;
+    });
+
+    await runRemindTick({ channel: recorder().channel });
+    // 다음 주기가 다시 지난 것처럼 만든다.
+    await withService((q) =>
+      q.query("update weather_events set last_reminded_at = now() - interval '2 hours' where id = $1", [id]));
+    await runRemindTick({ channel: recorder().channel });
+
+    const ev = await withService(async (q) => {
+      const { rows } = await q.query("select remind_count, repeat_count from weather_events where id = $1", [id]);
+      return rows[0];
+    });
+    expect(ev.remind_count).toBe(2);
+    // 발송 회차는 승인 전이므로 그대로 0이어야 한다 — 두 값이 섞이면 배지가 다시 거짓말한다.
+    expect(ev.repeat_count).toBe(0);
+  });
+
+  // 재알림 DM에 관측값이 없으면 승인자는 지금 날씨가 나아졌는지 알 수 없어 매번
+  // 링크를 눌러야 한다.
+  it("재알림 메시지에 현재 관측값이 들어간다", async () => {
+    const approver = await makeEmployee({ name: "사업부장", email: "remind-obs@gonjiam.com", kw: "kw-appr" });
+    await makeAlertRecipient(approver);
+    await withService(async (q) => {
+      await q.query(
+        `insert into weather_observations (observed_at, rain_mm_per_hr, temp_c, feels_c, wind_ms, missing)
+         values (now() - interval '10 minutes', 32.5, 22, 24, 3.4, false)`);
+      await q.query(
+        `insert into weather_events (kind, grade, status, detected_at)
+         values ('rain','watch','PENDING_APPROVAL', now() - interval '2 hours')`);
+    });
+
+    const rec = recorder();
+    await runRemindTick({ channel: rec.channel });
+    expect(rec.sent[0]!.text).toContain("현재 관측");
+    expect(rec.sent[0]!.text).toContain("32.5mm");
+  });
+
+  // 종료 조건이 없어서 승인자가 휴가면 특보가 해제될 때까지 30분마다 무한히 갔다.
+  // 상한에 도달하면 멈추고, **관리자에게 따로 알린다**(사용자 결정) — 승인자가 반응하지
+  // 않는다는 사실 자체가 관리자가 알아야 할 정보다.
+  it("재알림 상한에 도달하면 멈추고 관리자에게 알린다", async () => {
+    const approver = await makeEmployee({ name: "사업부장", email: "remind-lim-appr@gonjiam.com", kw: "kw-appr" });
+    await makeAlertRecipient(approver);
+    await makeEmployee({ name: "관리자", email: "remind-lim-admin@gonjiam.com", kw: "kw-admin", role: "admin" });
+    const id = await withService(async (q) => {
+      const { rows } = await q.query(
+        `insert into weather_events (kind, grade, status, detected_at, remind_count)
+         values ('rain','watch','PENDING_APPROVAL', now() - interval '5 hours', $1) returning id`,
+        [REMIND_LIMIT - 1]);
+      return rows[0].id as string;
+    });
+
+    // 마지막 회차: 승인자에게 한 번 더 가고, 관리자에게 에스컬레이션이 간다.
+    const rec = recorder();
+    const out = await runRemindTick({ channel: rec.channel });
+    expect(out.reminded).toBe(1);
+    expect(out.escalated).toBe(1);
+    const toAdmin = rec.sent.find((x) => x.to === "kw-admin");
+    expect(toAdmin).toBeTruthy();
+    expect(toAdmin!.text).toMatch(/응답하지 않고 있어 재알림을 멈춥니다/);
+
+    // 그 다음 주기부터는 아무것도 나가지 않는다 — 무한 반복이 여기서 끝난다.
+    await withService((q) =>
+      q.query("update weather_events set last_reminded_at = now() - interval '2 hours' where id = $1", [id]));
+    const again = recorder();
+    const out2 = await runRemindTick({ channel: again.channel });
+    expect(out2.reminded).toBe(0);
+    expect(again.sent).toEqual([]);
   });
 
   it("승인 대기가 아닌 특보는 재알림하지 않는다", async () => {

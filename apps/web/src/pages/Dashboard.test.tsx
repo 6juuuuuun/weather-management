@@ -211,6 +211,41 @@ describe("Dashboard 초기 로드 실패", () => {
   });
 });
 
+// 승인 대기 배지가 언제나 "재알림 0회"였다(QA W-26) — 화면이 repeat_count(발송 회차)를
+// 재알림 횟수로 읽고 있었는데, 승인 전에는 그 값이 0에서 움직이지 않는다. 승인자가 얼마나
+// 오래 방치했는지가 화면에서 지워진 셈이다.
+describe("Dashboard 재알림 배지", () => {
+  const pending = {
+    id: "ev-1",
+    kind: "rain" as const,
+    grade: "watch" as const,
+    status: "PENDING_APPROVAL" as const,
+    detected_at: new Date().toISOString(),
+    closed_at: null,
+    trigger_observation_id: 1,
+    approved_by: null,
+    approved_by_name: null,
+    approved_at: null,
+    last_reminded_at: new Date().toISOString(),
+    repeat_count: 0, // 발송 회차 — 승인 전이라 0이다
+    remind_count: 3, // 재알림 3회
+  };
+
+  it("승인 대기 배너가 remind_count를 보여준다", async () => {
+    mocks.openEvents.mockResolvedValue([pending]);
+    renderDashboard();
+    expect(await screen.findByText(/재알림 3회 발송됨/)).toBeInTheDocument();
+    expect(screen.queryByText(/재알림 0회 발송됨/)).toBeNull();
+  });
+
+  it("특보 목록 행도 remind_count를 보여준다", async () => {
+    mocks.openEvents.mockResolvedValue([pending]);
+    const { container } = renderDashboard();
+    await screen.findByText(/재알림 3회 발송됨/);
+    expect(container.textContent).toMatch(/재알림 3회/);
+  });
+});
+
 describe("Dashboard 셋업 체크리스트", () => {
   // 지침(action_guidelines)은 리프 부서에만 단다. 모든 부서를 리프로 세면
   // deptCount가 부풀려져 guidelineDeptCount >= deptCount가 영원히 참이 될 수 없고,

@@ -360,7 +360,7 @@ export default function Dashboard() {
                   승인을 기다리고 있습니다
                 </h3>
                 <p className="approval-banner-detail">
-                  오늘 {formatTime(pendingEvent.detected_at)} 감지 · 재알림 {pendingEvent.repeat_count}회 발송됨 ·
+                  오늘 {formatTime(pendingEvent.detected_at)} 감지 · 재알림 {pendingEvent.remind_count}회 발송됨 ·
                   승인 전까지 부서 발송이 보류됩니다
                 </p>
               </div>
@@ -570,7 +570,7 @@ export default function Dashboard() {
                       <p className="event-row-line">
                         오늘 {formatTime(ev.detected_at)} 감지 · 승인 대기
                         <br />
-                        재알림 {ev.repeat_count}회
+                        재알림 {ev.remind_count}회
                         {ev.last_reminded_at ? ` · 마지막 ${formatTime(ev.last_reminded_at)}` : ""}
                       </p>
                     ) : (
@@ -696,7 +696,7 @@ export function toBoardProps(data: DashboardData | null, siteName: string, now: 
     tag: e.status === "PENDING_APPROVAL" ? "승인 대기" : "발송 완료",
     detail:
       e.status === "PENDING_APPROVAL"
-        ? `${formatTime(e.detected_at)} 감지 · 재알림 ${e.repeat_count}회`
+        ? `${formatTime(e.detected_at)} 감지 · 재알림 ${e.remind_count}회`
         : `${formatTime(e.detected_at)} 발생 · 반복 ${e.repeat_count}회차`,
     severe: e.grade === "warning",
   }));

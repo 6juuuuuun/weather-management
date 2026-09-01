@@ -70,7 +70,10 @@ export type WeatherEvent = {
   approved_by_name: string | null;
   approved_at: string | null;
   last_reminded_at: string | null;
+  /** 발송 회차(승인 발송이 1회차, 반복 발송마다 +1). 승인 전에는 0이다. */
   repeat_count: number;
+  /** 승인 재촉(재알림) 횟수. 배지가 repeat_count를 읽어 언제나 0이었다(QA W-26). */
+  remind_count: number;
 };
 
 // action_guidelines/recipients를 조합해 만들어지는, 부서 단위 발송 블록

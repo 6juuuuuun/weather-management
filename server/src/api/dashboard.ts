@@ -93,7 +93,10 @@ dashboardRouter.get("/events/open", async (req, res) => {
       // (0013_actor_name_snapshot.sql) — 승인자가 퇴사해 삭제되면 approved_by는
       // null이 되지만 "누가 승인했는가"는 남아야 한다.
       `select id, kind, grade, status, detected_at, closed_at, trigger_observation_id,
-              approved_by, approved_by_name, approved_at, last_reminded_at, repeat_count
+              approved_by, approved_by_name, approved_at, last_reminded_at, repeat_count,
+              -- remind_count(승인 재촉 횟수)와 repeat_count(발송 회차)는 뜻이 다른 값이다
+              -- (0016_remind_count.sql). 화면의 "재알림 N회" 배지는 앞의 것을 읽어야 한다.
+              remind_count
          from weather_events
         where status in ('PENDING_APPROVAL', 'ACTIVE')
         order by detected_at desc`,

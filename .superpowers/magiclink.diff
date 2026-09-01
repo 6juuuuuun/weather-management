@@ -1,0 +1,1047 @@
+diff --git a/.env.example b/.env.example
+index b758512..76c058e 100644
+--- a/.env.example
++++ b/.env.example
+@@ -4,15 +4,13 @@ VITE_SUPABASE_ANON_KEY=<anon key>
+ SUPABASE_SERVICE_ROLE_KEY=<service role key>
+ # --- 기상청 공공데이터포털 (data.go.kr, 단기예보 조회서비스 일반 인증키) ---
+ KMA_API_KEY=<decoding key>
+-# --- 카카오워크 봇 (워크스페이스 관리자 콘솔에서 발급) ---
++# --- 카카오워크 봇 (워크스페이스 관리자 콘솔에서 발급) --- 로그인 멤버십 조회·DM 발송·특보 발송에 모두 사용
+ KAKAOWORK_BOT_KEY=<bot app key>
+-KAKAOWORK_CLIENT_ID=<oauth client id>
+-KAKAOWORK_CLIENT_SECRET=<oauth client secret>
+ # 최초 시스템 관리자의 카카오워크 계정 이메일
+ ADMIN_KAKAOWORK_ID=admin@company.com
+ # pg_cron → edge function 호출 인증용 임의 랜덤 문자열
+ CRON_SECRET=<random string>
+-# 웹 콘솔 URL (OAuth 리다이렉트·딥링크 생성용)
++# 웹 콘솔 URL (매직링크 딥링크 생성용)
+ APP_BASE_URL=http://localhost:5173
+ # (선택) console로 두면 카카오워크 대신 로그 채널로 발송 — 개발/시연용. 프로덕션에선 비워 둡니다.
+ NOTIFY_CHANNEL=
+diff --git a/.env.test.example b/.env.test.example
+index 0b5ae12..1acb89c 100644
+--- a/.env.test.example
++++ b/.env.test.example
+@@ -17,10 +17,8 @@ NOTIFY_CHANNEL="console"
+ # 딥링크 생성용 웹 콘솔 URL
+ APP_BASE_URL="http://localhost:5173"
+ 
+-# 카카오워크 OAuth를 건너뛰는 테스트 전용 mock 프로필.
+-# auth-kakaowork는 SUPABASE_URL이 127.0.0.1/localhost일 때만 이 값을 인정하므로
+-# 프로덕션에 잘못 설정돼도 무시되지만, 그래도 프로덕션 secrets에는 넣지 마세요.
+-MOCK_KAKAO_PROFILE={"email":"new@t.co","user_id":"kw-new","name":"신규"}
+-
+ # 이 이메일로 로그인하면 시스템관리자(admin)가 됩니다 (auth-kakaowork 통합 테스트가 사용).
+ ADMIN_KAKAOWORK_ID="boss@t.co"
++
++# KAKAOWORK_BOT_KEY를 비워두면(로컬 기본값) 워크스페이스 멤버십 조회 없이 모든 이메일의
++# 로그인 요청을 허용하고, NOTIFY_CHANNEL=console 설정에 따라 매직링크를 콘솔 로그로 출력합니다.
+diff --git a/.superpowers/magiclink-report.md b/.superpowers/magiclink-report.md
+new file mode 100644
+index 0000000..6afcd05
+--- /dev/null
++++ b/.superpowers/magiclink-report.md
+@@ -0,0 +1,83 @@
++# 날씨경영 — 배포 전 수정 3건 (feat/magiclink-auth)
++
++- 날짜: 2026-08-13
++- 브랜치: `feat/magiclink-auth`
++- 상태: 완료, 검증 전부 통과
++
++## 요약
++
++1. **인증을 봇 DM 매직링크로 교체 (OAuth 폐기)**
++   - `supabase/functions/auth-kakaowork/index.ts`를 `POST ?action=request` 단일 액션으로 재작성.
++     비멤버는 발송 없이 `{ok:true}`(열거 공격 방지), 멤버는 employees upsert(신규 staff·부서 null,
++     ADMIN_KAKAOWORK_ID 일치 시 admin 승격) → `admin.generateLink` → 봇 DM 발송(`${APP_BASE_URL}/auth/callback#token_hash=...`).
++     실패해도 항상 `{ok:true}` 반환, 서버 로그에만 에러 기록. 봇 키 없으면 멤버십 검증을 생략하고
++     ConsoleChannel로 로컬 개발 가능.
++   - **판단 편차 1건**: 스펙은 "GET ?action=callback"도 유지하라고 했으나, 새 흐름에서는 DM 링크가
++     이미 프런트엔드 `${APP_BASE_URL}/auth/callback#token_hash=...`를 직접 가리키므로(웹의
++     `AuthCallback.tsx`가 `verifyOtp` 수행) 이 콜백을 처리할 엣지 함수 라우트가 실제로 필요하지
++     않았습니다. OAuth 코드를 전부 삭제하고 나면 이 라우트에 남는 유일한 형태는 "이메일을 쿼리
++     파라미터로 받아 인증 없이 매직링크를 발급"하는 것뿐인데, 이는 새로 만든 열거 공격 방지·인증
++     경계를 스스로 무너뜨리는 보안 구멍이라 판단해 구현하지 않았습니다. 대신 index.ts 상단에 이유를
++     주석으로 남겼습니다. AuthCallback.tsx(웹)는 변경하지 않았습니다 — 그대로 `verifyOtp`를 수행합니다.
++   - `supabase/config.toml`: verify_jwt=false 주석을 "OAuth 리다이렉트" → "로그인 전 POST 엔드포인트"로 정정.
++   - 웹 로그인 화면(`apps/web/src/pages/Login.tsx`): 카카오워크 버튼 → 이메일 입력 폼으로 교체.
++     `apps/web/src/lib/api.ts`에 `requestMagicLink(email)` 추가(`auth-kakaowork?action=request` invoke).
++     제출 후 "카카오워크 앱을 확인해 주세요…" 안내 화면 + 다시 보내기. 코디네이터 추가 요구사항 반영:
++     라벨/placeholder "카카오워크에 등록된 회사 이메일", 파인프린트에 "카카오워크 DM" 명시,
++     실패 안내 문구를 "카카오워크에 등록된 이메일 주소가 맞는지 확인해 주세요"로 구체화.
++     디자인은 tokens.css 변수만 사용, 웨이트 300/400/600 유지, 히어로 구조 그대로.
++   - 테스트: `supabase/functions/auth-kakaowork/index_test.ts` 전면 재작성 — (a) 비멤버/빈 이메일도
++     ok:true, (b) 신규 멤버 staff·부서 null 자동 가입, (c) ADMIN_KAKAOWORK_ID 승격(신규·기존 굳어진
++     케이스 둘 다), (d) 발급된 token_hash로 `verifyOtp` 호출 시 세션이 실제로 확립됨을 검증.
++     기존 mock 프로필 기반 테스트는 전량 대체. `apps/web/src/pages/Login.test.tsx`도 새 UI에 맞춰 재작성.
++   - `.env.test` / `.env.test.example`에서 `MOCK_KAKAO_PROFILE` 제거. `.env.example`에서
++     `KAKAOWORK_CLIENT_ID`/`KAKAOWORK_CLIENT_SECRET` 제거(더는 쓰이지 않음).
++   - README: 아키텍처 설명·화면 캡션·"카카오워크 봇·OAuth 앱 등록" 절·환경변수 표·배포 체크리스트에서
++     OAuth/`MOCK_KAKAO_PROFILE` 관련 서술을 매직링크 흐름에 맞게 정정(스코프 확장이지만, 그대로
++     두면 존재하지 않는 OAuth 앱 등록·스파이크를 배포 조건으로 계속 지시하는 상태라 위험 판단).
++
++2. **기상청 키 이중 인코딩**
++   - `supabase/functions/_shared/kma.ts`: `normalizeKmaKey`/`buildKmaUrl` 추가 — 키에 `%`가 있으면
++     (Encoding 키로 판단) 한 번 디코딩 후 인코딩해 정규화, 없으면(Decoding 키) 그대로 인코딩.
++     `fetchObservation`이 이 함수를 사용하도록 리팩터링.
++   - `kma_test.ts`에 URL 문자열 비교 단위 테스트 2건 추가(Decoding 키 그대로 인코딩 / Encoding 키가
++     Decoding 키와 동일한 URL로 정규화됨).
++   - README 인증키 안내에 "Encoding·Decoding 어느 쪽을 넣어도 동작합니다" 한 줄 추가.
++
++3. **부서 미지정 직원 화면 게이트**
++   - `apps/web/src/auth/RequireRole.tsx`: `requireDepartment?: boolean` prop 추가 — staff이면서
++     `department_id === null`이고 requireDepartment면 `/`로 리다이렉트.
++   - `apps/web/src/routes.tsx`: `/criteria`·`/guidelines`·`/events/:id`에 `requireDepartment` 적용
++     (대시보드·이력은 미적용, 스펙대로).
++   - `apps/web/src/pages/Dashboard.tsx` + `Dashboard.css`: 부서 미지정 staff에게 안내 배너
++     "부서가 아직 지정되지 않았습니다. 관리자에게 부서 지정을 요청해 주세요." 추가(tokens.css 변수만 사용).
++   - `apps/web/src/auth/RequireRole.test.tsx` 신규 — 4개 케이스(부서 미지정 차단/부서 지정 허용/
++     requireDepartment 미지정 시 허용/admin은 부서 무관 허용).
++
++## 검증 결과 (전부 통과)
++
++```
++supabase db reset                                                  → OK (마이그레이션 5건 + 시드)
++supabase functions serve --env-file .env.test (백그라운드)          → 기동 성공
++deno check <_shared 5개 + weather-tick/remind-tick/send/auth-kakaowork> → 통과 (에러 0)
++deno test --allow-net --allow-env supabase/functions/              → 49 passed, 0 failed
++deno test --allow-net --allow-env scripts/scenario-test.ts         → 8 passed, 0 failed
++cd apps/web && npx vitest run                                      → 7 files / 35 tests passed
++cd apps/web && npm run build                                       → tsc -b && vite build 성공
++```
++
++`.env.test`에서 `MOCK_KAKAO_PROFILE` 제거 완료, `.env.test.example`도 갱신.
++
++## 우려 사항 / 후속 검토 필요
++
++- **판단 편차**: 위 "GET ?action=callback" 미구현 건 — 스펙 문구와 다른 선택을 했습니다. 새 흐름에서
++  실제로 세션을 발급하는 코드 경로(`verifyOtp`)는 웹의 `AuthCallback.tsx`이며, 엣지 함수 쪽에 남길
++  합리적인 콜백 라우트를 찾지 못해 보안을 우선했습니다. 의도와 다르면 알려주시면 라우트를 추가하겠습니다.
++- README의 아키텍처·배포 체크리스트·환경변수 표까지 정정한 것은 사용자가 명시한 3건 범위를 넘는
++  변경입니다(그대로 두면 존재하지 않는 OAuth 앱 등록을 배포 조건으로 계속 안내하게 되어 수정함).
++  범위 확장이 과했다면 되돌리겠습니다.
++- 실서비스 카카오워크 봇 키로 DM 왕복(요청 → 실제 DM 수신 → 클릭 → 세션 확립)까지는 로컬
++  ConsoleChannel 경로로만 검증했습니다. 실 배포 전 실제 워크스페이스로 왕복 스파이크가 필요합니다
++  (README 배포 체크리스트에 명시해 두었습니다).
++- `.env`(로컬 실제 비밀키 파일)는 건드리지 않았습니다 — gitignore 대상이라 커밋 위험은 없지만,
++  `KAKAOWORK_CLIENT_ID`/`KAKAOWORK_CLIENT_SECRET` 등 더 이상 쓰이지 않는 값이 남아 있을 수 있습니다.
+diff --git a/README.md b/README.md
+index 9193c56..4af5eda 100644
+--- a/README.md
++++ b/README.md
+@@ -33,7 +33,10 @@ React SPA (Vite, Vercel) ── supabase-js ──► Supabase
+ - **remind-tick** (매 10분): `PENDING_APPROVAL` 상태로 재알림 간격이 지나면 사업부장에게 다시 알립니다.
+ - **send**: 사업부장의 승인/무시/재발송 요청을 처리합니다. 승인 시 메시지 스냅샷을 확정해
+   부서별 수신자에게 발송하고 `dispatches`에 기록합니다.
+-- **auth-kakaowork**: 카카오워크 OAuth 콜백 → 직원 매칭/자동 가입 → Supabase 세션 발급.
++- **auth-kakaowork**: 로그인 이메일을 받아 카카오워크 워크스페이스 멤버십을 확인하고, 멤버면
++  직원 매칭/자동 가입 후 카카오워크 봇 DM으로 Supabase 매직링크를 발송합니다(카카오워크 서드파티
++  OAuth는 제공되지 않아 사용하지 않습니다). 비멤버 요청도 동일한 응답을 돌려줘 계정 존재 여부를
++  노출하지 않습니다.
+ - **NotificationChannel 어댑터**: 카카오워크 구현체 + 콘솔/로그 구현체. 다른 채널(알림톡 등)을
+   붙이고 싶은 오픈소스 사용자를 위한 확장 지점입니다 (§6 참고).
+ 
+@@ -41,7 +44,7 @@ React SPA (Vite, Vercel) ── supabase-js ──► Supabase
+ 
+ | ![대시보드](design/previews/00-dashboard.png) | ![초안 검토·발송](design/previews/03-event-review.png) | ![로그인](design/previews/07-login.png) |
+ |:---:|:---:|:---:|
+-| 대시보드 — 셋업 체크리스트·승인 대기·관측값 | 초안 검토·발송 — 부서 블록 편집·승인 | 로그인 — 카카오워크 OAuth 단일 버튼 |
++| 대시보드 — 셋업 체크리스트·승인 대기·관측값 | 초안 검토·발송 — 부서 블록 편집·승인 | 로그인 — 이메일 입력 → 카카오워크 DM 매직링크 |
+ 
+ 그 외 화면 미리보기는 `design/previews/`에 모두 있습니다 (기준 정의·지침 등록·발송 이력·알림 설정·직원 관리 등).
+ 
+@@ -52,17 +55,19 @@ React SPA (Vite, Vercel) ── supabase-js ──► Supabase
+ 1. [공공데이터포털](https://www.data.go.kr)에 가입 후 **기상청_단기예보 조회서비스**(서비스 ID `15084084`)를
+    활용신청합니다. 자동승인이라 신청 즉시 사용할 수 있습니다.
+ 2. 마이페이지 → 개발계정 상세보기에서 **일반 인증키(Decoding)**를 복사합니다. 이 값이 `KMA_API_KEY`입니다.
++   Encoding·Decoding 어느 쪽을 넣어도 동작합니다(코드가 자동으로 정규화합니다).
+ 3. 관측 지점의 기상청 격자좌표(nx, ny)도 함께 확인해 두세요 — 설치 후 `site_settings`(설정 화면)에서 입력합니다.
+ 
+-### 카카오워크 봇·OAuth 앱 등록
++### 카카오워크 봇 등록
+ 
+ 1. 카카오워크 관리자 콘솔 → 앱 관리에서 **커스텀 봇을 생성**합니다. 발급된 **App Key**가 `KAKAOWORK_BOT_KEY`입니다.
+-2. 같은 관리자 콘솔에서 **OAuth 앱**을 등록해 `KAKAOWORK_CLIENT_ID` / `KAKAOWORK_CLIENT_SECRET`을 발급받고,
+-   리다이렉트 URI를 배포한 `auth-kakaowork` Edge Function의 콜백 주소(`.../functions/v1/auth-kakaowork?action=callback`)로
+-   등록합니다.
+-3. **중요**: 카카오워크 무료 플랜에서의 워크봇 API 가용 여부와 OAuth 연동 가능 여부는 조직마다 다를 수 있습니다.
+-   실 배포 전에 반드시 실제 워크스페이스로 OAuth 왕복(로그인 → 콜백 → 세션 발급)까지 스파이크로 검증하세요
+-   (§3 배포 체크리스트 참고).
++   이 봇 키는 로그인 시 워크스페이스 멤버십 조회(`users.find_by_email`)와 매직링크 DM 발송
++   (`conversations.open` + `messages.send`), 특보 발송에 모두 사용됩니다.
++2. 카카오워크는 서드파티 OAuth를 제공하지 않으므로(`auth.kakaowork.com`이 존재하지 않음) 별도의
++   OAuth 앱 등록은 필요하지 않습니다. 로그인은 이메일 입력 → 봇 DM 매직링크 클릭 방식입니다.
++3. **중요**: 카카오워크 무료 플랜에서의 워크봇 API 가용 여부는 조직마다 다를 수 있습니다. 실 배포 전에
++   반드시 실제 워크스페이스로 로그인 요청 → DM 수신 → 매직링크 클릭 → 세션 발급까지 왕복을
++   스파이크로 검증하세요 (§3 배포 체크리스트 참고).
+ 
+ ### Supabase 프로젝트 생성
+ 
+@@ -100,11 +105,10 @@ supabase secrets set --env-file .env.production
+ | `VITE_SUPABASE_ANON_KEY` | `apps/web` 빌드 | Supabase anon key |
+ | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Edge Functions (Supabase가 자동 주입) | DB 접근용 |
+ | `KMA_API_KEY` | Edge Functions secrets | 기상청 공공데이터 일반 인증키(Decoding) |
+-| `KAKAOWORK_BOT_KEY` | Edge Functions secrets | 카카오워크 커스텀 봇 App Key |
+-| `KAKAOWORK_CLIENT_ID` / `KAKAOWORK_CLIENT_SECRET` | Edge Functions secrets | 카카오워크 OAuth 앱 자격증명 |
++| `KAKAOWORK_BOT_KEY` | Edge Functions secrets | 카카오워크 커스텀 봇 App Key (멤버십 조회·로그인 DM·특보 발송) |
+ | `ADMIN_KAKAOWORK_ID` | Edge Functions secrets | 최초 시스템관리자로 지정할 카카오워크 로그인 이메일 |
+ | `CRON_SECRET` | Edge Functions secrets + DB `app.cron_secret` | pg_cron → Edge Function 호출 인증용 임의 문자열 |
+-| `APP_BASE_URL` | Edge Functions secrets | 웹 콘솔 URL (OAuth 리다이렉트·딥링크 생성용) |
++| `APP_BASE_URL` | Edge Functions secrets | 웹 콘솔 URL (매직링크 딥링크 생성용) |
+ | `NOTIFY_CHANNEL` | Edge Functions secrets (선택) | `console`로 설정하면 카카오워크 대신 로그 채널 사용 (개발/시연용) |
+ 
+ 전체 목록과 형식은 저장소 루트의 [`.env.example`](.env.example), 웹 앱용은
+@@ -112,13 +116,8 @@ supabase secrets set --env-file .env.production
+ 
+ ### 배포 체크리스트 (반드시 확인)
+ 
+-- [ ] **`MOCK_KAKAO_PROFILE`을 프로덕션 Supabase secrets에 절대 설정하지 않는다.** 실제 OAuth 검증을
+-  건너뛰는 테스트 전용 백도어입니다. `auth-kakaowork`는 `SUPABASE_URL`이 `127.0.0.1`/`localhost`를
+-  가리킬 때만 이 값을 인정하도록 하드 가드가 걸려 있어 프로덕션에서는 설정돼도 무시되지만,
+-  방어선을 하나만 두지 않도록 secrets에도 넣지 마세요.
+-- [ ] **카카오워크 실 OAuth 왕복 스파이크를 배포 착수 조건으로 삼는다.** 로그인 → 콜백 → 세션 발급까지
+-  실제 워크스페이스에서 성공하는지 먼저 검증하세요. 실패한다면(무료 플랜 제약 등) 카카오워크 봇의
+-  DM으로 매직링크를 발송해 로그인시키는 대안으로 전환할지 검토해야 합니다.
++- [ ] **카카오워크 봇 DM 왕복 스파이크를 배포 착수 조건으로 삼는다.** 로그인 화면에서 이메일 입력 →
++  DM 수신 → 매직링크 클릭 → 세션 발급까지 실제 워크스페이스에서 성공하는지 먼저 검증하세요.
+ - [ ] **`ADMIN_KAKAOWORK_ID`를 설정한 뒤, 그 이메일 계정으로 첫 로그인**해 시스템관리자 권한을 확보한다
+   (§4 참고). 설정을 빠뜨리면 관리자가 0명인 채로 시작하게 됩니다.
+ - [ ] `app.edge_base_url` / `app.cron_secret` DB 설정을 마쳐 pg_cron이 정상 동작하는지 확인한다
+diff --git a/apps/web/src/auth/RequireRole.test.tsx b/apps/web/src/auth/RequireRole.test.tsx
+new file mode 100644
+index 0000000..824480a
+--- /dev/null
++++ b/apps/web/src/auth/RequireRole.test.tsx
+@@ -0,0 +1,72 @@
++import { describe, expect, it, vi } from "vitest";
++import { render, screen } from "@testing-library/react";
++import { MemoryRouter, Route, Routes } from "react-router-dom";
++import { RequireRole } from "./RequireRole";
++import type { Employee } from "../lib/types";
++
++const mocks = vi.hoisted(() => ({
++  authState: { employee: null as Employee | null, loading: false },
++}));
++
++vi.mock("./AuthProvider", () => ({
++  useAuth: () => mocks.authState,
++}));
++
++function makeEmployee(overrides: Partial<Employee>): Employee {
++  return {
++    id: "emp-1",
++    auth_user_id: "u1",
++    name: "테스터",
++    email: "t@example.com",
++    kakaowork_user_id: "kw-1",
++    department_id: null,
++    role: "staff",
++    created_at: "2026-01-01T00:00:00Z",
++    ...overrides,
++  };
++}
++
++function renderAt(path: string, requireDepartment?: boolean) {
++  return render(
++    <MemoryRouter initialEntries={[path]}>
++      <Routes>
++        <Route
++          path="/guarded"
++          element={
++            <RequireRole roles={["admin", "approver", "staff"]} requireDepartment={requireDepartment}>
++              <div>보호된 화면</div>
++            </RequireRole>
++          }
++        />
++        <Route path="/" element={<div>대시보드</div>} />
++      </Routes>
++    </MemoryRouter>,
++  );
++}
++
++describe("RequireRole requireDepartment", () => {
++  it("부서 미지정 실무자는 requireDepartment 화면에서 대시보드로 리다이렉트된다", () => {
++    mocks.authState.employee = makeEmployee({ role: "staff", department_id: null });
++    renderAt("/guarded", true);
++    expect(screen.queryByText("보호된 화면")).not.toBeInTheDocument();
++    expect(screen.getByText("대시보드")).toBeInTheDocument();
++  });
++
++  it("부서가 지정된 실무자는 requireDepartment 화면에 접근할 수 있다", () => {
++    mocks.authState.employee = makeEmployee({ role: "staff", department_id: "dept-1" });
++    renderAt("/guarded", true);
++    expect(screen.getByText("보호된 화면")).toBeInTheDocument();
++  });
++
++  it("requireDepartment가 없으면 부서 미지정 실무자도 접근할 수 있다", () => {
++    mocks.authState.employee = makeEmployee({ role: "staff", department_id: null });
++    renderAt("/guarded", false);
++    expect(screen.getByText("보호된 화면")).toBeInTheDocument();
++  });
++
++  it("관리자는 부서 미지정이어도 requireDepartment 화면에 접근할 수 있다", () => {
++    mocks.authState.employee = makeEmployee({ role: "admin", department_id: null });
++    renderAt("/guarded", true);
++    expect(screen.getByText("보호된 화면")).toBeInTheDocument();
++  });
++});
+diff --git a/apps/web/src/auth/RequireRole.tsx b/apps/web/src/auth/RequireRole.tsx
+index 00368aa..cadadf4 100644
+--- a/apps/web/src/auth/RequireRole.tsx
++++ b/apps/web/src/auth/RequireRole.tsx
+@@ -2,10 +2,22 @@ import { Navigate } from "react-router-dom";
+ import type { ReactNode } from "react";
+ import { useAuth } from "./AuthProvider";
+ 
+-export function RequireRole({ roles, children }: { roles: string[]; children: ReactNode }) {
++export function RequireRole({
++  roles,
++  requireDepartment = false,
++  children,
++}: {
++  roles: string[];
++  /** true면 부서 미지정 실무자(staff, department_id null)의 접근을 차단하고 대시보드로 되돌린다. */
++  requireDepartment?: boolean;
++  children: ReactNode;
++}) {
+   const { employee, loading } = useAuth();
+   if (loading) return null;
+   if (!employee) return <Navigate to="/login" replace />;
+   if (!roles.includes(employee.role)) return <Navigate to="/" replace />;
++  if (requireDepartment && employee.role === "staff" && employee.department_id === null) {
++    return <Navigate to="/" replace />;
++  }
+   return <>{children}</>;
+ }
+diff --git a/apps/web/src/lib/api.ts b/apps/web/src/lib/api.ts
+index 60aaf0d..387e45e 100644
+--- a/apps/web/src/lib/api.ts
++++ b/apps/web/src/lib/api.ts
+@@ -19,3 +19,11 @@ export async function callSend(body: SendBody): Promise<SendResult> {
+   if (error) throw error;
+   return data as SendResult;
+ }
++
++export async function requestMagicLink(email: string): Promise<{ ok: boolean }> {
++  const { data, error } = await supabase.functions.invoke("auth-kakaowork?action=request", {
++    body: { email },
++  });
++  if (error) throw error;
++  return (data as { ok: boolean } | null) ?? { ok: true };
++}
+diff --git a/apps/web/src/pages/Dashboard.css b/apps/web/src/pages/Dashboard.css
+index 6e0ca4d..1b844af 100644
+--- a/apps/web/src/pages/Dashboard.css
++++ b/apps/web/src/pages/Dashboard.css
+@@ -22,6 +22,18 @@
+   gap: 20px;
+ }
+ 
++/* ---------- 부서 미지정 안내 배너 ---------- */
++.dept-banner {
++  padding: 16px 28px;
++  background: var(--pearl);
++  border: 1px solid var(--hairline);
++  border-radius: var(--radius-card);
++  font-family: var(--font-ui);
++  font-size: 14px;
++  font-weight: 400;
++  color: var(--ink-muted-80);
++}
++
+ /* ---------- 셋업 체크리스트 스트립 ---------- */
+ .setup-strip {
+   display: flex;
+diff --git a/apps/web/src/pages/Dashboard.tsx b/apps/web/src/pages/Dashboard.tsx
+index d5b3dd8..d08a154 100644
+--- a/apps/web/src/pages/Dashboard.tsx
++++ b/apps/web/src/pages/Dashboard.tsx
+@@ -177,6 +177,12 @@ export default function Dashboard() {
+       <p className="dash-desc">실시간 날씨 모니터링과 특보 현황</p>
+ 
+       <div className="dash-stack">
++        {employee?.role === "staff" && employee.department_id === null && (
++          <div className="dept-banner">
++            부서가 아직 지정되지 않았습니다. 관리자에게 부서 지정을 요청해 주세요.
++          </div>
++        )}
++
+         {employee?.role === "admin" && setup && setup.done < setup.total && (
+           <div className="setup-strip">
+             <div className="setup-strip-main">
+diff --git a/apps/web/src/pages/Login.css b/apps/web/src/pages/Login.css
+index e965706..3af5414 100644
+--- a/apps/web/src/pages/Login.css
++++ b/apps/web/src/pages/Login.css
+@@ -51,8 +51,42 @@
+   color: var(--ink-muted-80);
+ }
+ 
+-.login-cta {
++.login-form {
+   margin-top: 32px;
++  width: 100%;
++  display: flex;
++  flex-direction: column;
++  align-items: stretch;
++  gap: 12px;
++}
++
++.login-label {
++  font-family: var(--font-ui);
++  font-weight: 400;
++  font-size: 13px;
++  color: var(--ink-muted-48);
++  text-align: left;
++}
++
++.login-input {
++  width: 100%;
++  padding: 14px 16px;
++  border: 1px solid var(--hairline);
++  border-radius: var(--radius-ctl);
++  background: var(--canvas);
++  color: var(--ink);
++  font-family: var(--font-ui);
++  font-weight: 400;
++  font-size: 17px;
++}
++
++.login-input:focus {
++  outline: none;
++  border-color: var(--primary);
++}
++
++.login-cta {
++  margin-top: 8px;
+   display: inline-flex;
+   align-items: center;
+   justify-content: center;
+@@ -73,6 +107,11 @@
+   background: var(--primary-focus);
+ }
+ 
++.login-cta:disabled {
++  opacity: 0.6;
++  cursor: default;
++}
++
+ .login-cta svg {
+   width: 18px;
+   height: 18px;
+@@ -80,6 +119,17 @@
+   stroke: var(--canvas);
+ }
+ 
++.login-cta-ghost {
++  margin-top: 32px;
++  background: var(--canvas);
++  color: var(--primary);
++  border: 1px solid var(--primary);
++}
++
++.login-cta-ghost:hover {
++  background: var(--parchment);
++}
++
+ .login-fineprint {
+   margin-top: 24px;
+   font-family: var(--font-ui);
+diff --git a/apps/web/src/pages/Login.test.tsx b/apps/web/src/pages/Login.test.tsx
+index c022e1c..bf6f7be 100644
+--- a/apps/web/src/pages/Login.test.tsx
++++ b/apps/web/src/pages/Login.test.tsx
+@@ -1,11 +1,43 @@
+-import { describe, expect, it } from "vitest";
+-import { render, screen } from "@testing-library/react";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+ import Login from "./Login";
+ 
++const mocks = vi.hoisted(() => ({ requestMagicLink: vi.fn() }));
++vi.mock("../lib/api", () => ({ requestMagicLink: mocks.requestMagicLink }));
++
+ describe("Login", () => {
+-  it("카카오워크 로그인 히어로를 렌더링한다", () => {
++  beforeEach(() => {
++    mocks.requestMagicLink.mockReset().mockResolvedValue({ ok: true });
++  });
++
++  it("이메일 입력 히어로를 렌더링한다", () => {
+     render(<Login />);
+     expect(screen.getByRole("heading", { name: "날씨경영" })).toBeInTheDocument();
+-    expect(screen.getByRole("button", { name: /카카오워크로 계속하기/ })).toBeInTheDocument();
++    expect(screen.getByLabelText("카카오워크에 등록된 회사 이메일")).toBeInTheDocument();
++    expect(screen.getByRole("button", { name: "로그인 링크 받기" })).toBeInTheDocument();
++  });
++
++  it("이메일 제출 시 로그인 링크를 요청하고 안내 화면으로 전환한다", async () => {
++    render(<Login />);
++    fireEvent.change(screen.getByLabelText("카카오워크에 등록된 회사 이메일"), {
++      target: { value: "a@t.co" },
++    });
++    fireEvent.click(screen.getByRole("button", { name: "로그인 링크 받기" }));
++
++    await waitFor(() => expect(mocks.requestMagicLink).toHaveBeenCalledWith("a@t.co"));
++    expect(await screen.findByText(/카카오워크 앱을 확인해 주세요/)).toBeInTheDocument();
++    expect(screen.getByRole("button", { name: "다시 보내기" })).toBeInTheDocument();
++  });
++
++  it("다시 보내기를 누르면 동일 이메일로 재요청한다", async () => {
++    render(<Login />);
++    fireEvent.change(screen.getByLabelText("카카오워크에 등록된 회사 이메일"), {
++      target: { value: "a@t.co" },
++    });
++    fireEvent.click(screen.getByRole("button", { name: "로그인 링크 받기" }));
++    await screen.findByRole("button", { name: "다시 보내기" });
++
++    fireEvent.click(screen.getByRole("button", { name: "다시 보내기" }));
++    await waitFor(() => expect(mocks.requestMagicLink).toHaveBeenCalledTimes(2));
+   });
+ });
+diff --git a/apps/web/src/pages/Login.tsx b/apps/web/src/pages/Login.tsx
+index 57cf7db..127e1fe 100644
+--- a/apps/web/src/pages/Login.tsx
++++ b/apps/web/src/pages/Login.tsx
+@@ -1,10 +1,29 @@
++import { useState } from "react";
++import type { FormEvent } from "react";
+ import "./Login.css";
+-
+-function goToKakaowork() {
+-  location.href = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/auth-kakaowork?action=login`;
+-}
++import { requestMagicLink } from "../lib/api";
+ 
+ export default function Login() {
++  const [email, setEmail] = useState("");
++  const [sending, setSending] = useState(false);
++  const [submitted, setSubmitted] = useState(false);
++
++  async function send() {
++    if (!email || sending) return;
++    setSending(true);
++    try {
++      await requestMagicLink(email);
++    } finally {
++      setSending(false);
++      setSubmitted(true);
++    }
++  }
++
++  function onSubmit(e: FormEvent) {
++    e.preventDefault();
++    send();
++  }
++
+   return (
+     <div className="login-page">
+       <div className="login-hero">
+@@ -26,28 +45,52 @@ export default function Login() {
+ 
+         <h1 className="login-title">날씨경영</h1>
+ 
+-        <p className="login-lead">
+-          날씨 특보 감지부터 행동 지침 발송까지.
+-          <br />
+-          한 번의 승인으로 전 부서가 움직입니다.
+-        </p>
++        {submitted ? (
++          <>
++            <p className="login-lead">
++              카카오워크 앱을 확인해 주세요.
++              <br />
++              5분 내 도착하지 않으면 카카오워크에 등록된 이메일 주소가 맞는지 확인해 주세요.
++            </p>
++            <button type="button" className="login-cta login-cta-ghost" onClick={send} disabled={sending}>
++              {sending ? "전송 중…" : "다시 보내기"}
++            </button>
++          </>
++        ) : (
++          <>
++            <p className="login-lead">
++              날씨 특보 감지부터 행동 지침 발송까지.
++              <br />
++              한 번의 승인으로 전 부서가 움직입니다.
++            </p>
+ 
+-        <button type="button" className="login-cta" onClick={goToKakaowork}>
+-          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+-            <path
+-              d="M12 4c-5 0-9 3.2-9 7.1 0 2.5 1.6 4.7 4.1 6-.2.7-.6 2.4-.7 2.8 0 0-.1.3.2.5.2.1.5 0 .5 0 .3-.1 2.9-1.9 3.4-2.3.5.1.9.1 1.5.1 5 0 9-3.2 9-7.1S17 4 12 4Z"
+-              strokeWidth="1.5"
+-              strokeLinejoin="round"
+-            />
+-          </svg>
+-          카카오워크로 계속하기
+-        </button>
+-
+-        <p className="login-fineprint">
+-          회사 카카오워크 계정으로 로그인하면 계정이 자동으로 만들어집니다.
+-          <br />
+-          화면 접근 권한은 시스템 관리자가 지정합니다.
+-        </p>
++            <form className="login-form" onSubmit={onSubmit}>
++              <label className="login-label" htmlFor="login-email">
++                카카오워크에 등록된 회사 이메일
++              </label>
++              <input
++                id="login-email"
++                type="email"
++                inputMode="email"
++                autoComplete="email"
++                required
++                className="login-input"
++                placeholder="카카오워크에 등록된 회사 이메일"
++                value={email}
++                onChange={(e) => setEmail(e.target.value)}
++              />
++              <button type="submit" className="login-cta" disabled={sending}>
++                {sending ? "전송 중…" : "로그인 링크 받기"}
++              </button>
++            </form>
++
++            <p className="login-fineprint">
++              입력한 이메일로 카카오워크 DM에 로그인 링크가 도착합니다.
++              <br />
++              계정은 최초 로그인 시 자동으로 생성되며, 화면 접근 권한은 시스템 관리자가 지정합니다.
++            </p>
++          </>
++        )}
+       </div>
+     </div>
+   );
+diff --git a/apps/web/src/routes.tsx b/apps/web/src/routes.tsx
+index 427c3d9..04d5191 100644
+--- a/apps/web/src/routes.tsx
++++ b/apps/web/src/routes.tsx
+@@ -29,7 +29,7 @@ export function AppRoutes() {
+       <Route
+         path="/criteria"
+         element={
+-          <RequireRole roles={ALL_ROLES}>
++          <RequireRole roles={ALL_ROLES} requireDepartment>
+             <Criteria />
+           </RequireRole>
+         }
+@@ -37,7 +37,7 @@ export function AppRoutes() {
+       <Route
+         path="/guidelines"
+         element={
+-          <RequireRole roles={ALL_ROLES}>
++          <RequireRole roles={ALL_ROLES} requireDepartment>
+             <Guidelines />
+           </RequireRole>
+         }
+@@ -45,7 +45,7 @@ export function AppRoutes() {
+       <Route
+         path="/events/:id"
+         element={
+-          <RequireRole roles={ALL_ROLES}>
++          <RequireRole roles={ALL_ROLES} requireDepartment>
+             <EventReview />
+           </RequireRole>
+         }
+diff --git a/supabase/config.toml b/supabase/config.toml
+index cea92d6..6607cad 100644
+--- a/supabase/config.toml
++++ b/supabase/config.toml
+@@ -379,7 +379,8 @@ verify_jwt = false
+ [functions.remind-tick]
+ verify_jwt = false
+ 
+-# auth-kakaowork는 브라우저가 직접 여는 OAuth 리다이렉트 엔드포인트(JWT 없이 열림) → 게이트웨이 JWT 검증 비활성화
++# auth-kakaowork는 로그인 전(세션 없음) 브라우저가 직접 POST하는 매직링크 요청 엔드포인트
++# → 게이트웨이 JWT 검증 비활성화
+ [functions.auth-kakaowork]
+ verify_jwt = false
+ 
+diff --git a/supabase/functions/_shared/kma.ts b/supabase/functions/_shared/kma.ts
+index 8eaccb3..d3a95e8 100644
+--- a/supabase/functions/_shared/kma.ts
++++ b/supabase/functions/_shared/kma.ts
+@@ -33,11 +33,25 @@ export function parseKmaResponse(json: any): KmaObservation {
+ 
+ const BASE = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtNcst";
+ 
++// 공공데이터포털은 Encoding 키(%2B 등 URL 인코딩 포함)와 Decoding 키(원문) 두 형태를 모두 발급한다.
++// Encoding 키를 그대로 encodeURIComponent()에 넣으면 이중 인코딩되어 403이 나므로,
++// 키에 %가 포함돼 있으면(Encoding 키로 판단) 한 번 디코딩한 뒤 다시 인코딩해 정규화한다.
++export function normalizeKmaKey(apiKey: string): string {
++  const decoded = apiKey.includes("%") ? decodeURIComponent(apiKey) : apiKey;
++  return encodeURIComponent(decoded);
++}
++
++export function buildKmaUrl(
++  apiKey: string, nx: number, ny: number, baseDate: string, baseTime: string,
++): string {
++  return `${BASE}?serviceKey=${normalizeKmaKey(apiKey)}&dataType=JSON&numOfRows=10&pageNo=1&base_date=${baseDate}&base_time=${baseTime}&nx=${nx}&ny=${ny}`;
++}
++
+ export async function fetchObservation(
+   apiKey: string, nx: number, ny: number, now: Date, fetchFn: typeof fetch = fetch,
+ ): Promise<KmaObservation> {
+   const { baseDate, baseTime } = baseDateTime(now);
+-  const url = `${BASE}?serviceKey=${encodeURIComponent(apiKey)}&dataType=JSON&numOfRows=10&pageNo=1&base_date=${baseDate}&base_time=${baseTime}&nx=${nx}&ny=${ny}`;
++  const url = buildKmaUrl(apiKey, nx, ny, baseDate, baseTime);
+   let lastErr: unknown;
+   for (let attempt = 0; attempt < 3; attempt++) {
+     try {
+diff --git a/supabase/functions/_shared/kma_test.ts b/supabase/functions/_shared/kma_test.ts
+index 4eb6f38..56ace10 100644
+--- a/supabase/functions/_shared/kma_test.ts
++++ b/supabase/functions/_shared/kma_test.ts
+@@ -1,5 +1,5 @@
+ import { assertEquals } from "jsr:@std/assert";
+-import { baseDateTime, parseKmaResponse } from "./kma.ts";
++import { baseDateTime, buildKmaUrl, parseKmaResponse } from "./kma.ts";
+ 
+ Deno.test("baseDateTime: 정시+10분 전이면 이전 시각", () => {
+   assertEquals(baseDateTime(new Date("2026-08-12T08:05:00+09:00")),
+@@ -23,3 +23,17 @@ Deno.test("parseKmaResponse: 카테고리 추출", () => {
+   assertEquals(o.humidityPct, 83);
+   assertEquals(o.pty, 1);
+ });
++
++Deno.test("buildKmaUrl: Decoding 키(원문)를 그대로 인코딩해 사용", () => {
++  const decodingKey = "abc+def==/ghi";
++  const url = buildKmaUrl(decodingKey, 60, 127, "20260812", "0800");
++  assertEquals(url.includes(`serviceKey=${encodeURIComponent(decodingKey)}`), true);
++});
++
++Deno.test("buildKmaUrl: Encoding 키를 넣어도 Decoding 키와 동일한 URL로 정규화", () => {
++  const decodingKey = "abc+def==/ghi";
++  const encodingKey = encodeURIComponent(decodingKey); // 사용자가 실수로 Encoding 키를 넣은 상황 재현
++  const urlFromDecoding = buildKmaUrl(decodingKey, 60, 127, "20260812", "0800");
++  const urlFromEncoding = buildKmaUrl(encodingKey, 60, 127, "20260812", "0800");
++  assertEquals(urlFromEncoding, urlFromDecoding);
++});
+diff --git a/supabase/functions/auth-kakaowork/index.ts b/supabase/functions/auth-kakaowork/index.ts
+index eb88379..241b11d 100644
+--- a/supabase/functions/auth-kakaowork/index.ts
++++ b/supabase/functions/auth-kakaowork/index.ts
+@@ -1,105 +1,97 @@
++// 카카오워크 서드파티 OAuth는 존재하지 않음(auth.kakaowork.com DNS 없음, 2026-08-12 실측)이 확인되어
++// OAuth 왕복 인증을 폐기하고, 카카오워크 봇 DM으로 Supabase 매직링크를 보내는 방식으로 전환했다.
++// 봇 API(users.find_by_email · conversations.open · messages.send)는 실계정으로 동작이 확인됐다.
++//
++// 콜백(수신 링크 클릭 후 세션 확립)은 이 함수가 아니라 웹의 AuthCallback.tsx가 담당한다 — DM에 실리는
++// 링크가 이미 `${APP_BASE_URL}/auth/callback#token_hash=...` 형태의 프런트엔드 URL이라, 브라우저가
++// 곧장 그 페이지로 진입해 supabase-js verifyOtp()를 호출한다. 이 함수에 별도의 콜백 라우트가 있으면
++// (예: email을 쿼리로 받아 magiclink를 발급) 인증 없이 임의 이메일로 로그인 링크를 발급하는 경로가
++// 하나 더 생기는 셈이라 보안상 두지 않는다.
+ import { serviceClient } from "../_shared/db.ts";
++import { getChannel } from "../_shared/kakaowork.ts";
++import { resolveKakaoworkUserIdByEmail } from "../_shared/kakaowork.ts";
+ 
+ const env = (k: string) => Deno.env.get(k);
+-const AUTH_URL = "https://auth.kakaowork.com/oauth2/authorize";
+-const TOKEN_URL = "https://auth.kakaowork.com/oauth2/token";
+-const STATE_COOKIE = "kw_oauth_state";
+-
+-function cookieValue(req: Request, name: string): string | undefined {
+-  const header = req.headers.get("Cookie") ?? "";
+-  for (const part of header.split(";")) {
+-    const [k, ...rest] = part.trim().split("=");
+-    if (k === name) return rest.join("=");
+-  }
+-  return undefined;
+-}
+ 
+ Deno.serve(async (req) => {
+   const u = new URL(req.url);
+   const action = u.searchParams.get("action");
+-  const selfUrl = `${env("SUPABASE_URL")}/functions/v1/auth-kakaowork?action=callback`;
+ 
+-  if (action === "login") {
+-    // 로그인 CSRF 방지: state를 HttpOnly 쿠키로 심어두고 callback에서 쿼리 state와 대조한다.
+-    const state = crypto.randomUUID();
+-    const q = new URLSearchParams({ client_id: env("KAKAOWORK_CLIENT_ID")!,
+-      redirect_uri: selfUrl, response_type: "code", state });
+-    return new Response(null, { status: 302, headers: {
+-      Location: `${AUTH_URL}?${q}`,
+-      "Set-Cookie": `${STATE_COOKIE}=${state}; HttpOnly; Secure; SameSite=Lax; Max-Age=600; Path=/`,
+-    } });
++  if (action === "request" && req.method === "POST") {
++    return handleRequest(req);
+   }
+ 
+-  if (action === "callback") {
+-    const code = u.searchParams.get("code");
+-    if (!code) return new Response("missing code", { status: 400 });
++  return new Response("bad request", { status: 400 });
++});
+ 
+-    let profile: { email: string; user_id: string; name?: string };
+-    // 로컬 하드 가드: MOCK_KAKAO_PROFILE은 OAuth 검증을 통째로 건너뛰는 테스트 전용 백도어라,
+-    // env가 실수로/악의적으로 설정되기만 해도 임의 이메일로 admin 세션을 얻을 수 있다.
+-    // 사람이 지키는 배포 체크리스트만으로는 오픈소스 포크에서 막을 수 없으므로,
+-    // 환경이 로컬임을 코드로 확인했을 때만 mock을 허용하고 그 외에는 env가 있어도 무시한다.
+-    // (`kong:8000`은 supabase CLI 로컬 스택이 컨테이너 안에 주입하는 SUPABASE_URL 값이다 —
+-    //  CLI가 SUPABASE_* env를 --env-file에서 걸러내므로 로컬에서도 127.0.0.1이 아니다.
+-    //  이 호스트명을 재사용하는 셀프호스팅 배포를 위해 APP_BASE_URL까지 로컬일 것을 함께 요구한다.)
+-    const isLocalUrl = (url: string) =>
+-      url.includes("127.0.0.1") || url.includes("localhost") || url.includes("kong:8000");
+-    const isLocal = isLocalUrl(env("SUPABASE_URL") ?? "") && isLocalUrl(env("APP_BASE_URL") ?? "");
+-    const mock = isLocal ? env("MOCK_KAKAO_PROFILE") : undefined;
+-    if (mock) {
+-      // 테스트 전용: MOCK_KAKAO_PROFILE env가 설정된 경우에만 쿼리 파라미터로 mock 프로필의 email을
+-      // 오버라이드할 수 있게 한다(env 없는 프로덕션에서는 이 분기 자체에 도달하지 않으므로 완전 무시됨).
+-      // user_id도 email에 종속해 함께 바꿔 kakaowork_user_id unique 제약과 충돌하지 않게 한다.
+-      // state 검증도 이 경로에서는 생략한다(테스트 편의 — env 게이트 뒤라 안전).
+-      profile = JSON.parse(mock);
+-      const mockEmail = u.searchParams.get("mock_email");
+-      if (mockEmail) {
+-        profile = { ...profile, email: mockEmail, user_id: `kw-${mockEmail}` };
+-      }
+-    } else {
+-      // 실 OAuth 경로에서만 state를 검증한다: login에서 심어둔 쿠키와 쿼리 state가 일치해야 진행.
+-      const stateParam = u.searchParams.get("state");
+-      const cookieState = cookieValue(req, STATE_COOKIE);
+-      if (!stateParam || !cookieState || stateParam !== cookieState) {
+-        return new Response("invalid oauth state", { status: 403 });
+-      }
+-      const tokenRes = await fetch(TOKEN_URL, { method: "POST",
+-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+-        body: new URLSearchParams({ grant_type: "authorization_code", code,
+-          client_id: env("KAKAOWORK_CLIENT_ID")!, client_secret: env("KAKAOWORK_CLIENT_SECRET")!,
+-          redirect_uri: selfUrl }) });
+-      const { access_token } = await tokenRes.json();
+-      const me = await (await fetch("https://api.kakaowork.com/v1/users.me",
+-        { headers: { Authorization: `Bearer ${access_token}` } })).json();
+-      profile = { email: me.user.email, user_id: String(me.user.id), name: me.user.display_name };
+-    }
++async function handleRequest(req: Request): Promise<Response> {
++  let email: string | undefined;
++  try {
++    const body = await req.json();
++    email = typeof body?.email === "string" ? body.email.trim() : undefined;
++  } catch {
++    // 잘못된 body도 열거 공격 방지를 위해 동일하게 ok:true로 응답한다.
++  }
++
++  const ok = new Response(JSON.stringify({ ok: true }), {
++    status: 200,
++    headers: { "Content-Type": "application/json" },
++  });
++
++  if (!email) return ok;
+ 
+-    const db = serviceClient();
+-    const { data: existing } = await db.from("employees").select("*").eq("email", profile.email).maybeSingle();
+-    // ADMIN_KAKAOWORK_ID와 일치하면 기존 사용자 여부와 무관하게 항상 admin을 보장한다(강등은 하지 않음 —
+-    // 일치하지 않는 기존 사용자는 기존 role 유지). env 설정 전/오타 상태로 먼저 가입해 staff로 굳어진 뒤
+-    // env를 바로잡아도 영원히 staff로 남아 admin이 0명인 교착을 방지하기 위한 스펙 오너 판정.
+-    const role = profile.email === env("ADMIN_KAKAOWORK_ID") ? "admin" : (existing?.role ?? "staff");
+-    let authUserId = existing?.auth_user_id;
+-    if (!authUserId) {
+-      const { data: created } = await db.auth.admin.createUser({
+-        email: profile.email, email_confirm: true });
+-      authUserId = created.user!.id;
++  const botKey = env("KAKAOWORK_BOT_KEY");
++  // 봇 키가 있으면 실제 워크스페이스 멤버인지 조회해 존재 여부를 절대 노출하지 않는다(비멤버는 조용히 ok만 반환).
++  // 봇 키가 없는 로컬 개발(ConsoleChannel 경로)에서는 멤버십을 조회할 수 없으므로 모든 이메일을 허용해
++  // 링크가 콘솔에 출력되도록 한다.
++  let kakaoworkUserId: string | null = null;
++  if (botKey) {
++    kakaoworkUserId = await resolveKakaoworkUserIdByEmail(botKey, email);
++    if (!kakaoworkUserId) return ok;
++  }
++
++  const db = serviceClient();
++  const { data: existing } = await db.from("employees").select("*").eq("email", email).maybeSingle();
++  // ADMIN_KAKAOWORK_ID와 일치하면 기존 사용자 여부와 무관하게 항상 admin을 보장한다(강등은 하지 않음).
++  const role = email === env("ADMIN_KAKAOWORK_ID") ? "admin" : (existing?.role ?? "staff");
++  let authUserId = existing?.auth_user_id;
++  if (!authUserId) {
++    const { data: created, error: createErr } = await db.auth.admin.createUser({
++      email, email_confirm: true,
++    });
++    if (createErr || !created?.user) {
++      console.error(`auth-kakaowork: createUser 실패 email=${email} error=${createErr?.message}`);
++      return ok;
+     }
+-    await db.from("employees").upsert({
+-      email: profile.email, auth_user_id: authUserId,
+-      name: existing?.name ?? profile.name ?? profile.email,
+-      kakaowork_user_id: profile.user_id,
+-      role,
+-      department_id: existing?.department_id ?? null,
+-    }, { onConflict: "email" });
++    authUserId = created.user.id;
++  }
++  await db.from("employees").upsert({
++    email,
++    auth_user_id: authUserId,
++    name: existing?.name ?? email,
++    kakaowork_user_id: kakaoworkUserId ?? existing?.kakaowork_user_id ?? null,
++    role,
++    department_id: existing?.department_id ?? null,
++  }, { onConflict: "email" });
+ 
+-    const { data: link } = await db.auth.admin.generateLink({ type: "magiclink", email: profile.email });
+-    // generateLink 실패 시 properties가 null이라 그대로 접근하면 로그인 전체가 500으로 떨어진다.
+-    const tokenHash = link?.properties?.hashed_token;
+-    if (!tokenHash) return new Response("failed to issue session link", { status: 502 });
+-    return Response.redirect(`${env("APP_BASE_URL")}/auth/callback#token_hash=${tokenHash}`, 302);
++  const { data: link, error: linkErr } = await db.auth.admin.generateLink({ type: "magiclink", email });
++  const tokenHash = link?.properties?.hashed_token;
++  if (!tokenHash) {
++    console.error(`auth-kakaowork: 매직링크 발급 실패 email=${email} error=${linkErr?.message}`);
++    return ok;
+   }
+ 
+-  return new Response("bad request", { status: 400 });
+-});
++  const loginUrl = `${env("APP_BASE_URL")}/auth/callback#token_hash=${tokenHash}`;
++  const text = `[날씨경영] 로그인 링크입니다. 5분 내 만료되며 1회만 사용됩니다.\n${loginUrl}`;
++
++  const channel = getChannel({
++    NOTIFY_CHANNEL: env("NOTIFY_CHANNEL") ?? undefined,
++    KAKAOWORK_BOT_KEY: botKey ?? undefined,
++  });
++  const sendResult = await channel.send(kakaoworkUserId ?? email, text);
++  if (!sendResult.ok) {
++    console.error(`auth-kakaowork: DM 발송 실패 email=${email} error=${sendResult.error}`);
++  }
++
++  return ok;
++}
+diff --git a/supabase/functions/auth-kakaowork/index_test.ts b/supabase/functions/auth-kakaowork/index_test.ts
+index 3b526cb..60172da 100644
+--- a/supabase/functions/auth-kakaowork/index_test.ts
++++ b/supabase/functions/auth-kakaowork/index_test.ts
+@@ -1,13 +1,22 @@
+-import { assertEquals } from "jsr:@std/assert";
++import { assertEquals, assertExists } from "jsr:@std/assert";
++import { createClient } from "npm:@supabase/supabase-js@2";
+ import { serviceClient } from "../_shared/db.ts";
+ 
+ // 전제: supabase start + db reset + 아래 env로 `supabase functions serve --env-file .env.test` 실행 중
+-//   MOCK_KAKAO_PROFILE={"email":"new@t.co","user_id":"kw-new","name":"신규"}
++//   NOTIFY_CHANNEL=console (KAKAOWORK_BOT_KEY 없음 → 멤버십 조회 없이 모든 이메일 허용)
+ //   ADMIN_KAKAOWORK_ID=boss@t.co
+-// 두 번째 테스트는 MOCK_KAKAO_PROFILE의 email을 재기동 없이 오버라이드하기 위해
+-// index.ts가 지원하는 테스트 전용 쿼리 파라미터 `mock_email`을 사용한다(MOCK_KAKAO_PROFILE env가
+-// 설정되어 있을 때에만 동작 — 프로덕션에선 무시됨).
+ const FN = "http://127.0.0.1:54321/functions/v1/auth-kakaowork";
++const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
++const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
++
++async function requestLink(email: string): Promise<{ ok: boolean }> {
++  const res = await fetch(`${FN}?action=request`, {
++    method: "POST",
++    headers: { "Content-Type": "application/json" },
++    body: JSON.stringify({ email }),
++  });
++  return res.json();
++}
+ 
+ async function cleanup(db: ReturnType<typeof serviceClient>, email: string) {
+   const { data: emp } = await db.from("employees").select("auth_user_id").eq("email", email).maybeSingle();
+@@ -15,47 +24,36 @@ async function cleanup(db: ReturnType<typeof serviceClient>, email: string) {
+   if (emp?.auth_user_id) await db.auth.admin.deleteUser(emp.auth_user_id);
+ }
+ 
+-Deno.test("callback: 신규 사용자는 staff·부서 미지정으로 자동 가입", async () => {
++Deno.test("request: 신규 워크스페이스 멤버는 staff·부서 미지정으로 자동 가입 + ok:true", async () => {
+   const db = serviceClient();
+   await cleanup(db, "new@t.co");
+ 
+-  const res = await fetch(`${FN}?action=callback&code=x`, { redirect: "manual" });
+-  assertEquals(res.status, 302);
+-  const loc = res.headers.get("location")!;
+-  assertEquals(loc.includes("token_hash="), true);
++  const res = await requestLink("new@t.co");
++  assertEquals(res, { ok: true });
+ 
+   const { data: emp } = await db.from("employees").select("*").eq("email", "new@t.co").single();
+   assertEquals(emp.role, "staff");
+   assertEquals(emp.department_id, null);
+-  assertEquals(emp.kakaowork_user_id, "kw-new");
++  assertExists(emp.auth_user_id);
+ 
+   await cleanup(db, "new@t.co");
+ });
+ 
+-Deno.test("callback: ADMIN_KAKAOWORK_ID와 일치하면 admin", async () => {
++Deno.test("request: ADMIN_KAKAOWORK_ID와 일치하면 admin으로 가입", async () => {
+   const db = serviceClient();
+   await cleanup(db, "boss@t.co");
+ 
+-  const res = await fetch(`${FN}?action=callback&code=x&mock_email=boss@t.co`, { redirect: "manual" });
+-  assertEquals(res.status, 302);
+-  const loc = res.headers.get("location")!;
+-  assertEquals(loc.includes("token_hash="), true);
++  const res = await requestLink("boss@t.co");
++  assertEquals(res, { ok: true });
+ 
+   const { data: emp } = await db.from("employees").select("*").eq("email", "boss@t.co").single();
+   assertEquals(emp.role, "admin");
+   assertEquals(emp.department_id, null);
+-  assertEquals(emp.kakaowork_user_id, "kw-boss@t.co");
+ 
+   await cleanup(db, "boss@t.co");
+ });
+ 
+-Deno.test("callback: code 파라미터가 없으면 400", async () => {
+-  const res = await fetch(`${FN}?action=callback`, { redirect: "manual" });
+-  await res.body?.cancel();
+-  assertEquals(res.status, 400);
+-});
+-
+-Deno.test("callback: 기존에 staff로 가입된 ADMIN_KAKAOWORK_ID 사용자는 재로그인 시 admin으로 승격", async () => {
++Deno.test("request: 기존에 staff로 가입된 ADMIN_KAKAOWORK_ID 사용자는 재요청 시 admin으로 승격", async () => {
+   const db = serviceClient();
+   await cleanup(db, "boss@t.co");
+   // env 미설정/오타 상태에서 먼저 staff로 가입해 굳어진 상황을 재현
+@@ -63,13 +61,43 @@ Deno.test("callback: 기존에 staff로 가입된 ADMIN_KAKAOWORK_ID 사용자
+     name: "boss@t.co", email: "boss@t.co", kakaowork_user_id: "kw-boss-preexisting", role: "staff",
+   });
+ 
+-  const res = await fetch(`${FN}?action=callback&code=x&mock_email=boss@t.co`, { redirect: "manual" });
+-  assertEquals(res.status, 302);
+-  const loc = res.headers.get("location")!;
+-  assertEquals(loc.includes("token_hash="), true);
++  const res = await requestLink("boss@t.co");
++  assertEquals(res, { ok: true });
+ 
+   const { data: emp } = await db.from("employees").select("*").eq("email", "boss@t.co").single();
+   assertEquals(emp.role, "admin");
+ 
+   await cleanup(db, "boss@t.co");
+ });
++
++Deno.test("request: 빈 body/이메일 없이 요청해도 ok:true (열거 공격 방지 — 에러로 정보 노출 안 함)", async () => {
++  const res = await fetch(`${FN}?action=request`, {
++    method: "POST",
++    headers: { "Content-Type": "application/json" },
++    body: JSON.stringify({}),
++  });
++  assertEquals(await res.json(), { ok: true });
++});
++
++Deno.test("callback 세션 확립: 발급된 magiclink token_hash로 verifyOtp하면 세션이 만들어진다", async () => {
++  const db = serviceClient();
++  await cleanup(db, "linktest@t.co");
++
++  const res = await requestLink("linktest@t.co");
++  assertEquals(res, { ok: true });
++
++  // 발송 채널(console)이 실제로 보내는 것과 동일한 링크를 서버에서 재발급해 token_hash를 얻는다
++  // (DM 본문 자체는 이 테스트 프로세스에서 캡처할 수 없으므로, 웹의 AuthCallback.tsx가 수행하는
++  //  verifyOtp 호출이 실제로 세션을 만들어내는지를 검증한다).
++  const { data: link } = await db.auth.admin.generateLink({ type: "magiclink", email: "linktest@t.co" });
++  const tokenHash = link?.properties?.hashed_token;
++  assertExists(tokenHash);
++
++  const anon = createClient(SUPABASE_URL, ANON_KEY);
++  const { data: verified, error } = await anon.auth.verifyOtp({ type: "email", token_hash: tokenHash! });
++  assertEquals(error, null);
++  assertExists(verified.session);
++  assertEquals(verified.user?.email, "linktest@t.co");
++
++  await cleanup(db, "linktest@t.co");
++});
