@@ -1,4 +1,5 @@
 import express from "express";
+import path from "node:path";
 import cookieParser from "cookie-parser";
 import { authRouter, adminUserRouter } from "./auth/routes.ts";
 import { dashboardRouter } from "./api/dashboard.ts";
@@ -33,12 +34,37 @@ app.post("/api/send", requireAuth, async (req, res) => {
   res.status(out.ok ? 200 : (out.status ?? 403)).json(out);
 });
 
-// 라우터 등록 순서: 기능 라우터 → /api 404 폴백 → 정적 서빙 → 에러 핸들러.
-// 이후 태스크가 기능 라우터와 정적 파일 서빙을 이 사이에 끼워 넣는다. 폴백이
-// 라우터보다 앞서면 그 라우터는 조용히 404가 난다 — 순서를 여기서 미리 확정해 둔다.
-// 에러 핸들러(아래, 인자 4개짜리)는 반드시 이 목록의 가장 마지막에 등록돼야
+// 라우터 등록 순서: 기능 라우터 → /api 404 폴백 → 정적 서빙 → SPA 폴백 → 에러 핸들러.
+// 이 순서는 기능이다. 폴백이 라우터보다 앞서면 그 라우터는 조용히 404가 나고,
+// 정적 폴백이 /api 폴백보다 앞서면 없는 엔드포인트가 200 index.html을 돌려준다.
+// 에러 핸들러(맨 아래, 인자 4개짜리)는 반드시 이 목록의 가장 마지막에 등록돼야
 // 한다 — Express는 등록 순서상 자기보다 앞에 있는 미들웨어·라우터의 에러만
-// 잡는다. 뒤에 정적 서빙을 끼워 넣을 때도 에러 핸들러 앞에 넣을 것.
+// 잡는다. 아래 정적 서빙도 그래서 에러 핸들러 앞에 있다.
+// server/test/static.test.ts가 이 순서를 양방향으로 고정한다.
+
+// Cloudflare(지운 apps/web/wrangler.jsonc)가 하던 정적 서빙을 앱이 가져온다. 화면과
+// API가 같은 오리진에서 나가므로 lib/api/client.ts의 상대경로 fetch와 세션 쿠키가
+// 그대로 동작하고, 배포는 컨테이너 2개(앱 + Postgres)로 끝난다.
+// WEB_ROOT는 이미지에서 /app/public(빌드된 apps/web/dist)으로 주입된다.
+const webRoot = process.env.WEB_ROOT ?? path.resolve("public");
+
+// /api 404 폴백이 정적 서빙보다 반드시 먼저다. 뒤로 밀리면 없는 엔드포인트가
+// 아래 SPA 폴백에 걸려 200 index.html을 받고, client.ts가 그걸 res.json()으로
+// 파싱하다 엉뚱한 곳에서 터진다 — 진짜 원인(오타 난 경로)이 완전히 가려진다.
+app.use("/api", (_req, res) => res.status(404).json({ error: "없는 경로입니다" }));
+
+app.use(express.static(webRoot));
+
+// 화면 전환을 react-router가 브라우저에서 하므로 /criteria 같은 경로에는 실제
+// 파일이 없다. 그 경로에서 새로고침하면 404가 나므로 index.html로 넘긴다 —
+// 지운 wrangler.jsonc의 not_found_handling: "single-page-application"이 하던 일이다.
+//
+// 패턴이 "*"가 아니라 "/{*splat}"인 이유: express@5는 path-to-regexp v8을 쓰고
+// 거기서 이름 없는 "*"는 더 이상 유효한 패턴이 아니다 — 요청 처리 중이 아니라
+// 라우트 "등록" 시점에 예외를 던져 서버가 아예 뜨지 않는다(실제로 확인함).
+// v8 문법에서 "0개 이상의 세그먼트"는 이름 붙인 와일드카드를 선택 그룹 {}로
+// 감싼 형태다. {}를 빼고 "/*splat"으로 쓰면 루트 "/"가 매치되지 않는다.
+app.get("/{*splat}", (_req, res) => res.sendFile(path.join(webRoot, "index.html")));
 
 // 잡히지 않은 예외(예: enum에 없는 값을 그대로 바인딩해 나는 DB 오류)가
 // Express 기본 핸들러로 새면 스택트레이스와 서버 내부 파일 경로가 담긴 HTML이
