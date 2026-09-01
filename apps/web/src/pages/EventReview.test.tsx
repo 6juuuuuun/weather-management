@@ -113,6 +113,7 @@ const baseEvent: WeatherEvent = {
   approved_at: null,
   last_reminded_at: null,
   repeat_count: 0,
+  remind_count: 0,
 };
 
 const baseMessage = {

@@ -134,11 +134,19 @@ async function clearAlertable(): Promise<void> {
 
 // heartbeats는 'weather-tick'/'remind-tick' 두 행뿐인 런타임 상태값이고, 다음
 // 주기에 다시 채워진다. jobs.test.ts·scheduler.test.ts도 같은 방식으로 지운다.
-// weather_observations는 위 표식이 붙은 이 파일의 행만 지운다.
+//
+// weather_observations는 **표에 남아 있는 모든 행**을 지운다. 이 파일의 표식이 붙은
+// 행만 지우면 안 된다: checkHealth의 판정(`order by observed_at desc limit 3`)은 표
+// 전체의 최근 3행을 보므로, 다른 테스트 파일이 남긴 행 하나가 그 창에 끼어들면
+// "최근 3회가 모두 결측"이 조용히 거짓이 된다. 실제로 이 라운드에서 재현됐다 —
+// api-dashboard.test.ts가 남긴 now() 시각의 정상 관측 1행 때문에 결측 사유 테스트
+// 셋이 **파일 실행 순서에 따라** 실패했다(vitest의 기본 시퀀서는 파일 순서를
+// 실행 시간 기준으로 정하므로 순서가 고정이 아니다). jobs.test.ts도 같은 이유로
+// 이 표를 통째로 비운다 — 관측은 시드가 아니라 테스트가 만드는 런타임 데이터다.
 beforeEach(async () => {
   await withService(async (q) => {
     await q.query("delete from heartbeats");
-    await q.query("delete from weather_observations where raw = $1", [JSON.stringify(MARK)]);
+    await q.query("delete from weather_observations");
   });
 });
 
