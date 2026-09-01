@@ -1,0 +1,35 @@
+# docker-compose.yml의 app 서비스는 context: . 로 빌드한다 — 저장소 전체가 그대로
+# 빌드 컨텍스트로 올라간다. 걷어내지 않으면 node_modules와 .git만으로 수백 MB가
+# 매 빌드마다 데몬으로 전송되고(느리다), 루트 .env의 실제 비밀번호까지 컨텍스트에
+# 실린다. 이미지에 안 들어가더라도 컨텍스트에 올리는 것 자체를 피한다.
+
+.git
+.github
+.gitignore
+
+# 호스트(macOS)에서 설치된 모듈은 컨테이너(linux/musl)에서 못 쓴다. 이미지 안에서
+# npm ci로 다시 설치하므로 절대 올리지 않는다 — argon2 같은 네이티브 모듈이
+# 호스트 바이너리로 덮이면 런타임에야 터진다.
+**/node_modules
+
+# 이미지 안에서 다시 빌드한다. 호스트에 남은 옛 산출물이 섞이면 안 된다.
+apps/web/dist
+server/public
+
+# 비밀은 컨텍스트에 올리지 않는다. 컨테이너 환경변수는 compose가 주입한다.
+.env
+.env.*
+
+# 앱 실행과 무관한 것들 (Dockerfile이 복사하지도 않는다)
+.claude
+.superpowers
+supabase
+db
+design
+docs
+scripts
+*.md
+*.log
+*.pptx
+*.pen
+**/.DS_Store

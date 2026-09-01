@@ -14,5 +14,42 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+  app:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    # DB가 healthy가 된 뒤에 뜬다. 그래도 앱이 먼저 붙는 경우를 대비해
+    # restart로 재기동시킨다 — 운영자는 docker compose up -d 한 줄만 하면 된다.
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # 컨테이너 안에서는 compose 네트워크의 서비스 이름(postgres)과 컨테이너
+      # 포트(5432)를 쓴다. 루트 .env의 DATABASE_URL_USER는 127.0.0.1:5433 —
+      # 그건 호스트 쪽 포트 매핑이라 컨테이너 안에서는 자기 자신을 가리켜 닿지 않는다.
+      # 계정·비밀번호는 db/migrations/0010_role_login.sql이 부여한 그 값 그대로다
+      # (같은 .env의 APP_USER_PASSWORD / APP_SERVICE_PASSWORD). 여기에 실제 값을
+      # 적지 않고 compose가 .env에서 읽어 넣게 한다.
+      DATABASE_URL_USER: postgres://app_user:${APP_USER_PASSWORD}@postgres:5432/weather
+      DATABASE_URL_SERVICE: postgres://app_service:${APP_SERVICE_PASSWORD}@postgres:5432/weather
+      # 로그 시각을 KST로 맞춘다. 스케줄 자체는 이 값에 기대지 않는다
+      # (server/src/jobs/scheduler.ts가 timezone을 직접 준다).
+      TZ: Asia/Seoul
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS}
+      APP_BASE_URL: ${APP_BASE_URL}
+      KMA_API_KEY: ${KMA_API_KEY}
+      KAKAOWORK_BOT_KEY: ${KAKAOWORK_BOT_KEY}
+      # console로 두면 카카오워크 대신 로그로 발송한다(시연·점검용).
+      NOTIFY_CHANNEL: ${NOTIFY_CHANNEL:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "8080:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
 volumes:
   pgdata:

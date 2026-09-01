@@ -4,6 +4,7 @@
 .env.*
 !.env.example
 !.env.test.example
+!.env.selfhost.example
 node_modules/
 supabase/.temp/
 apps/web/dist/
