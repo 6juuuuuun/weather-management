@@ -157,25 +157,74 @@ done
 #
 # 기본 데이터의 내용을 바꿔야 한다면 seed.sql을 고치는 것이 아니라 새 마이그레이션
 # 파일을 더한다 — 마이그레이션과 완전히 같은 규칙이다.
+# 기본 데이터가 실제로 들어 있어 보이는지 본다. seed.sql이 채우는 네 곳을 모두
+# 확인한다 — 하나라도 비어 있으면 "seed가 끝까지 적용된 적이 없다"로 본다.
+#
+# 왜 네 곳을 다 보는가: seed.sql은 site_settings → weather_criteria →
+# alert_settings → departments 순서로 넣는다. 첫 설치가 seed 도중에 끊기면
+# 앞쪽만 채워지고 departments가 비는 모양이 가장 흔하다. 앞의 세 개만 보면
+# 정확히 그 상태를 "다 들어갔다"고 통과시킨다.
+#
+# 왜 행 개수가 아니라 "비었는가"만 보는가: 운영자가 화면에서 부서를 지우거나
+# 특보 기준을 정리해 두면 개수는 정당하게 줄어든다. 개수로 판정하면 그 편집을
+# "덜 들어갔다"로 오해해 다시 채워 넣는다 — 이번 라운드에서 고친 바로 그 사고다.
+SEED_PRESENT="select case when
+     exists (select 1 from site_settings)
+ and exists (select 1 from weather_criteria)
+ and exists (select 1 from alert_settings)
+ and exists (select 1 from departments)
+   then 1 else 0 end"
+
+# seed 적용과 그 기록을 한 트랜잭션에 묶는다. 이렇게 하지 않으면 두 가지가
+# 각각 사고가 된다.
+#  1) seed.sql 도중에 끊기면 절반만 커밋된 채 남는다(seed.sql에는 begin/commit이
+#     없어 문장마다 자동 커밋된다). 그 반쪽 상태가 다음 실행에서 확정될 수 있다.
+#  2) seed는 적용됐는데 기록 전에 끊기면 다음 실행이 seed를 한 번 더 적용한다
+#     (seed.sql이 idempotent라 데이터는 안 늘지만, 그 사이 운영자가 지운 것이
+#     되살아난다).
+# psql은 -f와 -c를 준 순서대로 실행하므로 아래는 "seed 적용 → 기록" 순서로
+# 한 트랜잭션 안에서 돈다. 중간에 끊기면 통째로 없던 일이 된다.
+apply_seed() {
+  echo "→ seed.sql 적용(기본 부서·특보 기준·알림 설정)"
+  command psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q --single-transaction \
+    -f "$DB_DIR/seed.sql" \
+    -c "insert into schema_migrations (filename) values ('seed.sql') on conflict do nothing"
+}
+
 if [ -f "$DB_DIR/seed.sql" ]; then
+  seed_present=$(sql "$SEED_PRESENT" -tA)
   seed_done=$(sql "select count(*) from schema_migrations where filename = 'seed.sql'" -tA)
 
-  # seed 기록을 붙이기 전 버전으로 설치된 곳: 추적 표에는 이미 마이그레이션이
-  # 기록돼 있는데(applied_count > 0) seed 기록만 없다. 기본 데이터는 그때 이미
-  # 들어갔으므로 다시 적용하지 않고 기록만 남긴다 — 다시 적용하면 그동안
-  # 운영자가 지우거나 이름을 바꾼 부서가 마지막으로 한 번 되살아난다.
-  # (applied_count는 이 실행에서 마이그레이션을 적용하기 "전"의 값이다.
-  #  새로 설치하는 경우에는 0이므로 이 분기에 걸리지 않고 아래에서 정상 적용된다.)
-  if [ "$seed_done" = "0" ] && [ "$applied_count" != "0" ]; then
+  if [ "$seed_present" = "0" ]; then
+    # 기본 데이터가 통째로 비어 있다. 기록이 있든 없든 다시 넣는다.
+    #
+    # 이 갈래가 필요한 이유: 첫 설치가 마지막 마이그레이션을 기록한 직후(수십 ms)나
+    # seed 적용 도중에 끊기면, 겉모습이 "기록을 붙이기 전 버전으로 설치된 곳"과
+    # 똑같다(마이그레이션은 기록됨, seed는 미기록, 그러나 기본 데이터는 없음).
+    # 거기서 기록만 남기면 기본 부서·특보 기준·관측 지점이 **영원히** 안 들어간다.
+    # site_settings가 비면 관측 좌표가 없어 수집이 시작되지 않고, weather_criteria가
+    # 비면 특보가 절대 뜨지 않는데, 컨테이너는 healthy고 /api/health/deep은 200이다 —
+    # 경보 시스템이 아무 경보도 내지 않으면서 점검은 전부 초록인 상태다.
+    #
+    # 기록을 무시하고 넣는 이유: 그 사고를 이미 겪어 "적용됨"으로 잘못 기록된
+    # 데이터베이스도 다음 실행에서 스스로 낫는다. 재적용 방지를 붙이기 전 동작이
+    # 가지고 있던 자가 치유 성질을 이 경우에 한해 되살린다.
+    #
+    # 이 갈래가 돌면 seed가 통째로 다시 적용되므로, 운영자가 그 사이 지운 기본값도
+    # 함께 돌아온다. 네 곳 중 하나라도 통째로 비었다는 것은 시스템이 아예 동작할 수
+    # 없는 상태(수집도 특보도 불가)라, 기본값을 되살리는 쪽이 낫다고 본다.
+    # 정상 운영 중에는 이 갈래에 닿지 않는다 — 부서를 몇 개 지우거나 기준을
+    # 정리해도 "비어 있음"이 되지는 않기 때문이다.
+    if [ "$seed_done" != "0" ]; then
+      echo "기본 데이터가 비어 있는데 적용됨으로 기록돼 있습니다 — 다시 넣습니다."
+    fi
+    apply_seed
+  elif [ "$seed_done" = "0" ]; then
+    # 데이터는 들어 있는데 기록만 없다: seed 기록을 붙이기 전 버전으로 설치된 곳이다.
+    # 다시 적용하지 않고 기록만 남긴다 — 다시 적용하면 그동안 운영자가 지우거나
+    # 이름을 바꾼 부서가 마지막으로 한 번 되살아난다.
     sql "insert into schema_migrations (filename) values ('seed.sql') on conflict do nothing" -q
-    seed_done=1
     echo "기본 데이터(seed)는 이미 적용된 것으로 기록합니다."
-  fi
-
-  if [ "$seed_done" = "0" ]; then
-    echo "→ seed.sql 적용(기본 부서·특보 기준·알림 설정)"
-    command psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$DB_DIR/seed.sql"
-    sql "insert into schema_migrations (filename) values ('seed.sql')" -q
   else
     echo "기본 데이터(seed)는 첫 설치 때 이미 들어갔습니다 — 건너뜁니다."
   fi
