@@ -131,24 +131,47 @@ orgRouter.delete("/departments/:id", requireAdmin, async (req, res) => {
 // 합친다 — select 목록에 status만 두고 password_hash 등 민감한 컬럼은 건드리지 않는다.
 // 계정이 아직 없는(사전 등록만 된) 직원은 auth_user_id가 null이라 조회 대상에서
 // 빠지고 account_status가 null로 내려간다 — 화면이 "미가입"과 "비활성"을 구분할 수 있다.
+//
+// 잠금 상태(account_locked, account_lock_count)도 함께 붙인다(QA W-17). 잠금은
+// 지금까지 어느 화면에도 나오지 않았고, 관리자 화면은 잠긴 계정을 여전히
+// "사용 중"이라고 적극적으로 말했다 — 이메일만 아는 사람이 15분마다 5번씩 틀려
+// 승인권자를 무기한 잠가 두어도 관리자는 알 방법이 없다. 누적 횟수까지 보여야
+// "한 번 잊었다"와 "누가 겨냥하고 있다"를 구분할 수 있다.
+type AccountInfo = {
+  status: string;
+  locked: boolean;
+  lock_count: number;
+};
+
 async function withAccountStatus<T extends { auth_user_id: string | null }>(
   rows: T[],
-): Promise<(T & { account_status: string | null })[]> {
+): Promise<(T & { account_status: string | null; account_locked: boolean; account_lock_count: number })[]> {
+  const empty = { account_status: null, account_locked: false, account_lock_count: 0 };
   const accountIds = [...new Set(rows.map((r) => r.auth_user_id).filter((id): id is string => id !== null))];
   if (accountIds.length === 0) {
-    return rows.map((r) => ({ ...r, account_status: null }));
+    return rows.map((r) => ({ ...r, ...empty }));
   }
-  const statusById = await withService(async (q) => {
+  const byId = await withService(async (q) => {
     const { rows: accRows } = await q.query(
-      "select id, status from auth_accounts where id = any($1::uuid[])",
+      `select id, status, lock_count,
+              (locked_until is not null and locked_until > now()) as locked
+         from auth_accounts where id = any($1::uuid[])`,
       [accountIds],
     );
-    return new Map<string, string>(accRows.map((a: { id: string; status: string }) => [a.id, a.status]));
+    return new Map<string, AccountInfo>(
+      accRows.map((a: { id: string } & AccountInfo) => [a.id, { status: a.status, locked: a.locked, lock_count: a.lock_count }]),
+    );
   });
-  return rows.map((r) => ({
-    ...r,
-    account_status: r.auth_user_id ? (statusById.get(r.auth_user_id) ?? null) : null,
-  }));
+  return rows.map((r) => {
+    const acc = r.auth_user_id ? byId.get(r.auth_user_id) : undefined;
+    if (!acc) return { ...r, ...empty };
+    return {
+      ...r,
+      account_status: acc.status,
+      account_locked: acc.locked,
+      account_lock_count: acc.lock_count,
+    };
+  });
 }
 
 // role은 콤마로 여러 값을 받는다(Criteria.tsx가 admin,approver만 뽑아 쓰는 것과

@@ -1,7 +1,8 @@
 import { Router } from "express";
+import { randomBytes } from "node:crypto";
 import { withService, UUID } from "../db.ts";
 import { hash, verify, temporaryPassword } from "./password.ts";
-import { issue, lookup, revoke } from "./session.ts";
+import { issue, lookup, revoke, tokenHash } from "./session.ts";
 import { COOKIE, requireAuth, requireAdmin } from "./middleware.ts";
 import { isAllowedEmailDomain, isValidEmailShape } from "./emailDomain.ts";
 import { linkKakaoworkUserId } from "../kakaoLink.ts";
@@ -19,6 +20,16 @@ const TEMP_PASSWORD_HOURS = 72;
 // 테스트로 묶는다(server/test/auth.test.ts의 "비밀번호 최소 길이"). 서버가
 // 최종 관문이므로, 화면 검사가 없어도 여기서 반드시 막힌다.
 export const MIN_PASSWORD = 10;
+
+// 없는 계정으로 로그인을 시도했을 때 쓰는 더미 해시(QA W-28). 아무도 모르는 임의
+// 값을 한 번만 해싱해 두고 재사용한다 — 원문을 알 수 없으니 이 해시로는 어떤
+// 비밀번호도 통과하지 못하고, 검증 비용(argon2)만 실재 계정과 같아진다.
+// 프로세스 기동 시점이 아니라 첫 실패 로그인 때 한 번 계산한다(기동을 늦추지 않는다).
+let dummyHashPromise: Promise<string> | null = null;
+function dummyHash(): Promise<string> {
+  dummyHashPromise ??= hash(randomBytes(32).toString("base64url"));
+  return dummyHashPromise;
+}
 
 export const authRouter = Router();
 
@@ -119,6 +130,11 @@ authRouter.post("/login", async (req, res) => {
       // 어긋난 만큼 판정이 틀린다 — 시계 도메인을 하나로 묶는다.
       `select id, password_hash, status, failed_attempts, must_change_password,
               (locked_until is not null and locked_until > now()) as is_locked,
+              -- 남은 잠금 시간을 분으로 함께 내려준다(QA W-18). 화면이 "몇 분 뒤에
+              -- 다시" 를 말할 수 있어야 한다 — 그 정보가 매뉴얼에만 있으면 잠긴
+              -- 사람은 못 본다. 올림이라 0분이 나오지 않는다(1분 미만도 "1분").
+              greatest(1, ceil(extract(epoch from (locked_until - now())) / 60))::int
+                as locked_minutes,
               (must_change_password
                  and temp_password_expires_at is not null
                  and temp_password_expires_at <= now()) as temp_expired
@@ -131,15 +147,30 @@ authRouter.post("/login", async (req, res) => {
   // 계정이 없을 때와 비밀번호가 틀렸을 때의 응답을 같게 유지한다.
   // 다르면 어떤 이메일이 가입돼 있는지 캐낼 수 있다.
   const deny = () => res.status(401).json({ error: "로그인할 수 없습니다" });
-  if (!account) return deny();
+  if (!account) {
+    // 문구는 같아도 **시간이 달랐다**(QA W-28). 없는 계정은 argon2 검증을 통째로
+    // 건너뛰어 즉시 401이 나가고, 있는 계정은 해시 검증만큼(수십 ms) 늦게 나간다 —
+    // 위 주석이 막으려던 "어떤 이메일이 가입돼 있는지 캐내기"가 시간 축에서 그대로
+    // 열려 있었다. 더미 해시로 같은 비용을 치른다.
+    await verify(await dummyHash(), String(password ?? ""));
+    return deny();
+  }
 
   if (account.is_locked) {
-    return res.status(423).json({ error: "잠시 후 다시 시도해 주세요" });
+    // 로그인 실패와 잠금이 같은 문구("잠시 후 다시 시도해 주세요")로 나가던 것을
+    // 가른다(QA W-18). 사용자는 비밀번호를 계속 틀렸다고 믿고 계속 시도해 잠금을
+    // 연장했다. 계정 존재 여부는 이 응답(423)이 이미 드러내고 있던 것이라 새로
+    // 흘리는 정보는 없다 — 사내망 전용 전제에서 사용성을 택한다.
+    return res.status(423).json({
+      error: `비밀번호를 ${MAX_ATTEMPTS}회 잘못 입력해 계정이 잠겼습니다. ` +
+        `약 ${account.locked_minutes}분 뒤에 다시 시도하거나 관리자에게 문의해 주세요`,
+      locked_minutes: account.locked_minutes,
+    });
   }
 
   if (!(await verify(account.password_hash, String(password ?? "")))) {
-    await withService((q) =>
-      q.query(
+    const locked = await withService(async (q) => {
+      const { rows } = await q.query(
         // 잠금이 이미 만료된 상태(locked_until이 과거)라면 실패 횟수를 이어 올리지
         // 않고 1부터 다시 센다. 그냥 이어 올리면(성공해야만 0으로 돌아가는데 잠긴
         // 동안은 성공할 수 없으므로) 잠금이 풀린 직후 딱 한 번만 틀려도
@@ -150,7 +181,13 @@ authRouter.post("/login", async (req, res) => {
         `update auth_accounts a
             set failed_attempts = t.next_failed,
                 locked_until = case when t.next_failed >= $2
-                               then now() + ($3 || ' minutes')::interval else null end
+                               then now() + ($3 || ' minutes')::interval else null end,
+                -- 잠금이 실제로 걸리는 순간에만 누적 횟수를 올린다(QA W-17). 한 번은
+                -- 사람이 비밀번호를 잊은 것이고 열 번은 누가 그 계정을 겨냥하고
+                -- 있다는 뜻인데, locked_until 한 값만으로는 그 둘을 구분할 수 없다.
+                -- 관리자 화면(직원 관리)이 이 값을 그대로 보여 준다.
+                lock_count = case when t.next_failed >= $2 then lock_count + 1 else lock_count end,
+                last_locked_at = case when t.next_failed >= $2 then now() else last_locked_at end
            from (
              select id,
                     case when locked_until is not null and locked_until <= now()
@@ -160,10 +197,18 @@ authRouter.post("/login", async (req, res) => {
                from auth_accounts
               where id = $1
            ) t
-          where a.id = t.id`,
+          where a.id = t.id
+        returning a.lock_count, (a.locked_until is not null and a.locked_until > now()) as is_locked`,
         [account.id, MAX_ATTEMPTS, String(LOCK_MINUTES)],
-      ),
-    );
+      );
+      return rows[0] ?? null;
+    });
+    // 로그에도 남긴다 — 운영 안내서가 "로그 마지막 몇 줄에 답이 있다"고 안내하는데,
+    // 반복 잠금은 지금까지 로그에 흔적이 하나도 없었다. 관리자가 화면을 보고 있지
+    // 않아도 나중에 되짚을 수 있어야 한다.
+    if (locked?.is_locked) {
+      console.warn(`[auth] 계정 잠금: ${email} (누적 ${locked.lock_count}회, ${LOCK_MINUTES}분)`);
+    }
     return deny();
   }
 
@@ -211,6 +256,17 @@ authRouter.post("/change-password", requireAuth, async (req, res) => {
   if (typeof next !== "string" || next.length < MIN_PASSWORD) {
     return res.status(400).json({ error: `비밀번호는 ${MIN_PASSWORD}자 이상이어야 합니다` });
   }
+  // 같은 값으로의 "변경"을 거부한다(QA W-05a). 예전에는 쪽지에 적힌 임시 비밀번호를
+  // 그대로 두 칸에 옮겨 적으면 204가 나갔고, 비밀번호는 임시 값 그대로인데
+  // must_change_password가 풀리고 temp_password_expires_at이 지워져 **그 값이
+  // 영구히 유효해졌다.** 이 기능이 존재하는 이유(위 TEMP_PASSWORD_HOURS 주석)가
+  // 정확히 그 상태를 막는 것인데, 사용자가 가장 쉬운 길로 걸어가면 그대로 만들어졌다.
+  // 그리고 사용자는 그렇게 한다 — 화면에도 서버에도 안내가 없었으므로.
+  if (typeof current === "string" && next === current) {
+    return res.status(400).json({
+      error: "지금 쓰는 비밀번호와 다른 값으로 바꿔야 합니다. 임시 비밀번호를 그대로 다시 쓸 수 없습니다",
+    });
+  }
   const account = await withService(async (q) => {
     const { rows } = await q.query("select id, password_hash from auth_accounts where id = $1", [
       req.user!.accountId,
@@ -220,16 +276,27 @@ authRouter.post("/change-password", requireAuth, async (req, res) => {
   if (!(await verify(account.password_hash, String(current ?? "")))) {
     return res.status(401).json({ error: "현재 비밀번호가 맞지 않습니다" });
   }
-  await withService(async (q) =>
+  const nextHash = await hash(next);
+  await withService(async (q) => {
     // 임시 비밀번호를 실제로 바꿨으니 만료 시각도 지운다 — 남겨 두면 본인이 정한
     // 비밀번호가 임시 비밀번호의 만료를 물려받아 3일 뒤 로그인이 막힌다.
-    q.query(
+    await q.query(
       `update auth_accounts
           set password_hash = $2, must_change_password = false, temp_password_expires_at = null
         where id = $1`,
-      [account.id, await hash(next)],
-    ),
-  );
+      [account.id, nextHash],
+    );
+    // 다른 기기의 세션을 끊는다(QA W-05b). 관리자 재설정 경로(reset-password)는
+    // 이미 이걸 하는데 **정작 본인 경로에만 없었다** — 비밀번호가 샜다고 판단해
+    // 스스로 바꾼 사람이 실제로는 침입자의 세션(최대 12시간)을 그대로 두게 된다.
+    // 지금 쓰는 세션만 남긴다: 여기서 전부 끊으면 비밀번호를 바꾼 사용자가
+    // 그 자리에서 튕겨 나가 다시 로그인해야 한다.
+    const token = req.cookies?.[COOKIE];
+    await q.query(
+      "delete from auth_sessions where account_id = $1 and token_hash <> $2",
+      [account.id, tokenHash(String(token ?? ""))],
+    );
+  });
   res.status(204).end();
 });
 
@@ -257,7 +324,18 @@ adminUserRouter.patch("/:id/status", requireAuth, requireAdmin, async (req, res)
   }
   const found = await withService(async (q) => {
     const { rows } = await q.query(
-      "update auth_accounts set status = $2 where id = $1 returning id",
+      // 다시 활성화할 때는 잠금도 함께 푼다(QA W-17). 예전에는 status만 바뀌어서,
+      // 잠긴 계정을 관리자가 비활성화했다 활성화해도 locked_until이 그대로 남았다 —
+      // 관리자는 풀어 줬다고 믿고 직원은 계속 못 들어온다. 웹에서 잠금을 푸는 다른
+      // 길은 임시 비밀번호 발급뿐이라(안내서 §6-3은 서버 터미널 SQL만 알려 준다)
+      // 비기술 운영자에게는 막다른 길이었다. lock_count는 지우지 않는다 —
+      // 그 계정이 몇 번 잠겼는지는 관리자가 계속 볼 수 있어야 한다.
+      `update auth_accounts
+          set status = $2,
+              failed_attempts = case when $2 = 'active' then 0 else failed_attempts end,
+              locked_until = case when $2 = 'active' then null else locked_until end
+        where id = $1
+        returning id`,
       [targetId, status],
     );
     if (rows.length === 0) return false;
@@ -290,6 +368,21 @@ adminUserRouter.post("/:id/reset-password", requireAuth, requireAdmin, async (re
   if (req.user!.accountId.toLowerCase() === targetId.toLowerCase()) {
     return res.status(403).json({ error: "본인 계정은 이 방법으로 재설정할 수 없습니다" });
   }
+  // 비활성 계정에는 발급하지 않는다(QA W-27). 예전에는 그대로 발급됐고, 그 값을
+  // 전해 받은 사람은 로그인에서 403("사용할 수 없는 계정입니다")을 만났다 —
+  // 관리자는 재설정해 줬다고 믿고 직원은 못 들어온다. 아무도 원인을 모른다.
+  // 400이 아니라 409다: 요청 자체는 형식이 맞고, 계정의 **상태**가 안 맞는다.
+  const target = await withService(async (q) => {
+    const { rows } = await q.query("select id, status from auth_accounts where id = $1", [targetId]);
+    return rows[0] ?? null;
+  });
+  if (!target) return res.status(404).json({ error: "계정을 찾을 수 없습니다" });
+  if (target.status !== "active") {
+    return res.status(409).json({
+      error: "비활성화된 계정입니다. 먼저 계정을 활성화한 뒤에 임시 비밀번호를 발급하세요",
+    });
+  }
+
   const temp = temporaryPassword();
   const found = await withService(async (q) => {
     const { rows } = await q.query(

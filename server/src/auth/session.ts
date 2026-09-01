@@ -5,6 +5,13 @@ const TTL_HOURS = 12;
 
 const hashToken = (t: string) => createHash("sha256").update(t).digest("hex");
 
+/**
+ * 쿠키의 원문 토큰을 DB에 저장된 형태로 바꾼다. 세션을 "지금 이 세션만 빼고"
+ * 지우는 곳(auth/routes.ts의 change-password)이 필요로 한다 — 해시 함수를 그쪽에
+ * 복사하면 두 정의가 언젠가 어긋나고, 어긋나면 조용히 **현재 세션까지 지워진다**.
+ */
+export const tokenHash = (token: string): string => hashToken(token);
+
 /** 원문 토큰을 돌려주고 DB에는 해시만 남긴다. */
 export async function issue(accountId: string): Promise<string> {
   const token = randomBytes(32).toString("base64url");
