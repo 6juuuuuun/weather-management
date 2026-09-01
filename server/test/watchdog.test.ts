@@ -71,6 +71,67 @@ async function clearNotifiable(): Promise<void> {
   });
 }
 
+// checkHealth는 이제 "판정과 내용이 살아 있는가"도 본다(QA W-02·W-03): 내용이 있는
+// 행동지침이 0건이거나, 지침이 있는 부서에 수신자가 0명이면 특보를 만들어도 아무에게도
+// 가지 않는다. 그래서 "정상"을 확인하는 테스트는 지침 한 건과 그 부서 수신자 한 명이
+// 있어야 한다. 시드는 지침을 심지 않으므로(db/seed.sql) 이 파일 전용으로 만들고 지운다.
+const GUIDE = { dept: "zzwatchdog-지침부서", email: "zzwatchdog-recv@gonjiam.com" };
+
+async function ensureGuideline(): Promise<void> {
+  await withService(async (q) => {
+    const { rows: d } = await q.query(
+      `insert into departments (name)
+       select $1 where not exists (select 1 from departments where name = $1)
+       returning id`,
+      [GUIDE.dept],
+    );
+    const deptId =
+      d[0]?.id ??
+      (await q.query("select id from departments where name = $1", [GUIDE.dept])).rows[0].id;
+    const { rows: e } = await q.query(
+      `insert into employees (name, email, role) values ('감시수신', $1, 'staff')
+       on conflict (email) do update set name = excluded.name returning id`,
+      [GUIDE.email],
+    );
+    await q.query(
+      `insert into action_guidelines (department_id, kind, grade, staff_actions, guest_notice)
+       values ($1, 'rain', 'watch', $2, '안내문')
+       on conflict (department_id, kind, grade) do update set staff_actions = excluded.staff_actions`,
+      [deptId, ["제설 대기"]],
+    );
+    await q.query(
+      "insert into recipients (department_id, employee_id) values ($1, $2) on conflict do nothing",
+      [deptId, e[0].id],
+    );
+  });
+}
+
+async function clearGuideline(): Promise<void> {
+  await withService(async (q) => {
+    await q.query(
+      "delete from action_guidelines where department_id in (select id from departments where name = $1)",
+      [GUIDE.dept],
+    );
+    await q.query(
+      "delete from recipients where department_id in (select id from departments where name = $1)",
+      [GUIDE.dept],
+    );
+    await q.query("delete from employees where email = $1", [GUIDE.email]);
+    await q.query("delete from departments where name = $1", [GUIDE.dept]);
+  });
+}
+
+/** "정상"의 전제 한 벌 — 알릴 사람 + 보낼 내용. */
+async function ensureAlertable(): Promise<void> {
+  await ensureNotifiable();
+  await ensureGuideline();
+}
+
+async function clearAlertable(): Promise<void> {
+  await clearNotifiable();
+  await clearGuideline();
+}
+
 // heartbeats는 'weather-tick'/'remind-tick' 두 행뿐인 런타임 상태값이고, 다음
 // 주기에 다시 채워진다. jobs.test.ts·scheduler.test.ts도 같은 방식으로 지운다.
 // weather_observations는 위 표식이 붙은 이 파일의 행만 지운다.
@@ -91,8 +152,8 @@ afterAll(async () => {
 describe("상태 점검", () => {
   // "정상"을 확인하는 테스트들은 알릴 수 있는 수신자가 있어야 한다(아래 별도
   // describe가 그 판정 자체를 검증한다).
-  beforeEach(ensureNotifiable);
-  afterEach(clearNotifiable);
+  beforeEach(ensureAlertable);
+  afterEach(clearAlertable);
 
   // 자체 서버는 조용히 죽는다. 관리형과 달리 아무도 안 알려준다.
   it("수집이 오래 멈췄으면 문제로 본다", async () => {
@@ -341,7 +402,7 @@ describe("알릴 수 있는 사람이 없으면 불건강이다", () => {
       await healthyCollection(q);
       await clearRecipients(q);
     });
-    await ensureNotifiable();
+    await ensureAlertable();
     const out = await checkHealth();
     expect(out.ok).toBe(true);
     expect(out.reasons.join()).not.toMatch(/카카오워크/);
@@ -453,8 +514,8 @@ describe("문제가 있으면 알린다", () => {
 });
 
 describe("GET /api/health/deep", () => {
-  beforeEach(ensureNotifiable);
-  afterEach(clearNotifiable);
+  beforeEach(ensureAlertable);
+  afterEach(clearAlertable);
 
   it("정상이면 200과 ok:true를 준다", async () => {
     await withService(async (q) => {
@@ -491,5 +552,141 @@ describe("GET /api/health/deep", () => {
     const res = await request(app).get("/api/health/deep");
     expect(res.status).not.toBe(401);
     expect(res.headers["content-type"]).toMatch(/json/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "알릴 수 없는데 전부 초록" — QA가 세 갈래로 재현한 상태(W-02·W-03)
+// ---------------------------------------------------------------------------
+//
+// 셋 다 실측 결과가 200 {"ok":true}였다. 수집 통로(하트비트·결측·연결)만 보던
+// 점검에 **판정과 내용**을 더한다: 종류가 전부 꺼져 있는가, 지침이 있는가,
+// 그 지침을 받을 사람이 있는가, 그리고 앱이 스스로 남긴 실패 기록.
+describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
+  /** 수집·전달 통로는 완전히 정상인 상태 — 그래야 새 사유만 남는다. */
+  async function healthyPipes(): Promise<void> {
+    await ensureNotifiable();
+    await withService(async (q) => {
+      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20, rain: 0 }]);
+    });
+  }
+
+  afterEach(async () => {
+    await clearAlertable();
+    // 알림 설정은 시드 행이다 — 지우지 않고 기본값(전부 켜짐)으로 되돌린다.
+    await withService((q) => q.query("update alert_settings set enabled = true"));
+  });
+
+  it("알림 설정 4종이 모두 꺼져 있으면 문제로 본다", async () => {
+    await healthyPipes();
+    await ensureGuideline();
+    await withService((q) => q.query("update alert_settings set enabled = false"));
+    const out = await checkHealth();
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/4종이 모두 꺼져/);
+  });
+
+  // 계절에 따라 폭염을 꺼 두는 것은 정상 운영이다. 여기까지 사유로 울리면
+  // 운영자가 6시간마다 오는 메시지를 곧 무시하게 되고 진짜 사고도 함께 묻힌다.
+  it("한 종류만 꺼 두는 것은 사유가 아니다", async () => {
+    await healthyPipes();
+    await ensureGuideline();
+    await withService((q) => q.query("update alert_settings set enabled = false where kind = 'heat'"));
+    const out = await checkHealth();
+    expect(out.ok).toBe(true);
+    expect(out.reasons.join()).not.toMatch(/꺼져/);
+  });
+
+  // 설치 직후의 기본 상태다. 지침이 0건이면 초안(composeDraft)이 빈 배열이라
+  // 승인해도 나갈 곳이 없다 — 그런데 지금까지 어떤 지표도 그것을 말하지 않았다.
+  it("내용이 있는 지침이 한 건도 없으면 문제로 본다", async () => {
+    await healthyPipes();
+    const out = await checkHealth();
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/행동지침이 한 건도 없습니다/);
+  });
+
+  // 지침을 지울 방법이 없어서 내용만 비워 둔 경우(QA W-22). 행은 남아 있으므로
+  // "지침 1건"으로 세면 초록이 되는데, 실제 DM은 제목만 나간다. 없는 것으로 센다.
+  it("내용이 빈 지침만 있으면 지침이 없는 것과 같게 본다", async () => {
+    await healthyPipes();
+    await ensureGuideline();
+    await withService((q) =>
+      q.query("update action_guidelines set staff_actions = '{}', guest_notice = ''"),
+    );
+    const out = await checkHealth();
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/행동지침이 한 건도 없습니다/);
+  });
+
+  // "0명에게 발송 성공"의 뿌리. 지침은 있고 승인 버튼도 켜지는데 그 부서에
+  // 수신자가 없어 실제 발송이 0건이다. fail_count는 0이고 이력은 초록이다.
+  it("지침은 있는데 그 부서 수신자가 0명이면 문제로 본다", async () => {
+    await healthyPipes();
+    await ensureGuideline();
+    await withService((q) =>
+      q.query(
+        "delete from recipients where department_id in (select id from departments where name = $1)",
+        [GUIDE.dept],
+      ),
+    );
+    const out = await checkHealth();
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/수신자가 한 명도 없는 부서가 1곳/);
+  });
+
+  // 앱이 "이번 수집 실패했다"고 스스로 적어 둔 값을 점검이 안 읽으면, 수집은
+  // 매시간 실패하는데 last_run_at은 갱신되므로 영원히 초록이다(QA W-03).
+  it("마지막 수집이 실패로 기록돼 있으면 문제로 본다", async () => {
+    await ensureAlertable();
+    await withService(async (q) => {
+      await q.query(
+        "insert into heartbeats (name, last_run_at, ok, note) values ('weather-tick', now(), false, 'missing')",
+      );
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20, rain: 0 }]);
+    });
+    const out = await checkHealth();
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/마지막 수집·판정이 실패/);
+    expect(out.reasons.join()).toMatch(/missing/);
+  });
+
+  // 실제로 일어나는 모양은 "전부 null"이 아니라 "항목 하나만 null"이다:
+  // RN1 → RN01 하나로 폭우와 폭설이 동시에 죽는데 기온·풍속은 멀쩡하다.
+  // 네 값이 전부 죽어야만 우는 판정은 이 상태를 통째로 놓친다.
+  it("강수 항목만 계속 비어 와도 잡는다", async () => {
+    await ensureAlertable();
+    await withService(async (q) => {
+      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+      await insertObs(q, [
+        { ago: "2 hours", missing: false, temp: 20 },
+        { ago: "1 hour", missing: false, temp: 21 },
+        { ago: "0 seconds", missing: false, temp: 22 },
+      ]);
+    });
+    const out = await checkHealth();
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/강수량/);
+    // 전부 죽은 것이 아니므로 "값이 전부 비어" 사유로 뭉뚱그리면 안 된다 —
+    // 운영자가 기상청 응답 전체가 죽은 줄 알고 엉뚱한 곳을 본다.
+    expect(out.reasons.join()).not.toMatch(/값이 전부 비어/);
+  });
+
+  it("네 항목이 다 들어오면 항목 사유는 없다", async () => {
+    await ensureAlertable();
+    await withService(async (q) => {
+      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+      for (const ago of ["2 hours", "1 hour", "0 seconds"])
+        await q.query(
+          `insert into weather_observations
+             (observed_at, temp_c, rain_mm_per_hr, wind_ms, humidity_pct, missing, raw)
+           values (now() - ($1)::interval, 20, 0, 2, 60, false, $2)`,
+          [ago, JSON.stringify(MARK)],
+        );
+    });
+    const out = await checkHealth();
+    expect(out.ok).toBe(true);
+    expect(out.reasons.join()).not.toMatch(/비어/);
   });
 });

@@ -38,11 +38,24 @@ export async function checkHealth(deps: { runner?: Runner } = {}): Promise<Healt
            (select now() - last_run_at > ($1 || ' minutes')::interval
               from heartbeats where name = 'weather-tick'),
            true
-         ) as stale`,
+         ) as stale,
+         coalesce((select not ok from heartbeats where name = 'weather-tick'), false) as failed,
+         (select note from heartbeats where name = 'weather-tick') as note`,
         [String(COLLECT_STALE_MIN)],
       );
       if (beat[0].stale) {
         reasons.push(`관측 수집이 ${COLLECT_STALE_MIN}분 넘게 멈춰 있습니다`);
+      }
+
+      // 앱이 스스로 "이번 수집은 실패했다"고 적어 둔 것(heartbeats.ok = false)을
+      // 여기서 읽지 않으면, 그 기록은 아무 데도 쓰이지 않는 컬럼이 된다(QA W-03).
+      // weatherTick은 수집에 실패해도 last_run_at을 갱신하므로 위의 "멈춰 있습니다"
+      // 판정에는 절대 걸리지 않는다 — 실패한 채로 계속 도는 상태는 오직 이 값만이
+      // 말해 준다. 액션 실패(W-12)도 같은 자리에 기록되므로 함께 드러난다.
+      if (beat[0].failed) {
+        reasons.push(
+          `마지막 수집·판정이 실패로 끝났습니다${beat[0].note ? ` (${beat[0].note})` : ""}`,
+        );
       }
 
       // 수집 자체는 도는데 기상청 응답이 계속 비어 오는 경우가 있다(키 만료,
@@ -68,15 +81,34 @@ export async function checkHealth(deps: { runner?: Runner } = {}): Promise<Healt
       // 워치독은 정확히 이런 "조용히 멈춤"을 잡으려고 새로 만든 안전망이므로
       // 여기서 닫는다. 판정은 결측과 분리한다(결측 행은 원래 값이 비어 있어
       // 위 사유와 중복으로 울린다) — missing=false인데 값이 전부 없을 때만이다.
-      const valueless = (r: Record<string, unknown>) =>
-        r.rain_mm_per_hr === null && r.temp_c === null && r.wind_ms === null && r.humidity_pct === null;
-      if (
-        recent.length >= MISSING_STREAK &&
-        recent.every((r: Record<string, unknown>) => r.missing === false && valueless(r))
-      ) {
-        reasons.push(
-          `최근 ${MISSING_STREAK}회 관측이 수집은 됐지만 값이 전부 비어 있습니다 (기상청 응답 형식이 바뀌었을 수 있습니다)`,
+      //
+      // **항목별로 본다**(QA W-03). 예전에는 "네 값이 전부 null"일 때만 울렸는데,
+      // 실제로 일어난 모양은 그게 아니다: 기상청이 `RN1` 하나만 `RN01`로 바꾸면
+      // 강수량만 null이 되고 기온·풍속·습도는 멀쩡히 들어온다. 그러면 폭우와
+      // 폭설 판정이 **동시에** 죽는데(둘 다 강수 항목에서 나온다) 워치독은
+      // 조용하다. 항목 하나가 연속으로 비어 오는 것 자체가 그 항목으로 나가는
+      // 특보 전부가 죽었다는 뜻이므로, 죽은 항목의 이름을 그대로 사유로 낸다.
+      const VALUE_FIELDS: [string, string][] = [
+        ["rain_mm_per_hr", "강수량"],
+        ["temp_c", "기온"],
+        ["wind_ms", "풍속"],
+        ["humidity_pct", "습도"],
+      ];
+      const collected = recent.filter((r: Record<string, unknown>) => r.missing === false);
+      if (collected.length >= MISSING_STREAK) {
+        const dead = VALUE_FIELDS.filter(([col]) =>
+          collected.every((r: Record<string, unknown>) => r[col] === null),
         );
+        if (dead.length === VALUE_FIELDS.length) {
+          reasons.push(
+            `최근 ${MISSING_STREAK}회 관측이 수집은 됐지만 값이 전부 비어 있습니다 (기상청 응답 형식이 바뀌었을 수 있습니다)`,
+          );
+        } else if (dead.length > 0) {
+          reasons.push(
+            `최근 ${MISSING_STREAK}회 관측에서 ${dead.map(([, label]) => label).join("·")} 항목만 계속 비어 옵니다 ` +
+              `(기상청 항목 이름이 바뀌었을 수 있습니다) — 그 항목으로 판정하는 특보가 뜨지 않습니다`,
+          );
+        }
       }
 
       // "알릴 수 있는 사람이 있는가"를 본다. 수집이 아무리 정상이어도 이 값이 0이면
@@ -91,6 +123,45 @@ export async function checkHealth(deps: { runner?: Runner } = {}): Promise<Healt
       } else if (counts.linked === 0) {
         reasons.push(
           `Alert 수신자 ${counts.total}명 중 카카오워크에 연결된 사람이 0명입니다 — 특보가 아무에게도 전달되지 않습니다`,
+        );
+      }
+
+      // 여기서부터는 "수집·전달 통로"가 아니라 **판정과 내용**이 살아 있는가를 본다.
+      // 셋 다 QA가 실제로 만들어 본 상태이고, 셋 다 `{"ok":true}`였다(QA W-02·W-03).
+
+      // (1) 알림 설정 4종이 전부 꺼져 있으면 판정 루프가 모든 종류를 건너뛴다
+      //     (shared/engine.ts의 `if (!s || !s.enabled) continue`). 폭우가 와도 특보가
+      //     한 건도 뜨지 않는다. 한두 종류를 계절에 따라 끄는 것은 정상 운영이므로
+      //     "전부 꺼짐"만 사유로 본다.
+      const { rows: settingRows } = await q.query(
+        "select count(*) filter (where enabled) as enabled_count, count(*) as total_count from alert_settings",
+      );
+      if (Number(settingRows[0]?.total_count) > 0 && Number(settingRows[0]?.enabled_count) === 0) {
+        reasons.push("알림 설정의 특보 4종이 모두 꺼져 있습니다 — 어떤 날씨에도 특보가 뜨지 않습니다");
+      }
+
+      // (2)(3) 행동지침과 부서 수신자. 지침이 0건이면 초안 자체가 빈 배열이라
+      //     승인해도 나갈 곳이 없고, 지침은 있는데 그 부서에 수신자가 0명이면
+      //     "0명에게 발송 성공"이 된다(QA W-02). 내용이 비어 있는 지침(인력 조정
+      //     지침도 고객 안내도 없는 행)은 제목만 있는 DM을 만들 뿐이므로
+      //     `composeDraft` 호출부와 같은 기준으로 **없는 것으로 센다**(QA W-22).
+      const { rows: guideRows } = await q.query(
+        `select count(*)::int as effective,
+                count(*) filter (
+                  where not exists (select 1 from recipients r where r.department_id = g.department_id)
+                )::int as no_recipient
+           from action_guidelines g
+          where cardinality(g.staff_actions) > 0 or g.guest_notice <> ''`,
+      );
+      const effective = Number(guideRows[0]?.effective);
+      const noRecipient = Number(guideRows[0]?.no_recipient);
+      if (effective === 0) {
+        reasons.push(
+          "내용이 있는 행동지침이 한 건도 없습니다 — 특보가 떠도 발송할 부서·내용이 만들어지지 않습니다",
+        );
+      } else if (noRecipient > 0) {
+        reasons.push(
+          `지침은 있는데 수신자가 한 명도 없는 부서가 ${noRecipient}곳입니다 — 그 부서 몫은 0명에게 발송됩니다`,
         );
       }
 
