@@ -85,9 +85,10 @@ Supabase(관리형 Postgres + Edge Functions) + Cloudflare 정적 호스팅으�
 
 | ![대시보드](design/previews/00-dashboard.png) | ![초안 검토·발송](design/previews/03-event-review.png) | ![로그인](design/previews/07-login.png) |
 |:---:|:---:|:---:|
-| 대시보드 — 셋업 체크리스트·승인 대기·관측값 | 초안 검토·발송 — 부서 블록 편집·승인 | 로그인 — 이메일 입력 → 카카오워크 DM 매직링크 |
+| 대시보드 — 셋업 체크리스트·승인 대기·관측값 | 초안 검토·발송 — 부서 블록 편집·승인 | 로그인 — 사내 이메일 + 비밀번호 |
 
 그 외 화면 미리보기는 `design/previews/`에 모두 있습니다 (기준 정의·지침 등록·발송 이력·알림 설정·직원 관리 등).
+미리보기 이미지 일부는 Supabase 시절에 찍은 것이라 로그인 화면 등은 지금 화면과 다를 수 있습니다.
 
 ## 2. 사전 준비
 

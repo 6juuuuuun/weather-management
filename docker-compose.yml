@@ -7,8 +7,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # 호스트 쪽 포트가 이미 쓰이고 있으면 .env에 POSTGRES_HOST_PORT=5443처럼 적는다.
+    # 이 파일을 직접 고치면 다음 git pull에서 충돌한다.
     ports:
-      - "127.0.0.1:5433:5432"   # 로컬 개발용. 서버 배치 시 제거한다
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"   # 로컬 개발용. 서버 배치 시 제거한다
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d weather"]
       interval: 5s
@@ -71,8 +73,10 @@ services:
       # console로 두면 카카오워크 대신 로그로 발송한다(시연·점검용).
       NOTIFY_CHANNEL: ${NOTIFY_CHANNEL:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    # 8080이 이미 쓰이고 있으면 .env에 APP_HOST_PORT=8090처럼 적는다.
+    # 이 파일을 직접 고치면 다음 git pull에서 충돌한다.
     ports:
-      - "8080:3000"
+      - "${APP_HOST_PORT:-8080}:3000"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health || exit 1"]
       interval: 10s
