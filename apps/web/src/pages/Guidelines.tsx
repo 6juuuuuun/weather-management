@@ -10,7 +10,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { ApiError } from "../lib/api/client";
 import { listDepartments, listEmployees, listRecipients, saveRecipients } from "../lib/api/org";
 import type { DepartmentRow, EmployeeRow, RecipientRow } from "../lib/api/org";
-import { guidelines as fetchGuidelines, saveGuidelines } from "../lib/api/content";
+import { guidelines as fetchGuidelines, saveGuidelines, deleteGuideline } from "../lib/api/content";
 import type { GuidelineRow } from "../lib/api/content";
 import type { Grade, Kind } from "../lib/types";
 import { ROLE_LABEL } from "../lib/roles";
@@ -83,6 +83,11 @@ export default function Guidelines() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  // 삭제 오류는 확인 모달 안에서만 보여준다. saveError를 함께 쓰면 모달과 본문에
+  // 같은 문장이 두 번 뜬다.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -162,8 +167,16 @@ export default function Guidelines() {
     setSaveError(null);
   }, [selectedDeptId, grade, kind, guidelines, recipients]);
 
-  function guidelineFor(deptId: string, g: Grade): GuidelineRow | undefined {
-    return guidelines.find((item) => item.department_id === deptId && item.grade === g);
+  // 종류(kind)까지 함께 본다. 예전에는 부서·등급만 봐서 폭우 탭에서 등록한 지침이
+  // 폭설 탭의 "등록됨" 표시로 그대로 나타났다 — 지침은 (부서 × 종류 × 등급)마다 별개다.
+  function guidelineFor(deptId: string, k: Kind, g: Grade): GuidelineRow | undefined {
+    return guidelines.find((item) => item.department_id === deptId && item.kind === k && item.grade === g);
+  }
+
+  // 내용이 비어 있는 지침은 "등록됨"이 아니다 — 실제 DM은 제목만 나가고(QA W-22),
+  // 서버의 발송 초안·상태 점검·대시보드 체크리스트도 같은 기준으로 센다.
+  function hasContent(g: GuidelineRow | undefined): boolean {
+    return !!g && (g.staff_actions.some((a) => a.trim() !== "") || g.guest_notice.trim() !== "");
   }
 
   function recipientCountFor(deptId: string): number {
@@ -203,6 +216,21 @@ export default function Guidelines() {
     setSaveError(null);
   }
 
+  async function handleDelete() {
+    if (!currentGuideline) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteGuideline(currentGuideline.id);
+      setGuidelines(await fetchGuidelines());
+      setDeleteOpen(false);
+    } catch (e) {
+      setDeleteError(e instanceof ApiError ? e.message : "지침 삭제에 실패했습니다.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   async function handleSave() {
     if (!selectedDeptId || !employee) return;
     setSaving(true);
@@ -240,7 +268,7 @@ export default function Guidelines() {
   const selectedGroup = selectedDept
     ? (departments.find((d) => d.id === selectedDept.parent_id) ?? null)
     : null;
-  const currentGuideline = selectedDeptId ? guidelineFor(selectedDeptId, grade) : undefined;
+  const currentGuideline = selectedDeptId ? guidelineFor(selectedDeptId, kind, grade) : undefined;
   // 수정자 이름. 예전에는 직원 목록에서 updated_by로 찾기만 해서, 그 사람이 삭제되면
   // 이름이 통째로 사라졌다(그리고 이제 삭제는 계정까지 지운다 — QA W-01, 결정 D-1).
   // 서버가 수정 시점에 스냅샷한 updated_by_name을 함께 내려주므로, 명부에 없는
@@ -332,8 +360,8 @@ export default function Guidelines() {
 
                     {!collapsedGroups[group.id] &&
                       leaves.map((leaf) => {
-                        const watchGuideline = guidelineFor(leaf.id, "watch");
-                        const warningGuideline = guidelineFor(leaf.id, "warning");
+                        const watchGuideline = hasContent(guidelineFor(leaf.id, kind, "watch"));
+                        const warningGuideline = hasContent(guidelineFor(leaf.id, kind, "warning"));
                         const count = recipientCountFor(leaf.id);
                         return (
                           <button
@@ -487,6 +515,13 @@ export default function Guidelines() {
 
                   {isAdmin && (
                     <div className="guidelines-footer">
+                      {/* 지침을 지울 수단이 없어 내용만 비워 두면, 그 부서 블록은 그대로
+                          만들어지고 제목만 있는 DM이 나갔다(QA W-22). 지우는 길을 연다. */}
+                      {currentGuideline && (
+                        <Button variant="ghost" onClick={() => setDeleteOpen(true)} disabled={saving || deleting}>
+                          지침 삭제
+                        </Button>
+                      )}
                       <Button variant="ghost" onClick={handleCancel} disabled={saving}>
                         취소
                       </Button>
@@ -500,6 +535,29 @@ export default function Guidelines() {
             </div>
           </div>
         </>
+      )}
+
+      {deleteOpen && selectedDept && currentGuideline && (
+        <Modal
+          title="이 지침을 삭제할까요?"
+          desc={`${selectedDept.name} · ${KIND_LABEL[kind]} ${GRADE_LABEL[grade]} 지침이 사라집니다. 이후 이 종류·등급의 특보가 떠도 이 부서는 발송 대상에서 빠집니다. 부서 수신자 지정은 그대로 남습니다.`}
+          onClose={() => {
+            setDeleteOpen(false);
+            setDeleteError(null);
+          }}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setDeleteOpen(false)} disabled={deleting}>
+                취소
+              </Button>
+              <Button variant="primary" onClick={handleDelete} disabled={deleting}>
+                {deleting ? "삭제 중…" : "삭제"}
+              </Button>
+            </>
+          }
+        >
+          {deleteError && <p className="guidelines-error">{deleteError}</p>}
+        </Modal>
       )}
 
       {searchOpen && selectedDept && (

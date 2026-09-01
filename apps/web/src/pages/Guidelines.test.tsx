@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { ApiError } from "../lib/api/client";
 import Guidelines from "./Guidelines";
@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   saveRecipients: vi.fn(),
   guidelines: vi.fn(),
   saveGuidelines: vi.fn(),
+  deleteGuideline: vi.fn(),
   siteSettings: vi.fn(),
   heartbeat: vi.fn(),
 }));
@@ -31,6 +32,7 @@ vi.mock("../lib/api/org", () => ({
 vi.mock("../lib/api/content", () => ({
   guidelines: (...args: unknown[]) => mocks.guidelines(...args),
   saveGuidelines: (...args: unknown[]) => mocks.saveGuidelines(...args),
+  deleteGuideline: (...args: unknown[]) => mocks.deleteGuideline(...args),
 }));
 
 // AppLayout이 항상 GlobalNav를 그리고, GlobalNav는 dashboard api를 부른다.
@@ -74,6 +76,7 @@ beforeEach(() => {
   mocks.saveRecipients.mockReset().mockResolvedValue(null);
   mocks.guidelines.mockReset().mockResolvedValue([]);
   mocks.saveGuidelines.mockReset().mockResolvedValue(null);
+  mocks.deleteGuideline.mockReset().mockResolvedValue(null);
   mocks.siteSettings.mockReset().mockResolvedValue(null);
   mocks.heartbeat.mockReset().mockResolvedValue(null);
 });
@@ -163,6 +166,77 @@ describe("Guidelines", () => {
     );
 
     expect(await screen.findByText(/홍길동\(삭제된 직원\)/)).toBeInTheDocument();
+  });
+
+  // 등록한 지침을 지울 수단이 아예 없었다(QA W-22). 부서를 재편하면 쓰지 않는 지침이
+  // 영구히 남아 초안에 계속 블록으로 끼고, 무력화하려고 내용을 비우면 제목만 있는 DM이 나간다.
+  const RAIN_WATCH_GUIDELINE = {
+    id: "g-1",
+    department_id: "l1",
+    kind: "rain",
+    grade: "watch",
+    staff_actions: ["수건 배포"],
+    guest_notice: "안내문",
+    updated_at: "2026-03-01T00:00:00Z",
+    updated_by: "admin-1",
+    updated_by_name: "김운영",
+  };
+
+  function renderWithGuideline(rows: unknown[] = [RAIN_WATCH_GUIDELINE]) {
+    mocks.authState.employee = adminEmployee();
+    mocks.listDepartments.mockResolvedValue([
+      { id: "g1", parent_id: null, name: "리조트", sort_order: 0 },
+      { id: "l1", parent_id: "g1", name: "객실", sort_order: 0 },
+    ]);
+    mocks.listEmployees.mockResolvedValue([adminEmployee()]);
+    mocks.guidelines.mockResolvedValue(rows);
+    return render(
+      <MemoryRouter>
+        <Guidelines />
+      </MemoryRouter>,
+    );
+  }
+
+  it("등록된 지침은 삭제할 수 있다", async () => {
+    renderWithGuideline();
+    fireEvent.click(await screen.findByRole("button", { name: "지침 삭제" }));
+    // 확인 없이 지우면 승인 대상 부서가 조용히 사라진다.
+    expect(await screen.findByText("이 지침을 삭제할까요?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "삭제" }));
+    await waitFor(() => expect(mocks.deleteGuideline).toHaveBeenCalledWith("g-1"));
+    // 지운 뒤 목록을 다시 읽어야 화면과 서버가 어긋나지 않는다(초기 로드 + 갱신 = 2회).
+    await waitFor(() => expect(mocks.guidelines).toHaveBeenCalledTimes(2));
+  });
+
+  // 부서 목록의 점은 "이 부서에 지침이 등록됐다"는 표시다. 예전에는 종류(kind)를 보지
+  // 않아 폭우 탭에서 등록한 지침이 폭설 탭에서도 등록된 것처럼 보였고, 내용이 빈 지침도
+  // 등록으로 셌다(QA W-22) — 실제로는 제목만 있는 DM이 나간다.
+  it("부서 목록의 지침 표시는 지금 선택한 종류의, 내용이 있는 지침만 센다", async () => {
+    const { container } = renderWithGuideline([
+      RAIN_WATCH_GUIDELINE,
+      { ...RAIN_WATCH_GUIDELINE, id: "g-2", kind: "snow", staff_actions: [], guest_notice: "" },
+    ]);
+    await screen.findByText("객실");
+    // 폭우 탭: 주의보 지침이 등록돼 있다.
+    expect(container.querySelector(".tree-dot-watch")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "폭설" }));
+    // 폭설 탭: 행은 있지만 내용이 비어 있으므로 등록으로 세지 않는다.
+    await waitFor(() => expect(container.querySelector(".tree-dot-watch")).toBeNull());
+  });
+
+  it("지침이 없는 부서·종류에는 삭제 버튼이 없다", async () => {
+    renderWithGuideline([]);
+    expect(await screen.findByRole("button", { name: "지침 저장" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "지침 삭제" })).toBeNull();
+  });
+
+  it("삭제가 실패하면 사유를 보여주고 목록을 그대로 둔다", async () => {
+    mocks.deleteGuideline.mockRejectedValue(new ApiError(404, "지침을 찾을 수 없습니다"));
+    renderWithGuideline();
+    fireEvent.click(await screen.findByRole("button", { name: "지침 삭제" }));
+    fireEvent.click(await screen.findByRole("button", { name: "삭제" }));
+    expect(await screen.findByText(/지침을 찾을 수 없습니다/)).toBeInTheDocument();
   });
 
   it("수정자가 명부에 있으면 명부의 이름을 그대로 보여준다", async () => {

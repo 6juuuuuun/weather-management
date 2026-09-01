@@ -98,6 +98,25 @@ contentRouter.put("/guidelines", requireAdmin, async (req, res) => {
   res.status(204).end();
 });
 
+// 등록한 지침을 지울 수단이 없었다(QA W-22). 부서를 재편해 더 이상 쓰지 않는
+// (부서 × 종류 × 등급) 지침이 영구히 남아 초안에 계속 블록으로 끼고, 무력화하려고
+// 내용을 비우면 "제목만 있는 DM"이 나갔다. 지우는 길을 연다.
+//
+// w_admin_all(0002_rls.sql)이 action_guidelines의 delete까지 admin에게 허용하므로
+// withUser 그대로 두면 정책이 판정한다. requireAdmin은 화면 오동작을 막는 앞단이다.
+contentRouter.delete("/guidelines/:id", requireAdmin, async (req, res) => {
+  const id = req.params.id;
+  if (!UUID.test(id)) return res.status(400).json({ error: "id 형식이 올바르지 않습니다" });
+  const deleted = await withUser(req.user!.accountId, async (q) => {
+    const { rows } = await q.query("delete from action_guidelines where id = $1 returning id", [id]);
+    return rows;
+  });
+  // 이미 없는 지침을 204로 돌려주면 화면은 지운 줄 알고 목록만 다시 그린다 —
+  // "왜 그대로지?"의 원인을 알 수 없다. 다른 삭제 경로(org.ts)와 규약을 맞춘다.
+  if (deleted.length === 0) return res.status(404).json({ error: "지침을 찾을 수 없습니다" });
+  res.status(204).end();
+});
+
 // ---------------------------------------------------------------------------
 // 메시지 (messages) — EventReview.tsx
 // ---------------------------------------------------------------------------

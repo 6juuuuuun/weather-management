@@ -17,6 +17,9 @@ export type GuidelineRow = {
 };
 
 export const guidelines = () => apiGet<GuidelineRow[]>("/api/guidelines");
+// 지침을 지울 수단이 없어 내용만 비워 두면 제목만 있는 DM이 나갔다(QA W-22).
+export const deleteGuideline = (id: string) =>
+  apiSend<null>("DELETE", `/api/guidelines/${encodeURIComponent(id)}`);
 export const saveGuidelines = (
   rows: Pick<GuidelineRow, "department_id" | "kind" | "grade" | "staff_actions" | "guest_notice">[],
 ) => apiSend<null>("PUT", "/api/guidelines", { rows });

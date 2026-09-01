@@ -179,6 +179,56 @@ describe("행동지침", () => {
     expect((await request(app).get("/api/guidelines")).status).toBe(401);
     expect((await request(app).put("/api/guidelines").send({ rows: [] })).status).toBe(401);
   });
+
+  // 등록한 지침을 지울 수단이 아예 없었다(QA W-22). 부서를 재편하면 더 이상 쓰지 않는
+  // (부서 × 종류 × 등급) 지침이 영구히 남아 발송 초안에 계속 블록으로 낀다.
+  describe("삭제", () => {
+    async function makeGuideline(agent: request.Agent, deptId: string) {
+      await agent.put("/api/guidelines").send({
+        rows: [{ department_id: deptId, kind: "rain", grade: "watch", staff_actions: ["점검"], guest_notice: "안내" }],
+      });
+      const res = await agent.get("/api/guidelines");
+      return res.body[0].id as string;
+    }
+
+    it("관리자는 지침을 지울 수 있다", async () => {
+      const agent = await agentAs("admin", "gd1@gonjiam.com");
+      const deptId = await makeDept("삭제대상");
+      const id = await makeGuideline(agent, deptId);
+
+      expect((await agent.delete(`/api/guidelines/${id}`)).status).toBe(204);
+      expect((await agent.get("/api/guidelines")).body).toHaveLength(0);
+    });
+
+    // 이미 없는 지침에 204를 주면 화면은 지운 줄 알고 목록만 다시 그린다.
+    it("없는 지침을 지우면 404다", async () => {
+      const agent = await agentAs("admin", "gd2@gonjiam.com");
+      const res = await agent.delete("/api/guidelines/00000000-0000-0000-0000-000000000000");
+      expect(res.status).toBe(404);
+    });
+
+    it("id 형식이 틀리면 500이 아니라 400이다", async () => {
+      const agent = await agentAs("admin", "gd3@gonjiam.com");
+      expect((await agent.delete("/api/guidelines/not-a-uuid")).status).toBe(400);
+    });
+
+    // 지침 삭제는 곧 "그 부서를 발송 대상에서 뺀다"는 뜻이다 — 관리자만 할 수 있어야 한다.
+    it("관리자가 아니면 지울 수 없고 지침은 남는다", async () => {
+      const admin = await agentAs("admin", "gd4@gonjiam.com");
+      const deptId = await makeDept("보존");
+      const id = await makeGuideline(admin, deptId);
+
+      const staff = await agentAs("staff", "gd5@gonjiam.com");
+      expect((await staff.delete(`/api/guidelines/${id}`)).status).toBe(403);
+      expect((await admin.get("/api/guidelines")).body).toHaveLength(1);
+    });
+
+    it("로그인하지 않으면 401이다", async () => {
+      expect(
+        (await request(app).delete("/api/guidelines/00000000-0000-0000-0000-000000000000")).status,
+      ).toBe(401);
+    });
+  });
 });
 
 describe("메시지", () => {
