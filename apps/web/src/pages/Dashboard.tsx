@@ -11,6 +11,7 @@ import { listDepartments, alertRecipients, listRecipients } from "../lib/api/org
 import { guidelines as fetchGuidelines, dispatches as fetchDispatches } from "../lib/api/content";
 import type { DispatchRow } from "../lib/api/content";
 import { computeSetupChecklist } from "../lib/setup";
+import { leafDeptIds } from "../lib/deptTree";
 import type { SetupChecklist } from "../lib/setup";
 import type { Kind, WeatherEvent } from "../lib/types";
 import { DashboardBoard, toTickerItems } from "./DashboardBoard";
@@ -61,8 +62,11 @@ function num(v: number | null | undefined, digits = 1): string {
 // 수집에 실패했다는 뜻이다(정시 수집 지연을 감안해 60분이 아니라 100분).
 const STALE_OBSERVATION_MIN = 100;
 
-function isStaleObservation(iso: string): boolean {
-  return (Date.now() - new Date(iso).getTime()) / 60000 > STALE_OBSERVATION_MIN;
+// 기준 시각을 인자로 받는다 — 월보드는 자기 시계(now)를 따로 굴리므로, 여기서
+// Date.now()를 직접 읽으면 "화면에 적힌 시각"과 "낡음 판정의 기준"이 서로 다른
+// 시각이 된다. 테스트가 낡은 관측을 만들어 볼 수 있는 것도 이 인자 덕이다.
+function isStaleObservation(iso: string, now: Date = new Date()): boolean {
+  return (now.getTime() - new Date(iso).getTime()) / 60000 > STALE_OBSERVATION_MIN;
 }
 
 // KST 자정(UTC 전날 15:00) — supabase/functions/_shared/db.ts의 todayAccums와 동일 로직
@@ -169,8 +173,12 @@ export default function Dashboard() {
         // 지침(action_guidelines)은 리프 부서에만 단다. 모든 부서를 리프로 세면
         // 시드 기준 deptCount가 12가 아니라 16이 되어 guidelineDeptCount >= deptCount가
         // 영원히 참이 될 수 없다 — 리프 12곳을 다 채워도 체크리스트가 4/5에 멈춘다.
-        const parentIds = new Set(depts.map((d) => d.parent_id).filter(Boolean));
-        const leafIds = new Set(depts.filter((d) => !parentIds.has(d.id)).map((d) => d.id));
+        //
+        // "리프"의 정의는 행동 지침 화면과 반드시 같아야 한다. 두 곳이 어긋나 있던
+        // 동안(체크리스트는 자식 없는 루트를 리프로 셌고 지침 화면은 그리지도
+        // 않았다) 체크리스트는 영원히 완료되지 않았고 화면 안에 탈출구가 없었다
+        // (QA W-15). 그래서 두 화면이 같은 함수를 부른다.
+        const leafIds = leafDeptIds(depts);
         // 내용이 비어 있는 지침은 제목만 있는 DM을 만들 뿐이라 "등록됐다"고 셀 수
         // 없다(QA W-22). 서버의 checkHealth·발송 초안과 같은 기준으로 거른다.
         const guidelineDeptIds = new Set(
@@ -266,13 +274,13 @@ export default function Dashboard() {
   // 하단 티커는 월보드와 같은 항목을 쓴다 — 카드가 못 말하는 "기준까지 얼마 남았나"를
   // 운영 화면에서도 읽을 수 있게 한다. `now`는 보드 모드에서만 틱하므로(시계 훅이
   // 조기 반환한다) 여기서 리렌더가 늘지 않는다.
-  const tickerItems = toTickerItems(toBoardProps(data, siteName, now).metrics);
+  const tickerItems = toTickerItems(toBoardProps(data, siteName, now, loadError).metrics);
 
   // 월보드는 운영 화면(AppLayout: 네비게이션 + 조작 버튼)을 감싸지 않는다.
   // .bd는 자체적으로 position:fixed 전체화면 레이아웃이라 GlobalNav/SubNav를
   // 씌우면 운영자가 아닌 관망 화면에 조작 요소가 그대로 노출된다.
   if (boardMode) {
-    return <DashboardBoard {...toBoardProps(data, siteName, now)} />;
+    return <DashboardBoard {...toBoardProps(data, siteName, now, loadError)} />;
   }
 
   return (
@@ -665,7 +673,22 @@ const OBS_FIELD: Record<BoardMetric["key"], keyof ObservationPoint> = {
   feels: "feels_c",
 };
 
-export function toBoardProps(data: DashboardData | null, siteName: string, now: Date) {
+/** "얼마나 됐는가"를 3미터 밖에서 읽히는 한 마디로. 벽걸이 화면은 시:분만 적혀
+ *  있으면 사흘 전 관측도 오늘 14시처럼 읽힌다(QA W-14). */
+export function observationAgo(iso: string, now: Date): string {
+  const min = Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / 60000));
+  if (min < 120) return `${min}분 전`;
+  const hours = Math.floor(min / 60);
+  if (hours < 48) return `${hours}시간 전`;
+  return `${Math.floor(hours / 24)}일 전`;
+}
+
+export function toBoardProps(
+  data: DashboardData | null,
+  siteName: string,
+  now: Date,
+  loadError: string | null = null,
+) {
   const obs = data?.observation ?? null;
   const history = data?.history ?? [];
 
@@ -701,10 +724,21 @@ export function toBoardProps(data: DashboardData | null, siteName: string, now: 
     severe: e.grade === "warning",
   }));
 
+  // 관측이 없거나 100분을 넘겼으면 낡은 것이다 — 일반 대시보드는 이미 같은
+  // 기준으로 경고를 띄우는데(isStaleObservation) 월보드만 그 자리가 없어서,
+  // 사흘째 멈춘 화면과 정상 화면이 벽에서 똑같이 보였다(QA W-14).
+  const stale = obs ? isStaleObservation(obs.observed_at, now) : true;
+
   return {
     siteName,
     clock: now.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }),
-    collectedAgo: obs ? `${formatTime(obs.observed_at)} 관측 기준` : "관측 없음",
+    // 낡았으면 시:분 옆에 "며칠 전인지"를 붙인다. 시:분만으로는 어제 14시와
+    // 오늘 14시가 글자까지 똑같다.
+    collectedAgo: obs
+      ? `${formatTime(obs.observed_at)} 관측 기준${stale ? ` · ${observationAgo(obs.observed_at, now)}` : ""}`
+      : "관측 없음",
+    stale,
+    loadError,
     metrics,
     events,
   };

@@ -28,7 +28,7 @@ const sent: BoardEvent = {
 function renderBoard(events: BoardEvent[] = []) {
   return render(
     <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo="마지막 수집 2분 전"
-                    metrics={metrics} events={events} />,
+                    stale={false} loadError={null} metrics={metrics} events={events} />,
   );
 }
 
@@ -47,6 +47,68 @@ describe("statusHeadline", () => {
 
   it("승인 대기가 하나라도 있으면 특보 발생이 우선", () => {
     expect(statusHeadline([sent, pending]).text).toBe("특보 발생");
+  });
+});
+
+// QA W-14 · 조용히 멈춘 화면과 정상 화면이 벽에서 구분되지 않았다.
+describe("statusHeadline 낡음·실패", () => {
+  it("조회에 실패하면 특보보다 먼저 그 사실을 말한다", () => {
+    expect(statusHeadline([], { failed: true })).toEqual({ text: "연결 끊김", alert: true });
+    // 열린 특보가 있어도 실패가 우선이다 — 그 특보 목록 자체가 낡은 값이다.
+    expect(statusHeadline([pending], { failed: true }).text).toBe("연결 끊김");
+  });
+
+  it("관측이 낡았으면 평온이라고 말하지 않는다", () => {
+    expect(statusHeadline([], { stale: true })).toEqual({ text: "수집 중단", alert: true });
+  });
+
+  it("멀쩡하면 예전 그대로다", () => {
+    expect(statusHeadline([], { stale: false, failed: false })).toEqual({ text: "평온", alert: false });
+  });
+});
+
+describe("DashboardBoard 낡음·실패 표시", () => {
+  function renderState(stale: boolean, loadError: string | null, collectedAgo = "02:00 관측 기준 · 3일 전") {
+    return render(
+      <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo={collectedAgo}
+        stale={stale} loadError={loadError} metrics={metrics} events={[]} />,
+    );
+  }
+
+  it("정상일 때는 띠를 그리지 않는다", () => {
+    const { container } = render(
+      <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo="14:00 관측 기준"
+        stale={false} loadError={null} metrics={metrics} events={[]} />,
+    );
+    expect(container.querySelector(".bd-alarm")).toBeNull();
+    expect(container.querySelector(".bd-collected-stale")).toBeNull();
+  });
+
+  it("관측이 낡으면 띠와 함께 언제 관측이었는지를 눈에 띄게 적는다", () => {
+    const { container } = renderState(true, null);
+    // 상단 한 마디와 띠 제목 둘 다 "수집 중단"이다 — 벽에서 읽히는 자리 두 곳.
+    expect(container.querySelector(".bd-status")!.textContent).toBe("수집 중단");
+    expect(container.querySelector(".bd-alarm-title")!.textContent).toBe("수집 중단");
+    // 수집 시각 자체도 회색이 아니라 경고 색으로 바뀐다.
+    expect(container.querySelector(".bd-collected-stale")).toBeTruthy();
+    expect(container.querySelector(".bd-alarm")!.textContent).toMatch(/3일 전/);
+  });
+
+  it("조회에 실패하면 서버 연결 끊김을 알린다", () => {
+    const { container } = renderState(false, "서버에 연결할 수 없습니다");
+    expect(container.querySelector(".bd-alarm")!.textContent).toMatch(/서버 연결 끊김/);
+    expect(container.querySelector(".bd-status")!.textContent).toBe("연결 끊김");
+  });
+
+  it("띠는 특보 배너보다 위에 온다", () => {
+    const { container } = render(
+      <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo="02:00 관측 기준 · 3일 전"
+        stale={true} loadError={null} metrics={metrics} events={[pending]} />,
+    );
+    const alarm = container.querySelector(".bd-alarm")!;
+    const events = container.querySelector(".bd-events")!;
+    // 값이 낡았다는 사실을 알기 전에 숫자를 먼저 읽게 해서는 안 된다.
+    expect(alarm.compareDocumentPosition(events) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
 
@@ -89,7 +151,7 @@ describe("DashboardBoard", () => {
   it("값이 없는 지표는 대시 기호를 보여준다", () => {
     const { getByText } = render(
       <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo="—"
-        metrics={[{ ...metrics[0], value: null, history: [] }]} events={[]} />,
+        stale={false} loadError={null} metrics={[{ ...metrics[0], value: null, history: [] }]} events={[]} />,
     );
     expect(getByText("–")).toBeTruthy();
   });
@@ -113,7 +175,7 @@ describe("DashboardBoard", () => {
     };
     const { container } = render(
       <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo="마지막 수집 2분 전"
-        metrics={[zeroThresholdMetric]} events={[]} />,
+        stale={false} loadError={null} metrics={[zeroThresholdMetric]} events={[]} />,
     );
     // 티커: threshold<=0 지표를 빼면 항목이 하나도 없어 트랙 자체가 렌더되지 않는다.
     expect(container.querySelector(".bt")).toBeNull();

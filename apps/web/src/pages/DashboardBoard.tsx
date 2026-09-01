@@ -29,11 +29,29 @@ export type DashboardBoardProps = {
   siteName: string;
   clock: string;
   collectedAgo: string;
+  /** 마지막 관측이 낡았는가(또는 관측이 아예 없는가). */
+  stale: boolean;
+  /** 마지막 조회가 실패했으면 그 문구. 성공했으면 null. */
+  loadError: string | null;
   metrics: BoardMetric[];
   events: BoardEvent[];
 };
 
-export function statusHeadline(events: BoardEvent[]): { text: string; alert: boolean } {
+/**
+ * 벽에 걸린 화면에서 3미터 밖까지 닿는 유일한 한 마디다.
+ *
+ * 조회가 실패했거나 관측이 낡았으면 날씨보다 **그 사실**을 먼저 말한다. 예전에는
+ * 두 경우 모두 `평온`이라고 적혀 있었다 — DB가 죽어도, 수집이 사흘 전에 멈춰도
+ * 마지막으로 받아 둔 값을 띄운 채 시계만 돌아서, 멈춘 화면과 정상 화면이
+ * 구분되지 않았다(QA W-14). 조용히 틀린 값을 띄우는 것이 이 시스템에서 가장
+ * 위험한 실패다.
+ */
+export function statusHeadline(
+  events: BoardEvent[],
+  state?: { stale?: boolean; failed?: boolean },
+): { text: string; alert: boolean } {
+  if (state?.failed) return { text: "연결 끊김", alert: true };
+  if (state?.stale) return { text: "수집 중단", alert: true };
   if (events.length === 0) return { text: "평온", alert: false };
   const waiting = events.some((e) => e.tag === "승인 대기");
   return { text: waiting ? "특보 발생" : "대응 중", alert: true };
@@ -64,9 +82,9 @@ export function toTickerItems(metrics: BoardMetric[]): TickerItem[] {
 }
 
 export function DashboardBoard({
-  siteName, clock, collectedAgo, metrics, events,
+  siteName, clock, collectedAgo, stale, loadError, metrics, events,
 }: DashboardBoardProps) {
-  const status = statusHeadline(events);
+  const status = statusHeadline(events, { stale, failed: !!loadError });
   const shown = events.slice(0, MAX_EVENTS);
   const hidden = events.length - shown.length;
   const tickerItems = toTickerItems(metrics);
@@ -80,9 +98,22 @@ export function DashboardBoard({
         </div>
         <div className="bd-head-right">
           <span className="bd-clock">{clock}</span>
-          <span className="bd-collected">{collectedAgo}</span>
+          <span className={stale ? "bd-collected bd-collected-stale" : "bd-collected"}>{collectedAgo}</span>
         </div>
       </header>
+
+      {/* 특보 배너보다 위에 둔다. 값이 낡았다면 그 아래 숫자는 전부 못 믿을 값이고,
+          그 사실을 알기 전에 숫자를 먼저 읽게 해서는 안 된다. */}
+      {(loadError || stale) && (
+        <div className="bd-alarm" role="status">
+          <span className="bd-alarm-title">{loadError ? "서버 연결 끊김" : "수집 중단"}</span>
+          <span className="bd-alarm-detail">
+            {loadError
+              ? `아래 값은 마지막으로 받아 둔 것입니다 · ${collectedAgo}`
+              : `아래 값은 갱신되지 않고 있습니다 · ${collectedAgo}`}
+          </span>
+        </div>
+      )}
 
       {events.length > 0 && (
         <div className={events.length > 1 ? "bd-events bd-events-row" : "bd-events"}>

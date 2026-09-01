@@ -285,6 +285,64 @@ describe("Dashboard 셋업 체크리스트", () => {
     await waitFor(() => expect(container.querySelector(".setup-strip")).toBeNull());
   });
 
+  // QA W-15 · 자식 없는 최상위 부서 하나를 만들면 체크리스트가 영원히 멈췄다.
+  // 체크리스트는 그 부서를 리프로 세는데 지침 화면은 그리지도 않아, 지침을 등록할
+  // 방법이 화면 안에 없었다. 지금은 두 화면이 같은 함수(leafDeptIds)를 쓴다 —
+  // 그 부서에 지침·수신자를 넣으면 체크리스트가 실제로 완료된다.
+  it("자식 없는 최상위 부서도 리프로 세고, 채우면 체크리스트가 완료된다", async () => {
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
+      { id: "solo", parent_id: null, name: "안전관리팀", sort_order: 2 },
+    ]);
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
+      { department_id: "solo", kind: "rain", grade: "watch", staff_actions: ["순찰"], guest_notice: "" },
+    ]);
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+    ]);
+    mocks.listRecipients.mockResolvedValue([
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", kakaowork_user_id: "kw-2" },
+      { department_id: "solo", employee_id: "e3", name: "안전담당", role: "staff", kakaowork_user_id: "kw-3" },
+    ]);
+
+    const { container } = renderDashboard();
+    await waitFor(() => expect(mocks.guidelines).toHaveBeenCalled());
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeNull());
+  });
+
+  // 3단 부서의 말단이 리프다. 중간 단계(2단)는 리프가 아니므로 세면 안 된다 —
+  // 세면 지침을 달 수 없는 부서까지 분모에 들어가 체크리스트가 완료되지 않는다.
+  it("3단 부서의 말단만 리프로 센다", async () => {
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "mid", parent_id: "root1", name: "객실", sort_order: 1 },
+      { id: "leaf", parent_id: "mid", name: "프론트", sort_order: 1 },
+    ]);
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf", kind: "rain", grade: "watch", staff_actions: ["안내"], guest_notice: "" },
+    ]);
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+    ]);
+    mocks.listRecipients.mockResolvedValue([
+      { department_id: "leaf", employee_id: "e2", name: "프론트담당", role: "staff", kakaowork_user_id: "kw-2" },
+    ]);
+
+    const { container } = renderDashboard();
+    await waitFor(() => expect(mocks.guidelines).toHaveBeenCalled());
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeNull());
+  });
+
   // "0명에게 성공"의 뿌리(QA W-02). 지침을 다 채워도 그 부서에 수신자가 없으면
   // 승인 발송은 0명에게 나간다 — 그런데 체크리스트는 6/6 초록이었다.
   it("지침은 있는데 부서 수신자가 없으면 체크리스트가 완료되지 않는다", async () => {
@@ -421,6 +479,64 @@ describe("Dashboard 보드 모드", () => {
     expect(props.clock).toBe(
       fixed.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }),
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // QA W-14 · 벽걸이 월보드는 DB가 죽어도, 수집이 사흘 전에 멈춰도 마지막으로
+  // 받아 둔 값을 그대로 띄우고 시계만 10초마다 갱신했다. 상단은 `평온`이었고
+  // 수집 시각은 `14:00 관측 기준` 한 줄이라 3미터 밖에서는 정상으로 읽혔다.
+  // -------------------------------------------------------------------------
+
+  it("관측이 100분을 넘기면 낡음으로 표시하고 며칠 전인지 말한다", () => {
+    const now = new Date("2026-08-15T05:00:00.000Z");
+    const props = toBoardProps(
+      { observation: { ...validObs, observed_at: "2026-08-13T05:00:00.000Z" }, criteria: [], openEvents: [],
+        dispatches: [], snowToday: null, heartbeat: null, history: [] } as never,
+      "곤지암",
+      now,
+    );
+    expect(props.stale).toBe(true);
+    expect(props.collectedAgo).toMatch(/2일 전/);
+  });
+
+  it("관측이 최신이면 낡음이 아니고 시:분만 적는다", () => {
+    const now = new Date("2026-08-15T02:30:00.000Z");
+    const props = toBoardProps(
+      { observation: validObs, criteria: [], openEvents: [], dispatches: [],
+        snowToday: null, heartbeat: null, history: [] } as never,
+      "곤지암",
+      now,
+    );
+    expect(props.stale).toBe(false);
+    expect(props.collectedAgo).not.toMatch(/전$/);
+  });
+
+  it("관측이 아예 없으면 낡음으로 본다", () => {
+    const props = toBoardProps(null, "곤지암", new Date());
+    expect(props.stale).toBe(true);
+    expect(props.collectedAgo).toBe("관측 없음");
+  });
+
+  it("조회 실패 문구를 월보드까지 전달한다", () => {
+    const props = toBoardProps(null, "곤지암", new Date(), "일시적인 오류입니다");
+    expect(props.loadError).toBe("일시적인 오류입니다");
+  });
+
+  it("보드 모드에서 첫 조회가 실패하면 화면이 그 사실을 말한다", async () => {
+    mocks.latestObservation.mockRejectedValue(new ApiError(503, "일시적인 오류입니다"));
+    const { container } = renderAt("?board=1");
+    await waitFor(() => expect(container.querySelector(".bd-alarm")).toBeTruthy());
+    expect(container.querySelector(".bd-alarm")!.textContent).toMatch(/서버 연결 끊김/);
+    // 상단 한 마디도 `평온`이 아니어야 한다 — 그게 벽에서 유일하게 읽히는 글자다.
+    expect(container.querySelector(".bd-status")!.textContent).not.toBe("평온");
+  });
+
+  it("보드 모드에서 관측이 낡으면 수집 중단 띠를 띄운다", async () => {
+    mocks.latestObservation.mockResolvedValue({ ...validObs, observed_at: "2026-01-01T00:00:00.000Z" });
+    const { container } = renderAt("?board=1");
+    await waitFor(() => expect(container.querySelector(".bd-alarm")).toBeTruthy());
+    expect(container.querySelector(".bd-alarm")!.textContent).toMatch(/수집 중단/);
+    expect(container.querySelector(".bd-status")!.textContent).toBe("수집 중단");
   });
 
   it("일반 모드에 전체화면 버튼이 있다", async () => {

@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { withService, UUID } from "../db.ts";
 import { hash, verify, temporaryPassword } from "./password.ts";
 import { issue, lookup, revoke, tokenHash } from "./session.ts";
-import { COOKIE, requireAuth, requireAdmin } from "./middleware.ts";
+import { COOKIE, requireAuth, requireAdmin, sessionCookieOptions } from "./middleware.ts";
 import { isAllowedEmailDomain, isValidEmailShape } from "./emailDomain.ts";
 import { linkKakaoworkUserId } from "../kakaoLink.ts";
 
@@ -232,12 +232,7 @@ authRouter.post("/login", async (req, res) => {
   );
 
   const token = await issue(account.id);
-  res.cookie(COOKIE, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.COOKIE_SECURE === "true",
-    maxAge: 12 * 60 * 60 * 1000,
-  });
+  res.cookie(COOKIE, token, sessionCookieOptions());
   const user = await lookup(token);
   res.json({ user, must_change_password: account.must_change_password });
 });

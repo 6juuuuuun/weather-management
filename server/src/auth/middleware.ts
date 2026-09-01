@@ -1,5 +1,5 @@
-import type { NextFunction, Request, Response } from "express";
-import { lookup, type SessionUser } from "./session.ts";
+import type { CookieOptions, NextFunction, Request, Response } from "express";
+import { lookup, SESSION_COOKIE_MAX_AGE_MS, type SessionUser } from "./session.ts";
 
 declare module "express-serve-static-core" {
   interface Request {
@@ -8,6 +8,16 @@ declare module "express-serve-static-core" {
 }
 
 export const COOKIE = "sid";
+
+/** 로그인과 세션 연장이 **같은 옵션**으로 쿠키를 심게 한 곳에 모아 둔다.
+ *  한쪽만 바뀌면 브라우저는 쿠키를 두 개로 보거나(path/domain이 다를 때)
+ *  연장이 조용히 아무 효과도 내지 못한다. */
+export const sessionCookieOptions = (): CookieOptions => ({
+  httpOnly: true,
+  sameSite: "lax",
+  secure: process.env.COOKIE_SECURE === "true",
+  maxAge: SESSION_COOKIE_MAX_AGE_MS,
+});
 
 // must_change_password가 참인 세션이 그래도 계속 드나들 수 있어야 하는 최소한의
 // 통로. 이 목록에 없는 /api/* 요청은 비밀번호를 바꾸기 전까지 전부 막는다.
@@ -25,6 +35,11 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   const user = await lookup(token);
   if (!user) return res.status(401).json({ error: "로그인이 필요합니다" });
   req.user = user;
+
+  // 슬라이딩 만료: lookup이 DB의 만료 시각을 밀었으면 브라우저 쿠키의 수명도
+  // 같이 민다. 이걸 빼면 DB 세션은 살아 있는데 쿠키가 먼저 죽어 사용자는
+  // 그대로 로그아웃된다 — 벽걸이 월보드에는 그 차이가 보이지 않는다.
+  if (user.slid) res.cookie(COOKIE, token, sessionCookieOptions());
 
   if (user.mustChangePassword) {
     // Express는 기본으로 경로 대소문자를 구분하지 않고 끝 슬래시도 무시한다
