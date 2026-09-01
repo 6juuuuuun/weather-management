@@ -14,6 +14,8 @@ import { guidelines as fetchGuidelines, saveGuidelines, deleteGuideline } from "
 import type { GuidelineRow } from "../lib/api/content";
 import type { Grade, Kind } from "../lib/types";
 import { ROLE_LABEL } from "../lib/roles";
+import { buildDeptTree, flattenDepartments, leafDeptIds, deptPathLabel } from "../lib/deptTree";
+import type { DeptNode } from "../lib/deptTree";
 import "./Guidelines.css";
 
 const KINDS: Kind[] = ["rain", "snow", "wind", "heat"];
@@ -125,30 +127,21 @@ export default function Guidelines() {
     };
   }, []);
 
-  const groups = (() => {
-    const byParent = new Map<string, DepartmentRow[]>();
-    const roots: DepartmentRow[] = [];
-    for (const d of departments) {
-      if (d.parent_id === null) {
-        roots.push(d);
-      } else {
-        const arr = byParent.get(d.parent_id) ?? [];
-        arr.push(d);
-        byParent.set(d.parent_id, arr);
-      }
-    }
-    roots.sort((a, b) => a.sort_order - b.sort_order);
-    return roots.map((group) => ({
-      group,
-      leaves: (byParent.get(group.id) ?? []).slice().sort((a, b) => a.sort_order - b.sort_order),
-    }));
-  })();
+  // 계층은 깊이 제한 없이 데이터 그대로 그린다. 예전에는 "루트 = 접기 헤더,
+  // 그 직계 자식 = 리프" 정확히 2단만 그려서, 자식 없는 최상위 부서와 3단 부서는
+  // **화면에 아예 나타나지 않았다** — 지침을 등록할 방법이 없었고 대시보드
+  // 체크리스트는 그 부서를 리프로 세고 있어 영원히 완료되지 않았다(QA W-15).
+  const tree = buildDeptTree(departments);
+  // 지침을 달 수 있는 부서 = 자식이 없는 부서. 위치가 아니라 데이터로 정한다 —
+  // 대시보드 체크리스트가 세는 기준(leafDeptIds)과 같은 함수를 쓴다.
+  const leafIds = leafDeptIds(departments);
+  const orderedLeaves = flattenDepartments(departments).filter((f) => leafIds.has(f.dept.id));
 
   // 부서 목록이 로드되면 첫 리프 부서를 기본 선택
   useEffect(() => {
     if (selectedDeptId) return;
-    const firstLeaf = groups.flatMap((g) => g.leaves)[0];
-    if (firstLeaf) setSelectedDeptId(firstLeaf.id);
+    const firstLeaf = orderedLeaves[0];
+    if (firstLeaf) setSelectedDeptId(firstLeaf.dept.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [departments]);
 
@@ -264,10 +257,74 @@ export default function Guidelines() {
     }
   }
 
+  // 트리를 깊이 제한 없이 재귀로 그린다. 자식이 있으면 접기 헤더, 없으면 지침을
+  // 등록할 수 있는 리프다 — "루트인가"가 아니라 "자식이 있는가"로 가른다.
+  // 들여쓰기 한 단은 18px, 8단에서 멈춘다(4 + depth*18은 지금까지 CSS가 쓰던
+  // 4px/22px와 정확히 같은 값이라 2단 조직에서는 화면이 그대로다). 좁은 좌측
+  // 패널에서 무한정 밀면 깊이를 보여주려다 부서 이름을 못 읽게 된다.
+  function renderTree(nodes: DeptNode<DepartmentRow>[]) {
+    return nodes.map((node) => {
+      const pad = { paddingLeft: 4 + Math.min(node.depth, 8) * 18 };
+      if (node.children.length > 0) {
+        return (
+          <div key={node.dept.id} className="guidelines-group">
+            <button
+              type="button"
+              className="guidelines-group-toggle"
+              style={pad}
+              onClick={() => toggleGroup(node.dept.id)}
+              aria-expanded={!collapsedGroups[node.dept.id]}
+            >
+              <span
+                className={`chevron ${collapsedGroups[node.dept.id] ? "chevron-collapsed" : ""}`}
+                aria-hidden="true"
+              >
+                ⌄
+              </span>
+              {node.dept.name}
+            </button>
+            {!collapsedGroups[node.dept.id] && renderTree(node.children)}
+          </div>
+        );
+      }
+      const watchGuideline = hasContent(guidelineFor(node.dept.id, kind, "watch"));
+      const warningGuideline = hasContent(guidelineFor(node.dept.id, kind, "warning"));
+      const count = recipientCountFor(node.dept.id);
+      return (
+        <button
+          type="button"
+          key={node.dept.id}
+          className={`guidelines-leaf ${selectedDeptId === node.dept.id ? "guidelines-leaf-selected" : ""}`}
+          style={pad}
+          onClick={() => setSelectedDeptId(node.dept.id)}
+        >
+          <span className="guidelines-leaf-name">{node.dept.name}</span>
+          <span className="guidelines-leaf-meta">
+            <span
+              className={`tree-dot ${watchGuideline ? "tree-dot-watch" : "tree-dot-empty"}`}
+              aria-hidden="true"
+            />
+            <span
+              className={`tree-dot ${warningGuideline ? "tree-dot-warning" : "tree-dot-empty"}`}
+              aria-hidden="true"
+            />
+            {count > 0 ? (
+              <span className="guidelines-count">{count}명</span>
+            ) : (
+              <span className="guidelines-unassigned">미지정</span>
+            )}
+          </span>
+        </button>
+      );
+    });
+  }
+
   const selectedDept = departments.find((d) => d.id === selectedDeptId) ?? null;
-  const selectedGroup = selectedDept
-    ? (departments.find((d) => d.id === selectedDept.parent_id) ?? null)
-    : null;
+  // 빵부스러기는 루트부터 전체 경로다. 부모 하나만 보여주면 3단부터는 어느
+  // 계열의 부서인지 알 수 없다.
+  const selectedPath = selectedDeptId
+    ? (flattenDepartments(departments).find((f) => f.dept.id === selectedDeptId)?.path ?? [])
+    : [];
   const currentGuideline = selectedDeptId ? guidelineFor(selectedDeptId, kind, grade) : undefined;
   // 수정자 이름. 예전에는 직원 목록에서 updated_by로 찾기만 해서, 그 사람이 삭제되면
   // 이름이 통째로 사라졌다(그리고 이제 삭제는 계정까지 지운다 — QA W-01, 결정 D-1).
@@ -340,60 +397,7 @@ export default function Guidelines() {
                 </div>
               </div>
 
-              <div className="guidelines-tree-body">
-                {groups.map(({ group, leaves }) => (
-                  <div key={group.id} className="guidelines-group">
-                    <button
-                      type="button"
-                      className="guidelines-group-toggle"
-                      onClick={() => toggleGroup(group.id)}
-                      aria-expanded={!collapsedGroups[group.id]}
-                    >
-                      <span
-                        className={`chevron ${collapsedGroups[group.id] ? "chevron-collapsed" : ""}`}
-                        aria-hidden="true"
-                      >
-                        ⌄
-                      </span>
-                      {group.name}
-                    </button>
-
-                    {!collapsedGroups[group.id] &&
-                      leaves.map((leaf) => {
-                        const watchGuideline = hasContent(guidelineFor(leaf.id, kind, "watch"));
-                        const warningGuideline = hasContent(guidelineFor(leaf.id, kind, "warning"));
-                        const count = recipientCountFor(leaf.id);
-                        return (
-                          <button
-                            type="button"
-                            key={leaf.id}
-                            className={`guidelines-leaf ${
-                              selectedDeptId === leaf.id ? "guidelines-leaf-selected" : ""
-                            }`}
-                            onClick={() => setSelectedDeptId(leaf.id)}
-                          >
-                            <span className="guidelines-leaf-name">{leaf.name}</span>
-                            <span className="guidelines-leaf-meta">
-                              <span
-                                className={`tree-dot ${watchGuideline ? "tree-dot-watch" : "tree-dot-empty"}`}
-                                aria-hidden="true"
-                              />
-                              <span
-                                className={`tree-dot ${warningGuideline ? "tree-dot-warning" : "tree-dot-empty"}`}
-                                aria-hidden="true"
-                              />
-                              {count > 0 ? (
-                                <span className="guidelines-count">{count}명</span>
-                              ) : (
-                                <span className="guidelines-unassigned">미지정</span>
-                              )}
-                            </span>
-                          </button>
-                        );
-                      })}
-                  </div>
-                ))}
-              </div>
+              <div className="guidelines-tree-body">{renderTree(tree)}</div>
             </div>
 
             <div className="guidelines-panel guidelines-editor">
@@ -404,7 +408,7 @@ export default function Guidelines() {
                   <div className="guidelines-editor-top">
                     <div>
                       <p className="guidelines-breadcrumb">
-                        {selectedGroup ? `${selectedGroup.name} > ${selectedDept.name}` : selectedDept.name}
+                        {deptPathLabel(selectedPath) || selectedDept.name}
                       </p>
                       <div className="guidelines-editor-title-row">
                         <h2>{KIND_LABEL[kind]} 대응 지침</h2>

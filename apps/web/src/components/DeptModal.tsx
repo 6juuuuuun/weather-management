@@ -2,12 +2,32 @@ import { useEffect, useState } from "react";
 import { Modal } from "./Modal";
 import { Button } from "./Button";
 import { ApiError } from "../lib/api/client";
-import { listDepartments, createDepartment, renameDepartment, deleteDepartment } from "../lib/api/org";
+import {
+  listDepartments,
+  createDepartment,
+  renameDepartment,
+  moveDepartment,
+  deleteDepartment,
+} from "../lib/api/org";
 import type { DepartmentRow } from "../lib/api/org";
+import {
+  buildDeptTree,
+  flattenDepartments,
+  deptPathLabel,
+  deptSubtreeIds,
+  deptDeleteOrder,
+} from "../lib/deptTree";
+import type { DeptNode } from "../lib/deptTree";
 import "./DeptModal.css";
 
 type EditingState = { id: string; name: string } | null;
 type AddingChildState = { parentId: string; name: string } | null;
+
+// 들여쓰기는 6단에서 멈춘다. 그보다 깊어지면 이름 칸이 왼쪽으로 밀려 사라지는데,
+// 편집기에서는 "몇 번째 단인가"보다 "누구 밑인가"가 중요하고 그건 순서로 읽힌다.
+const INDENT_PX = 22;
+const MAX_INDENT_DEPTH = 6;
+const indentOf = (depth: number) => Math.min(depth, MAX_INDENT_DEPTH) * INDENT_PX;
 
 export function DeptModal({
   onClose,
@@ -26,10 +46,8 @@ export function DeptModal({
 
   async function load() {
     try {
-      // 서버가 정렬을 강제하지 않으므로(org.ts: order by name) sort_order는
-      // 클라이언트에서 직접 정렬한다.
-      const rows = await listDepartments();
-      setDepartments([...rows].sort((a, b) => a.sort_order - b.sort_order));
+      // 정렬·계층 계산은 deptTree.ts 한 곳에서만 한다(서버는 order by name만 준다).
+      setDepartments(await listDepartments());
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "부서 목록을 불러오지 못했습니다");
     }
@@ -40,7 +58,8 @@ export function DeptModal({
     load();
   }, []);
 
-  const topLevel = departments.filter((d) => !d.parent_id);
+  const tree = buildDeptTree(departments);
+  const flat = flattenDepartments(departments);
   function childrenOf(id: string) {
     return departments.filter((d) => d.parent_id === id);
   }
@@ -65,6 +84,18 @@ export function DeptModal({
     }
   }
 
+  // 상위 부서 변경. 지우고 새로 만들면 그 부서의 지침·수신자 지정이 cascade로
+  // 사라지므로, 조직 개편에는 이 경로만 안전하다(QA W-25c).
+  async function moveDept(id: string, parentId: string | null) {
+    setError(null);
+    try {
+      await moveDepartment(id, parentId);
+      await notifyChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "상위 부서 변경에 실패했습니다");
+    }
+  }
+
   async function addTopLevel(name: string) {
     const trimmed = name.trim();
     if (!trimmed) {
@@ -72,7 +103,9 @@ export function DeptModal({
       setNewTopName("");
       return;
     }
-    const maxSort = topLevel.reduce((m, d) => Math.max(m, d.sort_order), -1);
+    const maxSort = departments
+      .filter((d) => !d.parent_id)
+      .reduce((m, d) => Math.max(m, d.sort_order), -1);
     try {
       await createDepartment(trimmed, { parentId: null, sortOrder: maxSort + 1 });
       setAddingTop(false);
@@ -101,10 +134,13 @@ export function DeptModal({
   }
 
   async function deleteDept(dept: DepartmentRow) {
-    const children = childrenOf(dept.id);
+    // 자식만이 아니라 자손 전체다. 3단 부서가 생길 수 있게 된 이상 직계 자식만
+    // 지우면 손자에서 막혀 "일부만 지워진" 상태로 끝난다.
+    const order = deptDeleteOrder(departments, dept.id);
+    const descendants = order.length - 1;
     const msg =
-      children.length > 0
-        ? `'${dept.name}' 부서와 하위 부서 ${children.length}개를 삭제하시겠습니까?\n` +
+      descendants > 0
+        ? `'${dept.name}' 부서와 하위 부서 ${descendants}개를 삭제하시겠습니까?\n` +
           "소속 직원은 미지정으로 이동합니다. 이 부서로 등록된 수신자 지정은 함께 삭제됩니다."
         : `'${dept.name}' 부서를 삭제하시겠습니까?\n` +
           "소속 직원은 미지정으로 이동합니다. 이 부서로 등록된 수신자 지정은 함께 삭제됩니다.";
@@ -113,15 +149,54 @@ export function DeptModal({
 
     setError(null);
     try {
-      // parent_id는 on delete restrict이므로 하위 부서를 먼저 삭제한다.
-      for (const child of children) {
-        await deleteDepartment(child.id);
+      // parent_id는 on delete restrict이므로 가장 깊은 것부터 지운다.
+      for (const target of order) {
+        await deleteDepartment(target.id);
       }
-      await deleteDepartment(dept.id);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "부서 삭제에 실패했습니다");
     }
     await notifyChanged();
+  }
+
+  function renderNodes(nodes: DeptNode<DepartmentRow>[]) {
+    return nodes.map((node) => (
+      <div className="dept-modal-group" key={node.dept.id}>
+        <DeptRow
+          dept={node.dept}
+          depth={node.depth}
+          allDepartments={departments}
+          editing={editing}
+          onStartEdit={() => setEditing({ id: node.dept.id, name: node.dept.name })}
+          onEditChange={(name) => setEditing((e) => (e ? { ...e, name } : e))}
+          onCommitEdit={() => editing && renameDept(editing.id, editing.name)}
+          onCancelEdit={() => setEditing(null)}
+          onAddChild={() => setAddingChild({ parentId: node.dept.id, name: "" })}
+          onMove={(parentId) => moveDept(node.dept.id, parentId)}
+          onDelete={() => deleteDept(node.dept)}
+        />
+        {renderNodes(node.children)}
+        {addingChild?.parentId === node.dept.id && (
+          <div className="dept-modal-row" style={{ paddingLeft: indentOf(node.depth + 1) }}>
+            <span className="dept-modal-grip" aria-hidden="true">
+              ::
+            </span>
+            <input
+              autoFocus
+              className="dept-modal-input"
+              placeholder="새 하위 부서 이름"
+              value={addingChild.name}
+              onChange={(e) => setAddingChild({ parentId: node.dept.id, name: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addChild(node.dept.id, addingChild.name);
+                if (e.key === "Escape") setAddingChild(null);
+              }}
+              onBlur={() => addChild(node.dept.id, addingChild.name)}
+            />
+          </div>
+        )}
+      </div>
+    ));
   }
 
   return (
@@ -145,53 +220,7 @@ export function DeptModal({
         <p className="dept-modal-loading">불러오는 중…</p>
       ) : (
         <div className="dept-modal-tree">
-          {topLevel.map((dept) => (
-            <div className="dept-modal-group" key={dept.id}>
-              <DeptRow
-                dept={dept}
-                depth={0}
-                editing={editing}
-                onStartEdit={() => setEditing({ id: dept.id, name: dept.name })}
-                onEditChange={(name) => setEditing((e) => (e ? { ...e, name } : e))}
-                onCommitEdit={() => editing && renameDept(editing.id, editing.name)}
-                onCancelEdit={() => setEditing(null)}
-                onAddChild={() => setAddingChild({ parentId: dept.id, name: "" })}
-                onDelete={() => deleteDept(dept)}
-              />
-              {childrenOf(dept.id).map((child) => (
-                <DeptRow
-                  key={child.id}
-                  dept={child}
-                  depth={1}
-                  editing={editing}
-                  onStartEdit={() => setEditing({ id: child.id, name: child.name })}
-                  onEditChange={(name) => setEditing((e) => (e ? { ...e, name } : e))}
-                  onCommitEdit={() => editing && renameDept(editing.id, editing.name)}
-                  onCancelEdit={() => setEditing(null)}
-                  onDelete={() => deleteDept(child)}
-                />
-              ))}
-              {addingChild?.parentId === dept.id && (
-                <div className="dept-modal-row dept-modal-row-depth1">
-                  <span className="dept-modal-grip" aria-hidden="true">
-                    ::
-                  </span>
-                  <input
-                    autoFocus
-                    className="dept-modal-input"
-                    placeholder="새 하위 부서 이름"
-                    value={addingChild.name}
-                    onChange={(e) => setAddingChild({ parentId: dept.id, name: e.target.value })}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") addChild(dept.id, addingChild.name);
-                      if (e.key === "Escape") setAddingChild(null);
-                    }}
-                    onBlur={() => addChild(dept.id, addingChild.name)}
-                  />
-                </div>
-              )}
-            </div>
-          ))}
+          {renderNodes(tree)}
 
           {addingTop ? (
             <div className="dept-modal-row">
@@ -219,6 +248,11 @@ export function DeptModal({
               + 최상위 부서 추가
             </button>
           )}
+          {flat.length > 0 && (
+            <p className="dept-modal-hint">
+              상위 부서를 바꾸면 그 부서의 지침·수신자 지정은 그대로 따라갑니다. 삭제하고 다시 만들면 사라집니다.
+            </p>
+          )}
         </div>
       )}
     </Modal>
@@ -228,27 +262,36 @@ export function DeptModal({
 function DeptRow({
   dept,
   depth,
+  allDepartments,
   editing,
   onStartEdit,
   onEditChange,
   onCommitEdit,
   onCancelEdit,
   onAddChild,
+  onMove,
   onDelete,
 }: {
   dept: DepartmentRow;
-  depth: 0 | 1;
+  depth: number;
+  allDepartments: DepartmentRow[];
   editing: EditingState;
   onStartEdit: () => void;
   onEditChange: (name: string) => void;
   onCommitEdit: () => void;
   onCancelEdit: () => void;
-  onAddChild?: () => void;
+  onAddChild: () => void;
+  onMove: (parentId: string | null) => void;
   onDelete: () => void;
 }) {
   const isEditing = editing?.id === dept.id;
+  // 자기 자신과 자기 자손은 부모가 될 수 없다. 서버도 400으로 막지만, 고를 수
+  // 없는 값을 목록에 남겨 두면 사용자는 오류를 받아 보고서야 안다.
+  const blocked = deptSubtreeIds(allDepartments, dept.id);
+  const parentChoices = flattenDepartments(allDepartments).filter((f) => !blocked.has(f.dept.id));
+
   return (
-    <div className={`dept-modal-row ${depth === 1 ? "dept-modal-row-depth1" : ""}`}>
+    <div className="dept-modal-row" style={{ paddingLeft: indentOf(depth) }}>
       <span className="dept-modal-grip" aria-hidden="true">
         ::
       </span>
@@ -270,11 +313,22 @@ function DeptRow({
         </span>
       )}
       <span className="dept-modal-row-actions">
-        {onAddChild && (
-          <button type="button" className="dept-modal-icon-btn" aria-label={`${dept.name} 하위 부서 추가`} onClick={onAddChild}>
-            +
-          </button>
-        )}
+        <select
+          className="dept-modal-parent-select"
+          aria-label={`${dept.name} 상위 부서`}
+          value={dept.parent_id ?? ""}
+          onChange={(e) => onMove(e.target.value === "" ? null : e.target.value)}
+        >
+          <option value="">최상위</option>
+          {parentChoices.map((f) => (
+            <option key={f.dept.id} value={f.dept.id}>
+              {deptPathLabel(f.path)}
+            </option>
+          ))}
+        </select>
+        <button type="button" className="dept-modal-icon-btn" aria-label={`${dept.name} 하위 부서 추가`} onClick={onAddChild}>
+          +
+        </button>
         <button type="button" className="dept-modal-icon-btn" aria-label={`${dept.name} 이름 수정`} onClick={onStartEdit}>
           <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <path

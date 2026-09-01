@@ -230,6 +230,157 @@ describe("부서", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// QA W-25c · PATCH가 name만 바꾸고 parent_id는 보내도 조용히 무시했다. 조직 개편은
+// 지우고 새로 만드는 수밖에 없었고, 그러면 그 부서의 지침·수신자 지정이 cascade로
+// 함께 사라졌다. QA W-15 · 서버는 깊이 제한 없이 parent_id를 받는다 — 3단을 실제로
+// 만들 수 있는지, 그리고 그 3단에서 이동이 트리를 깨지 않는지까지 여기서 못 박는다.
+// ---------------------------------------------------------------------------
+describe("부서 상위 이동 (W-25c)", () => {
+  // 리조트 > 객실 > 프론트 + 독립 최상위 하나.
+  async function makeTree() {
+    return withService(async (q) => {
+      const { rows: r1 } = await q.query("insert into departments (name) values ($1) returning id", [
+        `${DEPT_PREFIX}리조트`,
+      ]);
+      const { rows: r2 } = await q.query(
+        "insert into departments (name, parent_id) values ($1, $2) returning id",
+        [`${DEPT_PREFIX}객실`, r1[0].id],
+      );
+      const { rows: r3 } = await q.query(
+        "insert into departments (name, parent_id) values ($1, $2) returning id",
+        [`${DEPT_PREFIX}프론트`, r2[0].id],
+      );
+      const { rows: r4 } = await q.query("insert into departments (name) values ($1) returning id", [
+        `${DEPT_PREFIX}안전관리팀`,
+      ]);
+      return { root: r1[0].id, mid: r2[0].id, leaf: r3[0].id, other: r4[0].id };
+    });
+  }
+
+  const parentOf = (id: string) =>
+    withService(async (q) => {
+      const { rows } = await q.query("select parent_id, name from departments where id = $1", [id]);
+      return rows[0];
+    });
+
+  it("3단 부서를 API로 만들 수 있다 — 서버는 깊이를 제한하지 않는다", async () => {
+    const admin = await agentAs("admin", "move-a@gonjiam.com");
+    const root = await admin.post("/api/departments").send({ name: `${DEPT_PREFIX}루트` });
+    const mid = await admin.post("/api/departments").send({ name: `${DEPT_PREFIX}중간`, parent_id: root.body.id });
+    const leaf = await admin.post("/api/departments").send({ name: `${DEPT_PREFIX}말단`, parent_id: mid.body.id });
+    expect(leaf.status).toBe(201);
+    expect(leaf.body.parent_id).toBe(mid.body.id);
+  });
+
+  it("parent_id를 보내면 실제로 옮겨진다", async () => {
+    const t = await makeTree();
+    const admin = await agentAs("admin", "move-b@gonjiam.com");
+    const res = await admin.patch(`/api/departments/${t.leaf}`).send({ parent_id: t.other });
+    expect(res.status).toBe(200);
+    expect(res.body.parent_id).toBe(t.other);
+    expect((await parentOf(t.leaf)).parent_id).toBe(t.other);
+    // 이름은 건드리지 않는다 — parent_id만 보냈으므로.
+    expect((await parentOf(t.leaf)).name).toBe(`${DEPT_PREFIX}프론트`);
+  });
+
+  it("parent_id: null은 최상위로 올린다", async () => {
+    const t = await makeTree();
+    const admin = await agentAs("admin", "move-c@gonjiam.com");
+    const res = await admin.patch(`/api/departments/${t.mid}`).send({ parent_id: null });
+    expect(res.status).toBe(200);
+    expect((await parentOf(t.mid)).parent_id).toBeNull();
+  });
+
+  it("name만 보내면 상위 부서는 그대로 남는다", async () => {
+    const t = await makeTree();
+    const admin = await agentAs("admin", "move-d@gonjiam.com");
+    const res = await admin.patch(`/api/departments/${t.mid}`).send({ name: `${DEPT_PREFIX}객실2` });
+    expect(res.status).toBe(200);
+    const row = await parentOf(t.mid);
+    expect(row.name).toBe(`${DEPT_PREFIX}객실2`);
+    expect(row.parent_id).toBe(t.root);
+  });
+
+  it("자기 자신을 상위로 지정하면 400이고 아무것도 바뀌지 않는다", async () => {
+    const t = await makeTree();
+    const admin = await agentAs("admin", "move-e@gonjiam.com");
+    const res = await admin.patch(`/api/departments/${t.mid}`).send({ parent_id: t.mid });
+    expect(res.status).toBe(400);
+    expect((await parentOf(t.mid)).parent_id).toBe(t.root);
+  });
+
+  it("자기 자손을 상위로 지정하면 400이다 — 트리에서 떨어져 나간 고리를 만들 수 없다", async () => {
+    const t = await makeTree();
+    const admin = await agentAs("admin", "move-f@gonjiam.com");
+    // 손자를 부모로 삼으려는 시도(리조트 → 프론트 밑으로). 통과하면 리조트·객실·
+    // 프론트 셋 다 루트에서 닿지 않게 되어 어느 화면에도 나타나지 않는다.
+    const res = await admin.patch(`/api/departments/${t.root}`).send({ parent_id: t.leaf });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/하위 부서/);
+    expect((await parentOf(t.root)).parent_id).toBeNull();
+  });
+
+  it("없는 부서를 상위로 지정하면 400이다", async () => {
+    const t = await makeTree();
+    const admin = await agentAs("admin", "move-g@gonjiam.com");
+    const res = await admin
+      .patch(`/api/departments/${t.leaf}`)
+      .send({ parent_id: "00000000-0000-0000-0000-000000000000" });
+    expect(res.status).toBe(400);
+    expect((await parentOf(t.leaf)).parent_id).toBe(t.mid);
+  });
+
+  it("parent_id 형식이 틀리면 400이다", async () => {
+    const t = await makeTree();
+    const admin = await agentAs("admin", "move-h@gonjiam.com");
+    const res = await admin.patch(`/api/departments/${t.leaf}`).send({ parent_id: "nope" });
+    expect(res.status).toBe(400);
+  });
+
+  it("일반 직원은 부서를 옮길 수 없다", async () => {
+    const t = await makeTree();
+    const staff = await agentAs("staff", "move-i@gonjiam.com");
+    expect((await staff.patch(`/api/departments/${t.leaf}`).send({ parent_id: t.other })).status).toBe(403);
+    expect((await parentOf(t.leaf)).parent_id).toBe(t.mid);
+  });
+
+  it("바꿀 내용을 아무것도 안 보내면 400이다", async () => {
+    const t = await makeTree();
+    const admin = await agentAs("admin", "move-j@gonjiam.com");
+    expect((await admin.patch(`/api/departments/${t.leaf}`).send({})).status).toBe(400);
+  });
+
+  // 이동은 지침·수신자 지정을 그대로 데리고 가야 한다 — 지우고 새로 만들면
+  // cascade로 사라지는 것이 바로 이 둘이고, 그래서 이동 수단이 필요했다.
+  it("옮겨도 그 부서의 지침과 수신자 지정이 남는다", async () => {
+    const t = await makeTree();
+    const admin = await agentAs("admin", "move-k@gonjiam.com");
+    const empId = await withService(async (q) => {
+      const { rows } = await q.query("select id from employees where email = $1", ["move-k@gonjiam.com"]);
+      return rows[0].id;
+    });
+    await withService(async (q) => {
+      await q.query(
+        `insert into action_guidelines (department_id, kind, grade, staff_actions, guest_notice)
+         values ($1, 'rain', 'watch', array['제설'], '')`,
+        [t.leaf],
+      );
+      await q.query("insert into recipients (department_id, employee_id) values ($1, $2)", [t.leaf, empId]);
+    });
+
+    expect((await admin.patch(`/api/departments/${t.leaf}`).send({ parent_id: t.other })).status).toBe(200);
+
+    const kept = await withService(async (q) => {
+      const { rows: g } = await q.query("select count(*)::int as n from action_guidelines where department_id = $1", [t.leaf]);
+      const { rows: r } = await q.query("select count(*)::int as n from recipients where department_id = $1", [t.leaf]);
+      return { guidelines: g[0].n, recipients: r[0].n };
+    });
+    expect(kept).toEqual({ guidelines: 1, recipients: 1 });
+  });
+});
+
+
 describe("직원", () => {
   it("로그인하지 않으면 401이다", async () => {
     expect((await request(app).get("/api/employees")).status).toBe(401);

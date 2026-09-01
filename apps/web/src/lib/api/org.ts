@@ -46,6 +46,10 @@ export const createDepartment = (name: string, opts?: { parentId?: string | null
   });
 export const renameDepartment = (id: string, name: string) =>
   apiSend<DepartmentRow>("PATCH", `/api/departments/${encodeURIComponent(id)}`, { name });
+// 상위 부서 변경. parent_id만 보낸다 — 이름은 서버가 그대로 둔다. null은
+// "최상위로 올린다"는 뜻이고, 서버는 자기 자신·자기 자손을 부모로 지정하면 400을 준다.
+export const moveDepartment = (id: string, parentId: string | null) =>
+  apiSend<DepartmentRow>("PATCH", `/api/departments/${encodeURIComponent(id)}`, { parent_id: parentId });
 export const deleteDepartment = (id: string) => apiSend<null>("DELETE", `/api/departments/${encodeURIComponent(id)}`);
 
 export const listEmployees = (opts?: { roles?: EmpRole[] }) => {

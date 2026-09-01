@@ -402,3 +402,36 @@ describe("Employees 계정 관리", () => {
     expect(screen.getAllByRole("button", { name: "임시 비밀번호 발급" })).toHaveLength(1);
   });
 });
+
+// QA W-15 · 부서 드롭다운이 2단만 만들어서 3단 부서는 목록에 아예 없었다.
+// 그 부서 소속 직원의 부서 칸에도 "미지정"이 찍혔다 — 부서가 지정돼 있는데도.
+describe("Employees 부서 계층 (QA W-15)", () => {
+  const threeLevels = [
+    { id: "d1", parent_id: null, name: "리조트", sort_order: 0 },
+    { id: "d2", parent_id: "d1", name: "객실", sort_order: 0 },
+    { id: "d3", parent_id: "d2", name: "프론트", sort_order: 0 },
+    { id: "d4", parent_id: null, name: "안전관리팀", sort_order: 1 },
+  ];
+
+  it("3단 부서가 드롭다운에 전체 경로로 나타난다", async () => {
+    mocks.listDepartments.mockResolvedValue(threeLevels);
+    renderPage();
+
+    const filter = await screen.findByLabelText("부서 필터");
+    const labels = [...filter.querySelectorAll("option")].map((o) => o.textContent);
+    expect(labels).toContain("리조트 · 객실 · 프론트");
+    expect(labels).toContain("안전관리팀");
+  });
+
+  it("3단 부서 소속 직원의 부서 칸이 미지정이 아니다", async () => {
+    mocks.listDepartments.mockResolvedValue(threeLevels);
+    mocks.listEmployees.mockResolvedValue([{ ...target, department_id: "d3" }]);
+    renderPage();
+
+    // 드롭다운 option에도 같은 글자가 있으므로 표 본문 셀에서 직접 찾는다.
+    await screen.findByRole("table");
+    const cells = [...document.querySelectorAll("tbody td")].map((td) => td.textContent);
+    expect(cells).toContain("리조트 · 객실 · 프론트");
+    expect(cells).not.toContain("미지정");
+  });
+});

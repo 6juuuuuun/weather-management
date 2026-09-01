@@ -5,6 +5,7 @@ import {
   listDepartmentsForSignup,
   createDepartment,
   renameDepartment,
+  moveDepartment,
   deleteDepartment,
   listEmployees,
   updateEmployee,
@@ -55,6 +56,18 @@ describe("lib/api/org HTTP 계약", () => {
   it("renameDepartment는 PATCH /api/departments/:id에 { name }을 보낸다", async () => {
     const req = await record(() => renameDepartment("d1", "새이름"));
     expect(req).toEqual({ path: "/api/departments/d1", method: "PATCH", body: { name: "새이름" } });
+  });
+
+  // 이름을 함께 보내면 안 된다 — 서버는 보낸 키만 바꾸므로, 이동만 하려는 요청에
+  // 이름이 끼면 화면이 들고 있던 옛 이름으로 되돌려 쓴다.
+  it("moveDepartment는 PATCH /api/departments/:id에 { parent_id }만 보낸다", async () => {
+    const req = await record(() => moveDepartment("d1", "d2"));
+    expect(req).toEqual({ path: "/api/departments/d1", method: "PATCH", body: { parent_id: "d2" } });
+  });
+
+  it("moveDepartment(null)은 최상위로 올린다는 뜻으로 parent_id: null을 보낸다", async () => {
+    const req = await record(() => moveDepartment("d1", null));
+    expect(req).toEqual({ path: "/api/departments/d1", method: "PATCH", body: { parent_id: null } });
   });
 
   it("deleteDepartment는 DELETE /api/departments/:id다", async () => {

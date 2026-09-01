@@ -47,8 +47,10 @@ const EMP_ROLES = ["admin", "approver", "staff"] as const;
 // 부서
 // ---------------------------------------------------------------------------
 
-// parent_id/sort_order도 함께 내려준다 — 부서는 2단 계층(상위/하위)이고 화면
-// (DeptModal.tsx/Employees.tsx/Guidelines.tsx)이 그 계층으로 트리를 그린다.
+// parent_id/sort_order도 함께 내려준다 — 부서는 깊이 제한이 없는 계층이고 화면
+// (DeptModal.tsx/Employees.tsx/Guidelines.tsx/Dashboard.tsx)이 그 계층으로 트리를
+// 그린다. 화면이 2단만 그리던 동안 3단 부서는 데이터에만 있고 어디에도 보이지
+// 않았다(QA W-15) — 계층 계산은 apps/web/src/lib/deptTree.ts 한 곳으로 모았다.
 // 정렬은 그대로 이름순을 유지한다(기존 계약) — 계층 그룹핑·정렬은 화면이
 // sort_order로 직접 한다.
 const DEPT_COLS = "id, parent_id, name, sort_order";
@@ -90,18 +92,84 @@ orgRouter.post("/departments", requireAdmin, async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
+// 이름과 상위 부서를 바꾼다. 예전에는 이름만 바꿨고 parent_id는 보내도 조용히
+// 무시됐다(QA W-25c) — 조직 개편 때 지우고 새로 만드는 수밖에 없었고, 그러면 그
+// 부서의 지침과 수신자 지정이 cascade로 함께 사라졌다.
+//
+// 보낸 키만 바꾼다: name만 보내면 상위 부서는 그대로, parent_id만 보내면 이름은
+// 그대로다. `parent_id: null`은 "최상위로 올린다"는 뜻이므로 "안 보냈다"와 반드시
+// 구분해야 한다 — 그래서 값이 아니라 키의 존재로 가른다.
 orgRouter.patch("/departments/:id", requireAdmin, async (req, res) => {
-  const name = String(req.body?.name ?? "").trim();
-  if (!name) return res.status(400).json({ error: "부서 이름이 필요합니다" });
-  const rows = await withUser(req.user!.accountId, async (q) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const hasName = Object.prototype.hasOwnProperty.call(body, "name");
+  const hasParent = Object.prototype.hasOwnProperty.call(body, "parent_id");
+  if (!hasName && !hasParent) return res.status(400).json({ error: "부서 이름이 필요합니다" });
+
+  const id = String(req.params.id ?? "");
+  // 형식이 틀린 id를 그대로 바인딩하면 아래 recursive CTE가 uuid 캐스팅에서 죽고,
+  // 그 예외는 500이 되어 "없는 부서"와 구분되지 않는다.
+  if (!UUID.test(id)) return res.status(404).json({ error: "부서를 찾을 수 없습니다" });
+
+  let name: string | null = null;
+  if (hasName) {
+    name = String(body.name ?? "").trim();
+    if (!name) return res.status(400).json({ error: "부서 이름이 필요합니다" });
+  }
+
+  let parentId: string | null = null;
+  if (hasParent) {
+    parentId = body.parent_id === null || body.parent_id === "" ? null : String(body.parent_id);
+    if (parentId !== null && !UUID.test(parentId)) {
+      return res.status(400).json({ error: "parent_id 형식이 올바르지 않습니다" });
+    }
+    if (parentId === id) {
+      return res.status(400).json({ error: "부서를 자기 자신의 하위로 옮길 수 없습니다" });
+    }
+  }
+
+  const result = await withUser(req.user!.accountId, async (q) => {
+    const { rows: self } = await q.query("select id from departments where id = $1", [id]);
+    if (self.length === 0) return { kind: "not-found" as const };
+
+    if (hasParent && parentId !== null) {
+      const { rows: parentRows } = await q.query("select id from departments where id = $1", [parentId]);
+      if (parentRows.length === 0) return { kind: "no-parent" as const };
+
+      // 자기 자손을 부모로 지정하면 트리에서 통째로 떨어져 나간 고리가 생긴다 —
+      // 서버는 계속 그 행들을 내려주지만 루트에서 닿지 않아 어느 화면에도 뜨지
+      // 않고, 화면의 재귀 렌더가 무한히 돈다. DB에는 이걸 막는 제약이 없으므로
+      // 여기서 자손 집합을 직접 구해 막는다.
+      const { rows: cycle } = await q.query(
+        `with recursive subtree as (
+           select id from departments where id = $1
+           union all
+           select d.id from departments d join subtree s on d.parent_id = s.id
+         )
+         select 1 from subtree where id = $2`,
+        [id, parentId],
+      );
+      if (cycle.length > 0) return { kind: "cycle" as const };
+    }
+
     const { rows } = await q.query(
-      `update departments set name = $2 where id = $1 returning ${DEPT_COLS}`,
-      [req.params.id, name],
+      `update departments
+          set name = coalesce($2, name),
+              parent_id = case when $4 then $3::uuid else parent_id end
+        where id = $1
+       returning ${DEPT_COLS}`,
+      [id, name, parentId, hasParent],
     );
-    return rows;
+    return { kind: "ok" as const, row: rows[0] };
   });
-  if (rows.length === 0) return res.status(404).json({ error: "부서를 찾을 수 없습니다" });
-  res.json(rows[0]);
+
+  if (result.kind === "not-found") return res.status(404).json({ error: "부서를 찾을 수 없습니다" });
+  if (result.kind === "no-parent") {
+    return res.status(400).json({ error: `parent_id ${parentId}에 해당하는 부서가 없습니다` });
+  }
+  if (result.kind === "cycle") {
+    return res.status(400).json({ error: "부서를 자기 하위 부서 밑으로 옮길 수 없습니다" });
+  }
+  res.json(result.row);
 });
 
 orgRouter.delete("/departments/:id", requireAdmin, async (req, res) => {

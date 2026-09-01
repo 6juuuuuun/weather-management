@@ -39,8 +39,30 @@
   border-top: none;
 }
 
-.dept-modal-row-depth1 {
-  padding-left: 28px;
+/* 상위 부서 이동 드롭다운. 이름 칸을 밀어내지 않도록 폭을 묶어 두고, 깊은
+   트리에서 경로가 길어지면 말줄임으로 자른다(전체 경로는 열면 보인다). */
+.dept-modal-parent-select {
+  max-width: 160px;
+  padding: 4px 8px;
+  border-radius: var(--radius-ctl);
+  border: 1px solid var(--hairline);
+  background: var(--canvas);
+  color: var(--ink-muted-48);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+
+.dept-modal-parent-select:hover {
+  color: var(--ink);
+}
+
+.dept-modal-hint {
+  margin: 16px 0 0;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-muted-48);
 }
 
 .dept-modal-grip {

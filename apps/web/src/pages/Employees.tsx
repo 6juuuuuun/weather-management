@@ -21,6 +21,7 @@ import { setAccountStatus, resetPassword } from "../lib/api/auth";
 import type { DepartmentRow, EmployeeRow } from "../lib/api/org";
 import type { EmpRole } from "../lib/types";
 import { ROLE_LABEL } from "../lib/roles";
+import { flattenDepartments, deptPathLabel } from "../lib/deptTree";
 import "./Employees.css";
 
 const ROLE_ORDER: EmpRole[] = ["admin", "approver", "staff"];
@@ -124,34 +125,20 @@ export default function Employees() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  const deptById = useMemo(() => {
-    const map = new Map<string, DepartmentRow>();
-    for (const d of departments) map.set(d.id, d);
-    return map;
-  }, [departments]);
+  // 드롭다운 라벨은 **루트부터의 전체 경로**다. 들여쓰기가 아니라 경로를 쓰는
+  // 이유: <select>는 닫혀 있을 때 고른 항목 한 줄만 보여주므로, 들여쓰기만으로는
+  // 다른 부모 밑의 같은 이름(시드에도 '리조트 · 조리'와 '골프 · 조리'가 있다)이
+  // 닫힌 상태에서 구분되지 않는다. 2단까지는 지금까지 보이던 글자와 똑같고,
+  // 3단부터는 그대로 한 칸 더 길어진다.
+  const deptOptions = useMemo(
+    () => flattenDepartments(departments).map((f) => ({ id: f.dept.id, label: deptPathLabel(f.path) })),
+    [departments],
+  );
 
   const deptLabel = useMemo(() => {
-    return (id: string | null): string => {
-      if (!id) return "미지정";
-      const dept = deptById.get(id);
-      if (!dept) return "미지정";
-      if (!dept.parent_id) return dept.name;
-      const parent = deptById.get(dept.parent_id);
-      return parent ? `${parent.name} · ${dept.name}` : dept.name;
-    };
-  }, [deptById]);
-
-  const deptOptions = useMemo(() => {
-    const top = departments.filter((d) => !d.parent_id).sort((a, b) => a.sort_order - b.sort_order);
-    const options: { id: string; label: string }[] = [];
-    for (const t of top) {
-      options.push({ id: t.id, label: t.name });
-      for (const child of departments.filter((d) => d.parent_id === t.id).sort((a, b) => a.sort_order - b.sort_order)) {
-        options.push({ id: child.id, label: `${t.name} · ${child.name}` });
-      }
-    }
-    return options;
-  }, [departments]);
+    const labels = new Map(deptOptions.map((o) => [o.id, o.label]));
+    return (id: string | null): string => (id ? (labels.get(id) ?? "미지정") : "미지정");
+  }, [deptOptions]);
 
   // 자기 행인지, 그리고 관리자가 몇 명인지 — 마지막 관리자가 스스로 내려오는 것을
   // 화면에서도 막기 위해 쓴다(QA W-19).

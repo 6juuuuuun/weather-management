@@ -269,4 +269,75 @@ describe("Guidelines", () => {
     expect(await screen.findByText(/김운영/)).toBeInTheDocument();
     expect(screen.queryByText(/삭제된 직원/)).not.toBeInTheDocument();
   });
+  // ---------------------------------------------------------------------------
+  // QA W-15 · 화면이 정확히 2단만 그려서 3단 부서와 자식 없는 최상위 부서는
+  // 데이터에 있는데도 목록에 나타나지 않았다 — 지침을 등록할 방법 자체가 없었다.
+  // ---------------------------------------------------------------------------
+
+  it("3단 부서를 지침 등록 가능한 리프로 보여준다", async () => {
+    mocks.authState.employee = adminEmployee();
+    mocks.listDepartments.mockResolvedValue([
+      { id: "g1", parent_id: null, name: "리조트", sort_order: 0 },
+      { id: "l1", parent_id: "g1", name: "객실", sort_order: 0 },
+      { id: "l2", parent_id: "l1", name: "프론트", sort_order: 0 },
+    ]);
+    mocks.listEmployees.mockResolvedValue([adminEmployee()]);
+
+    render(
+      <MemoryRouter>
+        <Guidelines />
+      </MemoryRouter>,
+    );
+
+    // 3단 부서가 보이고, 클릭 가능한 리프여야 한다(중간 단계인 '객실'은 접기 헤더).
+    const front = await screen.findByRole("button", { name: /프론트/ });
+    expect(front).toHaveClass("guidelines-leaf");
+    fireEvent.click(front);
+    // 빵부스러기가 루트부터의 전체 경로를 말한다.
+    expect(await screen.findByText("리조트 · 객실 · 프론트")).toBeInTheDocument();
+  });
+
+  it("자식 없는 최상위 부서도 지침을 등록할 수 있는 리프다", async () => {
+    mocks.authState.employee = adminEmployee();
+    mocks.listDepartments.mockResolvedValue([
+      { id: "solo", parent_id: null, name: "안전관리팀", sort_order: 0 },
+    ]);
+    mocks.listEmployees.mockResolvedValue([adminEmployee()]);
+
+    render(
+      <MemoryRouter>
+        <Guidelines />
+      </MemoryRouter>,
+    );
+
+    const solo = await screen.findByRole("button", { name: /안전관리팀/ });
+    expect(solo).toHaveClass("guidelines-leaf");
+    // 기본 선택이 그 부서로 잡혀 편집기가 열린다 — 예전에는 좌측이 통째로 비어
+    // "좌측에서 부서를 선택하세요."에서 더 나아갈 수 없었다.
+    expect(await screen.findByText("폭우 대응 지침")).toBeInTheDocument();
+    expect(screen.queryByText("좌측에서 부서를 선택하세요.")).not.toBeInTheDocument();
+  });
+
+  it("중간 단계 부서는 접기 헤더이고 접으면 그 아래가 전부 사라진다", async () => {
+    mocks.authState.employee = adminEmployee();
+    mocks.listDepartments.mockResolvedValue([
+      { id: "g1", parent_id: null, name: "리조트", sort_order: 0 },
+      { id: "l1", parent_id: "g1", name: "객실", sort_order: 0 },
+      { id: "l2", parent_id: "l1", name: "프론트", sort_order: 0 },
+    ]);
+    mocks.listEmployees.mockResolvedValue([adminEmployee()]);
+
+    render(
+      <MemoryRouter>
+        <Guidelines />
+      </MemoryRouter>,
+    );
+
+    const room = await screen.findByRole("button", { name: /객실/ });
+    expect(room).toHaveClass("guidelines-group-toggle");
+    fireEvent.click(room);
+    await waitFor(() => expect(screen.queryByRole("button", { name: /프론트/ })).not.toBeInTheDocument());
+    // 그 위 단계는 그대로 남아 있어야 한다.
+    expect(screen.getByRole("button", { name: /객실/ })).toBeInTheDocument();
+  });
 });
