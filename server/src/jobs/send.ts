@@ -230,8 +230,23 @@ export async function runSend(
   }
 
   // 권한 검사 (1/2): 승인은 Alert 수신자 전용.
+  //
+  // 거절 사유를 그대로 말한다(QA W-08e). 예전에는 "권한이 없습니다" 한 줄이었고,
+  // 그 문장은 이 시스템에서 정확히 반대 방향으로 읽힌다 — 받는 사람은 "역할이
+  // 모자라구나"라고 이해하고 관리자에게 역할을 올려 달라고 한다. 역할을 올려도
+  // 아무 일도 일어나지 않는다. 승인 권한은 오직 Alert 수신자 등록에서 나온다
+  // (스펙 2026-08-13, db/migrations/0007). 관리자가 이 규칙을 처음 만나는 자리가
+  // 대개 이 403이므로, 여기서 무엇을 해야 하는지까지 말한다.
   const recipient = await withService((q) => isAlertRecipient(q, emp.id));
-  if (!recipient) return { ok: false, status: 403, error: "권한이 없습니다" };
+  if (!recipient) {
+    return {
+      ok: false,
+      status: 403,
+      error:
+        "특보 Alert 수신자로 등록된 사람만 승인·발송할 수 있습니다. " +
+        "역할과는 무관합니다 — 특보 기준 화면의 '특보 Alert 수신자'에 등록해야 합니다",
+    };
+  }
 
   if (body.mode === "approve") {
     // 발송 대상이 0명이면 승인이 아니다(QA W-02).

@@ -1162,6 +1162,13 @@ describe("POST /api/send — 권한", () => {
       expect(s.message.status).toBe("draft");
       expect(s.dispatches).toEqual([]);
       expect(log).not.toHaveBeenCalled();
+
+      // 거절 사유가 규칙을 말해야 한다(QA W-08e). "권한이 없습니다" 한 줄은 이
+      // 시스템에서 정확히 반대로 읽힌다 — 거절당한 사람은 역할이 모자란다고 이해하고
+      // 관리자에게 역할을 올려 달라고 하는데, 역할을 올려도 아무 일도 일어나지 않는다.
+      // 관리자가 이 규칙을 처음 만나는 자리가 대개 이 403이다.
+      expect(res.body.error).toContain("Alert 수신자");
+      expect(res.body.error).toContain("역할과는 무관");
     },
   );
 
