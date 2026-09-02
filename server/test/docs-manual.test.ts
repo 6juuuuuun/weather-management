@@ -18,14 +18,25 @@ const read = (p: string) => readFileSync(root + p, "utf8");
 const manual = read("docs/운영.md");
 
 /**
- * 템플릿 문자열에서 **값이 끼어들지 않는 고정 조각**만 뽑는다.
- * `${...}`로 자르고, 문서가 흔히 줄이는 부분(괄호 보충 설명, `—` 뒤의 부연)은 버린다.
- * 남은 조각 중 하나라도 문서에 있으면 그 사유는 문서에 적힌 것으로 본다.
+ * 템플릿 문자열에서 **값이 끼어들지 않는 고정 조각**을 전부 뽑는다.
+ *
+ * 예전 판은 `(` 뒤(괄호 보충 설명)와 `—` 뒤(무엇을 하라)를 통째로 버리고, 남은 조각이
+ * **하나라도** 문서에 있으면 통과시켰다. 이 시스템의 사유 문장은 대부분 뒤쪽에
+ * `— 그래서 무엇을 하라`가 붙는데, 그 절반이 검사 대상 밖이었다. 회귀 검증 §C-1이
+ * 변이로 확인했다: 사유의 처방을 **없는 화면 이름**으로 바꿔도 21건이 전부 통과했다.
+ *
+ * 그 결함(§C-1)의 모양이 정확히 이 파일이 막겠다고 선언한 결함(W-23: "§6-4가 승인
+ * 수신자를 '알림 설정'에서 넣으라고 했다 — 그 목록은 특보 기준 화면에 있다")과 같다.
+ * **위험을 알고, 막겠다고 선언하고, 정작 그 갈래는 테스트하지 않은 것이다.**
+ *
+ * 그래서 이제 `${...}`로만 자르고, 남은 조각(8자 이상)이 **전부** 문서에 있어야 한다.
+ * 대가는 안내서가 사유 문장을 줄이지 않고 그대로 인용해야 한다는 것이고, 그것이
+ * 이 표의 목적이다 — 운영자는 화면에서 본 문장을 표에서 그대로 찾는다.
  */
 function fixedFragments(template: string): string[] {
   return template
     .split(/\$\{[^}]*\}/)
-    .map((chunk) => chunk.split("(")[0]!.split("—")[0]!.trim())
+    .map((chunk) => chunk.trim())
     .filter((chunk) => chunk.length >= 8);
 }
 
@@ -34,13 +45,19 @@ describe("운영 안내서 §3-3 — /api/health/deep의 사유가 전부 표에
 
   // reasons.push(`...`) / reasons.push("...")의 문자열을 그대로 긁는다.
   // 여러 줄에 걸쳐 이어 붙인 것(`... ` + `...`)도 한 덩어리로 본다.
-  const pushed = [...watchdog.matchAll(/reasons\.push\(\s*([\s\S]*?)\s*\);/g)].map(([, body]) =>
-    [...body!.matchAll(/[`"]([^`"]*)[`"]/g)].map(([, lit]) => lit).join(""),
-  );
+  const literals = (body: string) =>
+    [...body.matchAll(/[`"]([^`"]*)[`"]/g)].map(([, lit]) => lit).join("");
+  const pushed = [
+    ...[...watchdog.matchAll(/reasons\.push\(\s*([\s\S]*?)\s*\);/g)].map(([, body]) => literals(body!)),
+    // catch 분기는 push가 아니라 `return { ok:false, reasons: [...] }`로 돌려준다.
+    // 운영자가 503과 함께 가장 자주 보게 되는 사유 중 하나인데, 정규식이 push만
+    // 훑는 바람에 문서 대조 대상에서 통째로 빠져 있었다(회귀 검증 §C-2).
+    ...[...watchdog.matchAll(/reasons:\s*\[\s*([\s\S]*?)\s*\]/g)].map(([, body]) => literals(body!)),
+  ].filter((t) => t.length > 0);
 
   it("사유를 한 건도 못 찾았다면 이 테스트 자체가 고장 난 것이다", () => {
     // 정규식이 소스 형태 변화로 빗나가면 아래 검사가 0건을 통과시킨다.
-    expect(pushed.length).toBeGreaterThanOrEqual(10);
+    expect(pushed.length).toBeGreaterThanOrEqual(13);
   });
 
   it.each(pushed.map((t) => [t.slice(0, 40), t] as const))(
@@ -48,10 +65,13 @@ describe("운영 안내서 §3-3 — /api/health/deep의 사유가 전부 표에
     (_label, template) => {
       const fragments = fixedFragments(template);
       expect(fragments.length).toBeGreaterThan(0);
-      const found = fragments.some((f) => manual.includes(f));
-      expect(found, `안내서 §3-3에 없는 사유입니다:\n  ${template}\n  조각: ${fragments.join(" / ")}`).toBe(
-        true,
-      );
+      // **전부** 있어야 한다. 하나라도 빠지면 그 부분(대개 "무엇을 하라")이 코드와
+      // 문서에서 갈라졌다는 뜻이다.
+      const missing = fragments.filter((f) => !manual.includes(f));
+      expect(
+        missing,
+        `안내서 §3-3이 이 사유를 그대로 인용하지 않습니다:\n  ${template}\n  빠진 조각: ${missing.join(" / ")}`,
+      ).toEqual([]);
     },
   );
 });
