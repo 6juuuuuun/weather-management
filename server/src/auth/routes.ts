@@ -21,6 +21,12 @@ const TEMP_PASSWORD_HOURS = 72;
 // 최종 관문이므로, 화면 검사가 없어도 여기서 반드시 막힌다.
 export const MIN_PASSWORD = 10;
 
+// 이름 길이 상한(QA W-30). api/org.ts의 MAX_EMP_NAME과 같은 값이어야 한다 —
+// 두 경로(가입 · 관리자의 사전 등록)가 같은 employees.name 컬럼을 채운다.
+// 여기서 org.ts를 import하지 않는 이유: org.ts는 이 파일의 requireAuth를
+// 가져가므로 순환 참조가 된다. 값이 갈라지지 않게 이 주석으로 묶어 둔다.
+export const MAX_NAME = 40;
+
 // 없는 계정으로 로그인을 시도했을 때 쓰는 더미 해시(QA W-28). 아무도 모르는 임의
 // 값을 한 번만 해싱해 두고 재사용한다 — 원문을 알 수 없으니 이 해시로는 어떤
 // 비밀번호도 통과하지 못하고, 검증 비용(argon2)만 실재 계정과 같아진다.
@@ -62,6 +68,24 @@ authRouter.post("/signup", async (req, res) => {
     return res.status(400).json({ error: "회사 이메일로만 가입할 수 있습니다" });
   }
 
+  // 이름은 그대로 employees.name에 들어간다 — 직원 명부·승인 화면·카카오워크 DM
+  // 본문에 실리는 값인데 trim도 길이 제한도 없어서 5000자가 그대로 저장됐다
+  // (QA W-30). 같은 요청 안에서 이메일만 정규화되고 이름은 아니었다.
+  const trimmedName = String(name).trim();
+  if (!trimmedName) return res.status(400).json({ error: "이름이 비어 있습니다" });
+  if ([...trimmedName].length > MAX_NAME) {
+    return res.status(400).json({ error: `이름은 ${MAX_NAME}자 이하여야 합니다` });
+  }
+
+  // department_id는 uuid 컬럼이다. 형식이 아닌 값을 그대로 바인딩하면 Postgres가
+  // 22P02로 죽고, 그 예외가 아래 catch를 지나 500 "서버 오류"로 나갔다(QA W-24) —
+  // 가입 화면에서 부서를 고르지 못한 사람에게 원인을 전혀 말해 주지 않는다.
+  // 같은 라우터의 다른 검사들(이메일 형식·비밀번호 길이)은 이미 400으로 막는다.
+  // 값이 없는 것(부서 미지정)은 그대로 허용한다.
+  if (department_id !== undefined && department_id !== null && !UUID.test(String(department_id))) {
+    return res.status(400).json({ error: "department_id 형식이 올바르지 않습니다" });
+  }
+
   try {
     await withService(async (q) => {
       const { rows } = await q.query(
@@ -95,7 +119,7 @@ authRouter.post("/signup", async (req, res) => {
                department_id = coalesce(excluded.department_id, employees.department_id)
            where employees.auth_user_id is null
          returning id`,
-        [rows[0].id, name, email, phone ?? null, department_id ?? null],
+        [rows[0].id, trimmedName, email, phone ?? null, department_id ?? null],
       );
       // where가 걸리면 아무 행도 돌아오지 않는다. 그대로 두면 계정만 만들어지고
       // 직원 행이 없는 반쪽 상태(= 유령 계정)가 커밋된다 — 지금 고치고 있는 바로

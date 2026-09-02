@@ -42,6 +42,25 @@ const EMP_COLS = "id, auth_user_id, name, email, kakaowork_user_id, department_i
 // DB에 닿기 전에 여기서 막아 400으로 돌려준다.
 const EVENT_KINDS = ["rain", "snow", "wind", "heat"] as const;
 const EMP_ROLES = ["admin", "approver", "staff"] as const;
+const REPEAT_POLICIES = ["once", "hourly_until_below", "until_daily_accum_below"] as const;
+const HEAT_BASES = ["temp", "feels"] as const;
+
+// 입력 길이 상한(QA W-30). 어디에도 상한이 없어서 QA가 부서 이름 500자와 직원
+// 이름 5000자를 그대로 저장했다. 이 값들은 화면 표·부서 트리·**카카오워크 DM
+// 본문**에 그대로 실린다 — 한 행이 표를 가로로 밀어내 다른 열을 화면 밖으로
+// 내보내고, 긴 이름 하나가 특보 메시지를 통째로 못 읽게 만든다.
+// 화면(apps/web)의 maxLength와 같은 값이어야 하지만, 화면 검사는 우회할 수
+// 있으므로 최종 관문은 여기다.
+export const MAX_DEPT_NAME = 40;
+export const MAX_EMP_NAME = 40;
+export const MAX_PHONE = 30;
+export const MAX_KAKAOWORK_ID = 64;
+
+// 글자 수는 코드 포인트로 센다. UTF-16 code unit(String.length)으로 세면 이모지
+// 하나가 2자로 잡혀 같은 "글자 수"가 입력에 따라 다르게 걸린다 — 화면의
+// maxLength(코드 포인트 기준)와 서버가 어긋나면 화면에서 다 못 지운 값이
+// 저장만 실패한다.
+const overLength = (v: string, max: number) => [...v].length > max;
 
 // ---------------------------------------------------------------------------
 // 부서
@@ -70,6 +89,9 @@ orgRouter.get("/departments", async (req, res) => {
 orgRouter.post("/departments", requireAdmin, async (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   if (!name) return res.status(400).json({ error: "부서 이름이 필요합니다" });
+  if (overLength(name, MAX_DEPT_NAME)) {
+    return res.status(400).json({ error: `부서 이름은 ${MAX_DEPT_NAME}자 이하여야 합니다` });
+  }
   const parentId = req.body?.parent_id ?? null;
   if (parentId !== null && !UUID.test(String(parentId))) {
     return res.status(400).json({ error: "parent_id 형식이 올바르지 않습니다" });
@@ -80,6 +102,18 @@ orgRouter.post("/departments", requireAdmin, async (req, res) => {
       const { rows: parentRows } = await q.query("select id from departments where id = $1", [parentId]);
       if (parentRows.length === 0) return null;
     }
+    // 같은 부모 아래 같은 이름을 막는다(QA W-25e). 예전에는 몇 개든 만들 수 있었고,
+    // 그러면 어느 화면에서도 구분되지 않는다: 직원 배정 드롭다운도 지침 화면도
+    // 부서 수신자 목록도 이름만 그리므로, 관리자는 지침을 어느 쪽에 달았는지
+    // 알 수 없다. 서로 다른 부모 아래의 같은 이름은 정상이다(시드의 '리조트 · 조리'와
+    // '골프 · 조리') — 그래서 형제 범위로만 본다.
+    // parent_id가 null인 최상위끼리도 형제이므로 is not distinct from으로 비교한다
+    // (= 연산자는 null끼리 참이 되지 않아 최상위 중복이 그대로 통과한다).
+    const { rows: dup } = await q.query(
+      "select id from departments where parent_id is not distinct from $1 and name = $2",
+      [parentId, name],
+    );
+    if (dup.length > 0) return "duplicate" as const;
     const { rows } = await q.query(
       `insert into departments (name, parent_id, sort_order)
        values ($1, $2, coalesce($3, 0))
@@ -89,6 +123,9 @@ orgRouter.post("/departments", requireAdmin, async (req, res) => {
     return rows;
   });
   if (rows === null) return res.status(400).json({ error: `parent_id ${parentId}에 해당하는 부서가 없습니다` });
+  if (rows === "duplicate") {
+    return res.status(409).json({ error: `같은 상위 부서 아래에 '${name}' 부서가 이미 있습니다` });
+  }
   res.status(201).json(rows[0]);
 });
 
@@ -114,6 +151,9 @@ orgRouter.patch("/departments/:id", requireAdmin, async (req, res) => {
   if (hasName) {
     name = String(body.name ?? "").trim();
     if (!name) return res.status(400).json({ error: "부서 이름이 필요합니다" });
+    if (overLength(name, MAX_DEPT_NAME)) {
+      return res.status(400).json({ error: `부서 이름은 ${MAX_DEPT_NAME}자 이하여야 합니다` });
+    }
   }
 
   let parentId: string | null = null;
@@ -128,7 +168,7 @@ orgRouter.patch("/departments/:id", requireAdmin, async (req, res) => {
   }
 
   const result = await withUser(req.user!.accountId, async (q) => {
-    const { rows: self } = await q.query("select id from departments where id = $1", [id]);
+    const { rows: self } = await q.query("select id, name, parent_id from departments where id = $1", [id]);
     if (self.length === 0) return { kind: "not-found" as const };
 
     if (hasParent && parentId !== null) {
@@ -151,6 +191,18 @@ orgRouter.patch("/departments/:id", requireAdmin, async (req, res) => {
       if (cycle.length > 0) return { kind: "cycle" as const };
     }
 
+    // 이름을 바꾸든 상위를 옮기든 결과가 "같은 부모 아래 같은 이름"이면 막는다
+    // (QA W-25e — POST와 같은 규칙). 옮기기가 특히 위험하다: 이름은 그대로 두고
+    // 부모만 바꿔도 그쪽 형제와 이름이 겹칠 수 있는데, 그 순간 두 부서는 모든
+    // 화면에서 같은 글자가 된다. 자기 자신은 비교 대상에서 뺀다.
+    const nextName = hasName ? name : (self[0].name as string);
+    const nextParent = hasParent ? parentId : ((self[0].parent_id ?? null) as string | null);
+    const { rows: dup } = await q.query(
+      "select id from departments where parent_id is not distinct from $1 and name = $2 and id <> $3",
+      [nextParent, nextName, id],
+    );
+    if (dup.length > 0) return { kind: "duplicate" as const, name: nextName as string };
+
     const { rows } = await q.query(
       `update departments
           set name = coalesce($2, name),
@@ -169,15 +221,40 @@ orgRouter.patch("/departments/:id", requireAdmin, async (req, res) => {
   if (result.kind === "cycle") {
     return res.status(400).json({ error: "부서를 자기 하위 부서 밑으로 옮길 수 없습니다" });
   }
+  if (result.kind === "duplicate") {
+    return res.status(409).json({ error: `같은 상위 부서 아래에 '${result.name}' 부서가 이미 있습니다` });
+  }
   res.json(result.row);
 });
 
+// 하위 부서가 있는 부서는 지울 수 없다. departments.parent_id는 on delete
+// restrict라 Postgres가 23503으로 막아 주는데, 그 예외를 아무도 잡지 않아
+// "서버 오류가 발생했습니다"(500)로 나갔다(QA W-24·W-25b) — 관리자는 무엇이
+// 잘못됐는지도, 무엇을 먼저 해야 하는지도 알 수 없었다. 이유를 말해 준다.
 orgRouter.delete("/departments/:id", requireAdmin, async (req, res) => {
-  const rows = await withUser(req.user!.accountId, async (q) => {
-    const { rows } = await q.query("delete from departments where id = $1 returning id", [req.params.id]);
-    return rows;
+  const id = String(req.params.id ?? "");
+  // 형식이 아닌 id를 그대로 바인딩하면 uuid 캐스팅에서 22P02로 죽고 그 예외가
+  // 500이 된다. 같은 자원의 PATCH와 같은 규약(404)으로 맞춘다 — 없는 부서를
+  // 지우려는 것과 결과가 같다.
+  if (!UUID.test(id)) return res.status(404).json({ error: "부서를 찾을 수 없습니다" });
+
+  const outcome = await withUser(req.user!.accountId, async (q) => {
+    // 자식 수를 먼저 세어 사유에 실을 수 있게 한다. 23503을 잡아 문구만 바꾸면
+    // "몇 개가 남아 있는지"를 말할 수 없고, 관리자는 트리를 눈으로 훑어야 한다.
+    const { rows: kids } = await q.query(
+      "select count(*)::int as n from departments where parent_id = $1",
+      [id],
+    );
+    if (kids[0].n > 0) return { kind: "has-children" as const, n: kids[0].n as number };
+    const { rows } = await q.query("delete from departments where id = $1 returning id", [id]);
+    return { kind: rows.length === 0 ? ("not-found" as const) : ("ok" as const) };
   });
-  if (rows.length === 0) return res.status(404).json({ error: "부서를 찾을 수 없습니다" });
+  if (outcome.kind === "has-children") {
+    return res.status(409).json({
+      error: `하위 부서 ${outcome.n}개가 남아 있어 삭제할 수 없습니다. 하위 부서를 먼저 옮기거나 삭제해 주세요`,
+    });
+  }
+  if (outcome.kind === "not-found") return res.status(404).json({ error: "부서를 찾을 수 없습니다" });
   res.status(204).end();
 });
 
@@ -267,6 +344,25 @@ orgRouter.get("/employees", async (req, res) => {
 // 처리"는 그대로 허용해야 하므로 undefined 체크가 아니라 "in" 체크를 쓴다).
 orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
   const body = req.body ?? {};
+  // 경로의 id는 아래 select/update에서 uuid 컬럼과 비교된다. 형식이 아닌 값은
+  // 22P02로 죽고 그 예외가 500이 되어 "없는 직원"과 구분되지 않았다(QA W-24) —
+  // 같은 파일의 DELETE /employees/:id는 이미 400으로 막고 있었다.
+  if (!UUID.test(String(req.params.id ?? ""))) {
+    return res.status(400).json({ error: "id 형식이 올바르지 않습니다" });
+  }
+  // 이름은 지금까지 trim도 길이 검사도 없었다(QA W-30 — 이메일만 정규화됐다).
+  // 이 값은 직원 명부·승인 화면 수신자 목록·카카오워크 DM 본문에 그대로 실린다.
+  if ("name" in body) {
+    const name = String(body.name ?? "").trim();
+    if (!name) return res.status(400).json({ error: "이름이 비어 있습니다" });
+    if (overLength(name, MAX_EMP_NAME)) {
+      return res.status(400).json({ error: `이름은 ${MAX_EMP_NAME}자 이하여야 합니다` });
+    }
+    body.name = name;
+  }
+  if ("phone" in body && body.phone !== null && overLength(String(body.phone), MAX_PHONE)) {
+    return res.status(400).json({ error: `전화번호는 ${MAX_PHONE}자 이하여야 합니다` });
+  }
   if ("role" in body && !EMP_ROLES.includes(body.role)) {
     return res.status(400).json({ error: `role은 ${EMP_ROLES.join(", ")} 중 하나여야 합니다` });
   }
@@ -288,6 +384,9 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
     const raw = body.kakaowork_user_id;
     if (raw !== null && typeof raw !== "string") {
       return res.status(400).json({ error: "kakaowork_user_id는 문자열이거나 null이어야 합니다" });
+    }
+    if (raw !== null && overLength(String(raw).trim(), MAX_KAKAOWORK_ID)) {
+      return res.status(400).json({ error: `카카오워크 ID는 ${MAX_KAKAOWORK_ID}자 이하여야 합니다` });
     }
     body.kakaowork_user_id = raw === null || String(raw).trim() === "" ? null : String(raw).trim();
   }
@@ -505,6 +604,9 @@ orgRouter.post("/employees", requireAdmin, async (req, res) => {
   const name = String(body.name ?? "").trim();
   const email = String(body.email ?? "").trim().toLowerCase();
   if (!name || !email) return res.status(400).json({ error: "이름과 이메일이 필요합니다" });
+  if (overLength(name, MAX_EMP_NAME)) {
+    return res.status(400).json({ error: `이름은 ${MAX_EMP_NAME}자 이하여야 합니다` });
+  }
   // 사전 등록도 같은 형식·도메인 규칙을 받는다 — PATCH와 같은 이유다(병합 키).
   // 형식과 도메인은 다른 문구다(QA W-20).
   if (!isValidEmailShape(email)) {
@@ -550,11 +652,51 @@ orgRouter.post("/employees", requireAdmin, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// 수신자 목록 교체의 공통 본문 규칙 (QA W-07)
+// ---------------------------------------------------------------------------
+
+// 예전에는 두 교체 라우트가 똑같이 `Array.isArray(body?.employee_ids) ? ... : []`로
+// 시작했다 — **필드가 없거나 배열이 아니면 "빈 목록으로 교체"로 해석**하고 바로
+// 뒤의 delete가 무조건 먼저 돌았다. 그래서 본문이 빈 요청 하나(화면 오류, 오타 난
+// 필드 이름, 잘려 도착한 요청)로 그 목록이 통째로 지워지고 응답은 204 "성공"이었다.
+// alert_recipients는 곧 승인 권한이므로(0007_approver_from_alert_recipients.sql)
+// 그 순간부터 **시스템 안의 누구도 특보를 승인할 수 없는데** 화면에도 로그에도
+// 흔적이 남지 않는다.
+//
+// 그래서 "비우겠다는 의도"와 "본문이 잘못됐다"를 가른다: 전원 해제는 명시적인
+// 빈 배열([])로만 표현되고, 나머지는 전부 400이다.
+//
+// 반환값이 문자열이면 그것이 거부 사유다(호출부가 그대로 400으로 내보낸다).
+function parseEmployeeIds(body: unknown): string[] | string {
+  const raw = (body ?? {}) as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(raw, "employee_ids")) {
+    return "employee_ids가 필요합니다 (전원 해제하려면 employee_ids: []를 명시해 주세요)";
+  }
+  const ids = raw.employee_ids;
+  if (!Array.isArray(ids)) {
+    return "employee_ids는 배열이어야 합니다 (전원 해제하려면 employee_ids: []를 명시해 주세요)";
+  }
+  if (ids.some((id) => !UUID.test(String(id)))) {
+    return "employee_ids 형식이 올바르지 않습니다";
+  }
+  // 같은 직원 id가 두 번 들어오면 두 번째 insert가 기본키 중복(23505)으로 죽고,
+  // 그 예외를 아무도 잡지 않아 500이 나갔다(QA W-24). 중복은 "그 사람을 넣겠다"는
+  // 뜻이 명백하고 결과 상태도 하나뿐이므로 거부하지 않고 접는다 — 이 라우트가
+  // 받는 것은 목록이 아니라 집합이다.
+  return [...new Set(ids.map((id) => String(id)))];
+}
+
+// ---------------------------------------------------------------------------
 // 지침 수신자 (부서별) — Guidelines.tsx
 // ---------------------------------------------------------------------------
 
 orgRouter.get("/recipients", async (req, res) => {
   const departmentId = req.query.department_id ? String(req.query.department_id) : null;
+  // $1::uuid 캐스팅이라 형식이 아닌 값은 22P02로 죽고 500이 나갔다(QA W-24).
+  // 같은 파일의 다른 uuid 입력과 같은 규칙(400)이다.
+  if (departmentId !== null && !UUID.test(departmentId)) {
+    return res.status(400).json({ error: "department_id 형식이 올바르지 않습니다" });
+  }
   const rows = await withUser(req.user!.accountId, async (q) => {
     const { rows } = await q.query(
       `select r.department_id, r.employee_id, e.name, e.role, e.kakaowork_user_id
@@ -574,17 +716,14 @@ orgRouter.get("/recipients", async (req, res) => {
 // 수신자 지정까지 함께 사라진다.
 orgRouter.put("/recipients/:departmentId", requireAdmin, async (req, res) => {
   const departmentId = String(req.params.departmentId ?? "");
-  const ids: string[] = Array.isArray(req.body?.employee_ids) ? req.body.employee_ids : [];
   // 경로의 부서 id와 본문의 직원 id 모두 uuid 컬럼에 그대로 들어간다. 형식이 아닌
   // 값은 Postgres가 22P02로 죽고 그 예외가 500이 되어 나갔다 — 같은 파일의
   // POST /departments·POST /employees와 같은 규칙(400)으로 맞춘다.
   if (!UUID.test(departmentId)) {
     return res.status(400).json({ error: "department_id 형식이 올바르지 않습니다" });
   }
-  const badId = ids.find((id) => !UUID.test(String(id)));
-  if (badId !== undefined) {
-    return res.status(400).json({ error: "employee_ids 형식이 올바르지 않습니다" });
-  }
+  const ids = parseEmployeeIds(req.body);
+  if (typeof ids === "string") return res.status(400).json({ error: ids });
   try {
     const ok = await withUser(req.user!.accountId, async (q) => {
       // 형식만 맞고 실존하지 않는 부서면 delete가 0행을 지우고 insert가 외래키
@@ -613,13 +752,23 @@ orgRouter.put("/recipients/:departmentId", requireAdmin, async (req, res) => {
 // 수신자는 화면이 '전체 선택 상태'를 넘기므로 부분 갱신이 아니라 통째로 교체한다.
 // 부분 갱신으로 만들면 화면과 서버의 상태가 어긋날 때 조용히 남는 행이 생긴다.
 orgRouter.put("/alert-recipients", requireAdmin, async (req, res) => {
-  const ids: string[] = Array.isArray(req.body?.employee_ids) ? req.body.employee_ids : [];
-  await withUser(req.user!.accountId, async (q) => {
-    await q.query("delete from alert_recipients");
-    for (const id of ids) {
-      await q.query("insert into alert_recipients (employee_id) values ($1)", [id]);
+  const ids = parseEmployeeIds(req.body);
+  if (typeof ids === "string") return res.status(400).json({ error: ids });
+  try {
+    await withUser(req.user!.accountId, async (q) => {
+      await q.query("delete from alert_recipients");
+      for (const id of ids) {
+        await q.query("insert into alert_recipients (employee_id) values ($1)", [id]);
+      }
+    });
+  } catch (e: any) {
+    // 없는 직원 id(외래키 위반). 트랜잭션은 롤백되므로 기존 목록은 그대로다 —
+    // 그 사실이 응답에서 읽혀야 관리자가 다시 시도할 수 있다.
+    if (e?.code === "23503") {
+      return res.status(400).json({ error: "없는 직원이 employee_ids에 있습니다 (수신자 목록은 그대로입니다)" });
     }
-  });
+    throw e;
+  }
   res.status(204).end();
 });
 
@@ -665,6 +814,29 @@ orgRouter.put("/alert-settings", requireAdmin, async (req, res) => {
   const badKind = inRows.find((r) => !EVENT_KINDS.includes(r?.kind));
   if (badKind) {
     return res.status(400).json({ error: `kind는 ${EVENT_KINDS.join(", ")} 중 하나여야 합니다` });
+  }
+  // kind 말고는 아무것도 보지 않았다(QA W-24). enabled에 문자열을 보내면 22P02,
+  // repeat_policy에 없는 값을 보내면 check 제약 위반(23514)이 그대로 새어
+  // 500 "서버 오류가 발생했습니다"가 됐다 — 알림 설정은 관리자가 자주 만지는
+  // 화면이고, 그 500은 "내가 잘못 눌렀다"와 "서버가 죽었다"를 구분해 주지 않는다.
+  // 값 목록은 0001_schema.sql의 check 제약과 그대로 같다.
+  const badValue = inRows.find(
+    (r) =>
+      typeof r?.enabled !== "boolean" ||
+      !REPEAT_POLICIES.includes(r?.repeat_policy) ||
+      (r?.repeat_accum_threshold !== null &&
+        r?.repeat_accum_threshold !== undefined &&
+        !Number.isFinite(Number(r.repeat_accum_threshold))) ||
+      (r?.heat_repeat_basis !== null &&
+        r?.heat_repeat_basis !== undefined &&
+        !HEAT_BASES.includes(r?.heat_repeat_basis)),
+  );
+  if (badValue) {
+    return res.status(400).json({
+      error:
+        `enabled는 true/false, repeat_policy는 ${REPEAT_POLICIES.join(", ")} 중 하나여야 하고, ` +
+        `repeat_accum_threshold는 숫자, heat_repeat_basis는 ${HEAT_BASES.join(", ")} 중 하나여야 합니다`,
+    });
   }
   const rows = await withUser(req.user!.accountId, async (q) => {
     const out: any[] = [];

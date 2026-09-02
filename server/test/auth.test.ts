@@ -433,3 +433,58 @@ describe("가입 화면용 공개 부서 목록", () => {
     expect(res.status).toBe(401);
   });
 });
+
+// 가입 본문에도 검증이 반쯤만 있었다: 이메일은 정규화·형식·도메인을 전부 보는데
+// 이름은 trim조차 하지 않았고(QA W-30), department_id는 uuid 형식을 보지 않아
+// 잘못된 값 하나에 500이 나갔다(QA W-24).
+describe("가입 본문 검증 (W-24 · W-30)", () => {
+  async function exists(email: string) {
+    return withService(async (q) => {
+      const { rows } = await q.query("select count(*)::int as n from auth_accounts where email = $1", [email]);
+      return rows[0].n as number;
+    });
+  }
+
+  it("이름이 상한을 넘으면 400이고 계정도 만들어지지 않는다", async () => {
+    const email = "signup-longname@gonjiam.com";
+    const res = await request(app)
+      .post("/api/auth/signup")
+      .send({ email, password: "some-password-1", name: "가".repeat(5000) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/40자/);
+    expect(await exists(email)).toBe(0);
+  });
+
+  it("이름의 앞뒤 공백은 지워서 저장한다", async () => {
+    const email = "signup-trim@gonjiam.com";
+    const res = await request(app)
+      .post("/api/auth/signup")
+      .send({ email, password: "some-password-1", name: "  홍길동  " });
+    expect(res.status).toBe(201);
+    const name = await withService(async (q) => {
+      const { rows } = await q.query("select name from employees where email = $1", [email]);
+      return rows[0].name as string;
+    });
+    expect(name).toBe("홍길동");
+  });
+
+  it("공백만 있는 이름은 400이다", async () => {
+    const email = "signup-blank@gonjiam.com";
+    const res = await request(app)
+      .post("/api/auth/signup")
+      .send({ email, password: "some-password-1", name: "   " });
+    expect(res.status).toBe(400);
+    expect(await exists(email)).toBe(0);
+  });
+
+  it("department_id가 uuid 형식이 아니면 500이 아니라 400이다", async () => {
+    const email = "signup-baddept@gonjiam.com";
+    const res = await request(app)
+      .post("/api/auth/signup")
+      .send({ email, password: "some-password-1", name: "부서오류", department_id: "garbage" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/department_id/);
+    // 계정만 만들어지고 직원 행이 없는 반쪽 상태가 남으면 안 된다.
+    expect(await exists(email)).toBe(0);
+  });
+});

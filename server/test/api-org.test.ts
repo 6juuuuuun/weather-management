@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import request from "supertest";
 import { app } from "../src/index.ts";
 import { withService } from "../src/db.ts";
@@ -1093,5 +1093,330 @@ describe("특보 반복 발송 설정 (alert_settings)", () => {
       return rows[0].repeat_policy;
     });
     expect(rainRow).toBe("until_daily_accum_below");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QA 수정 라운드 D
+// ---------------------------------------------------------------------------
+
+// 이 결함이 살아남은 이유는 분명하다: 화면이 만드는 정상 본문만 테스트했다.
+// 빈 본문·필드 이름 오타·배열 아닌 값을 아무도 만들어 보지 않았다.
+describe("수신자 목록 교체의 본문 규칙 (W-07)", () => {
+  async function seeded(prefix: string) {
+    const admin = await agentAs("admin", `${prefix}-admin@gonjiam.com`);
+    const { deptId, empId } = await withService(async (q) => {
+      const { rows: d } = await q.query("insert into departments (name) values ($1) returning id", [
+        `${DEPT_PREFIX}${prefix}`,
+      ]);
+      const { rows: e } = await q.query(
+        "insert into employees (name, email) values ('수신자', $1) returning id",
+        [`${prefix}-target@gonjiam.com`],
+      );
+      await q.query("insert into recipients (department_id, employee_id) values ($1,$2)", [d[0].id, e[0].id]);
+      await q.query("insert into alert_recipients (employee_id) values ($1)", [e[0].id]);
+      return { deptId: d[0].id as string, empId: e[0].id as string };
+    });
+    return { admin, deptId, empId };
+  }
+
+  // 본문이 비었다는 것은 "전원 해제하겠다"가 아니라 "요청이 잘못됐다"이다.
+  it("본문이 비면 부서 수신자를 지우지 않고 400이다", async () => {
+    const { admin, deptId, empId } = await seeded("w07a");
+    const res = await admin.put(`/api/recipients/${deptId}`).send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/employee_ids/);
+    const rows = (await admin.get(`/api/recipients?department_id=${deptId}`)).body;
+    expect(rows.map((r: any) => r.employee_id)).toEqual([empId]);
+  });
+
+  it("employee_ids가 배열이 아니면 지우지 않고 400이다", async () => {
+    const { admin, deptId, empId } = await seeded("w07b");
+    const res = await admin.put(`/api/recipients/${deptId}`).send({ employee_ids: "abc" });
+    expect(res.status).toBe(400);
+    const rows = (await admin.get(`/api/recipients?department_id=${deptId}`)).body;
+    expect(rows.map((r: any) => r.employee_id)).toEqual([empId]);
+  });
+
+  it("명시적인 빈 배열은 전원 해제로 받아들인다", async () => {
+    const { admin, deptId } = await seeded("w07c");
+    const res = await admin.put(`/api/recipients/${deptId}`).send({ employee_ids: [] });
+    expect(res.status).toBe(204);
+    expect((await admin.get(`/api/recipients?department_id=${deptId}`)).body).toEqual([]);
+  });
+
+  // alert_recipients는 곧 승인 권한이다(0007). 이 목록이 비면 시스템 안의 누구도
+  // 특보를 승인할 수 없는데, 예전에는 그 일이 본문 빈 요청 하나로 일어나고
+  // 응답은 204 "성공"이었다.
+  it("본문이 비면 승인 수신자를 지우지 않고 400이다", async () => {
+    const { admin, empId } = await seeded("w07d");
+    const res = await admin.put("/api/alert-recipients").send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/employee_ids/);
+    const rows = (await admin.get("/api/alert-recipients")).body;
+    expect(rows.map((r: any) => r.employee_id)).toEqual([empId]);
+  });
+
+  it("employee_ids가 배열이 아니면 승인 수신자를 지우지 않고 400이다", async () => {
+    const { admin, empId } = await seeded("w07e");
+    const res = await admin.put("/api/alert-recipients").send({ employee_ids: { 0: empId } });
+    expect(res.status).toBe(400);
+    expect((await admin.get("/api/alert-recipients")).body.map((r: any) => r.employee_id)).toEqual([empId]);
+  });
+
+  it("승인 수신자도 명시적인 빈 배열이면 전원 해제한다", async () => {
+    const { admin } = await seeded("w07f");
+    expect((await admin.put("/api/alert-recipients").send({ employee_ids: [] })).status).toBe(204);
+    expect((await admin.get("/api/alert-recipients")).body).toEqual([]);
+  });
+
+  it("승인 수신자에 uuid가 아닌 값이 있으면 400이고 목록은 그대로다", async () => {
+    const { admin, empId } = await seeded("w07g");
+    const res = await admin.put("/api/alert-recipients").send({ employee_ids: ["nope"] });
+    expect(res.status).toBe(400);
+    expect((await admin.get("/api/alert-recipients")).body.map((r: any) => r.employee_id)).toEqual([empId]);
+  });
+
+  // 없는 직원 id는 외래키 위반(23503)이다 — 예전에는 그게 500으로 나갔고,
+  // 그 사이에 delete는 이미 돌아 있었다(트랜잭션이 롤백해 준 것이 다행이었을 뿐).
+  it("승인 수신자에 없는 직원 uuid가 있으면 400이고 목록은 그대로다", async () => {
+    const { admin, empId } = await seeded("w07h");
+    const res = await admin
+      .put("/api/alert-recipients")
+      .send({ employee_ids: ["00000000-0000-0000-0000-000000000000"] });
+    expect(res.status).toBe(400);
+    expect((await admin.get("/api/alert-recipients")).body.map((r: any) => r.employee_id)).toEqual([empId]);
+  });
+
+  // 같은 id가 두 번 오면 두 번째 insert가 기본키 중복(23505)으로 죽어 500이 났다.
+  it("같은 직원 id가 두 번 들어와도 한 번만 지정하고 성공한다", async () => {
+    const { admin, deptId, empId } = await seeded("w07i");
+    const res = await admin.put(`/api/recipients/${deptId}`).send({ employee_ids: [empId, empId] });
+    expect(res.status).toBe(204);
+    expect((await admin.get(`/api/recipients?department_id=${deptId}`)).body).toHaveLength(1);
+  });
+});
+
+describe("잘못된 입력은 500이 아니다 (W-24)", () => {
+  it("부서 삭제의 id가 uuid 형식이 아니면 404다", async () => {
+    const admin = await agentAs("admin", "w24a@gonjiam.com");
+    const res = await admin.delete("/api/departments/not-a-uuid");
+    expect(res.status).toBe(404);
+  });
+
+  it("직원 수정의 id가 uuid 형식이 아니면 400이다", async () => {
+    const admin = await agentAs("admin", "w24b@gonjiam.com");
+    const res = await admin.patch("/api/employees/not-a-uuid").send({ name: "새이름" });
+    expect(res.status).toBe(400);
+  });
+
+  it("지침 수신자 조회의 department_id가 uuid 형식이 아니면 400이다", async () => {
+    const admin = await agentAs("admin", "w24c@gonjiam.com");
+    const res = await admin.get("/api/recipients?department_id=garbage");
+    expect(res.status).toBe(400);
+  });
+
+  // 하위 부서가 있는 부서 삭제는 on delete restrict가 막는데, 그 23503을 아무도
+  // 잡지 않아 "서버 오류가 발생했습니다"만 나갔다 — 관리자는 무엇을 먼저 해야
+  // 하는지 알 수 없었다(W-25b).
+  it("하위 부서가 있는 부서를 지우면 409로 이유와 개수를 말해 준다", async () => {
+    const admin = await agentAs("admin", "w24d@gonjiam.com");
+    const { parentId, childId } = await withService(async (q) => {
+      const { rows: p } = await q.query("insert into departments (name) values ($1) returning id", [
+        `${DEPT_PREFIX}부모`,
+      ]);
+      const { rows: c } = await q.query(
+        "insert into departments (name, parent_id) values ($1, $2) returning id",
+        [`${DEPT_PREFIX}자식`, p[0].id],
+      );
+      return { parentId: p[0].id as string, childId: c[0].id as string };
+    });
+    const res = await admin.delete(`/api/departments/${parentId}`);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/하위 부서 1개/);
+    // 아무것도 지워지지 않았어야 한다.
+    const names = (await admin.get("/api/departments")).body.map((d: any) => d.id);
+    expect(names).toContain(parentId);
+    expect(names).toContain(childId);
+    // 자식을 먼저 지우면 부모도 지워진다 — 409가 "영영 못 지운다"는 뜻이 아니다.
+    expect((await admin.delete(`/api/departments/${childId}`)).status).toBe(204);
+    expect((await admin.delete(`/api/departments/${parentId}`)).status).toBe(204);
+  });
+});
+
+describe("부서 이름 규칙 (W-25e · W-30)", () => {
+  it("같은 상위 부서 아래 같은 이름은 409다", async () => {
+    const admin = await agentAs("admin", "dup-a@gonjiam.com");
+    const first = await admin.post("/api/departments").send({ name: `${DEPT_PREFIX}조리` });
+    expect(first.status).toBe(201);
+    const second = await admin.post("/api/departments").send({ name: `${DEPT_PREFIX}조리` });
+    expect(second.status).toBe(409);
+    expect(second.body.error).toMatch(/이미 있습니다/);
+  });
+
+  // 다른 부모 아래의 같은 이름은 조직 구조상 정상이다(시드의 '리조트 · 조리'와
+  // '골프 · 조리'). 여기까지 막으면 시드조차 만들 수 없다.
+  it("상위 부서가 다르면 같은 이름을 허용한다", async () => {
+    const admin = await agentAs("admin", "dup-b@gonjiam.com");
+    const [p1, p2] = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into departments (name) values ($1),($2) returning id",
+        [`${DEPT_PREFIX}리조트`, `${DEPT_PREFIX}골프`],
+      );
+      return rows.map((r: any) => r.id as string);
+    });
+    expect((await admin.post("/api/departments").send({ name: `${DEPT_PREFIX}조리`, parent_id: p1 })).status).toBe(201);
+    expect((await admin.post("/api/departments").send({ name: `${DEPT_PREFIX}조리`, parent_id: p2 })).status).toBe(201);
+  });
+
+  it("이름 변경으로 형제와 같은 이름이 되는 것도 409다", async () => {
+    const admin = await agentAs("admin", "dup-c@gonjiam.com");
+    const [a, b] = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into departments (name) values ($1),($2) returning id",
+        [`${DEPT_PREFIX}객실`, `${DEPT_PREFIX}시설`],
+      );
+      return rows.map((r: any) => r.id as string);
+    });
+    const res = await admin.patch(`/api/departments/${b}`).send({ name: `${DEPT_PREFIX}객실` });
+    expect(res.status).toBe(409);
+    // 이름이 실제로 바뀌지 않았어야 한다.
+    const rows = (await admin.get("/api/departments")).body;
+    expect(rows.find((d: any) => d.id === b).name).toBe(`${DEPT_PREFIX}시설`);
+    expect(rows.find((d: any) => d.id === a).name).toBe(`${DEPT_PREFIX}객실`);
+  });
+
+  // 이름은 그대로 두고 부모만 옮겨도 그쪽 형제와 겹칠 수 있다 — 그 순간 두
+  // 부서는 모든 화면에서 같은 글자가 된다.
+  it("상위 부서를 옮겨 형제와 이름이 겹치면 409다", async () => {
+    const admin = await agentAs("admin", "dup-d@gonjiam.com");
+    const { parentId, movingId } = await withService(async (q) => {
+      const { rows: p } = await q.query("insert into departments (name) values ($1) returning id", [
+        `${DEPT_PREFIX}새부모`,
+      ]);
+      // 새 부모 밑에 이미 같은 이름의 자식이 있다.
+      await q.query("insert into departments (name, parent_id) values ($1, $2)", [
+        `${DEPT_PREFIX}주방`, p[0].id,
+      ]);
+      // 옮겨 갈 부서는 최상위에 있고 이름이 같다 — 지금은 형제가 아니라 정상이다.
+      const { rows: m } = await q.query("insert into departments (name) values ($1) returning id", [
+        `${DEPT_PREFIX}주방`,
+      ]);
+      return { parentId: p[0].id as string, movingId: m[0].id as string };
+    });
+    const res = await admin.patch(`/api/departments/${movingId}`).send({ parent_id: parentId });
+    expect(res.status).toBe(409);
+  });
+
+  it("부서 이름이 상한을 넘으면 400이고, 상한까지는 저장된다", async () => {
+    const admin = await agentAs("admin", "len-a@gonjiam.com");
+    const head = `${DEPT_PREFIX}`;
+    const okName = head + "가".repeat(40 - [...head].length);
+    const longName = head + "가".repeat(41 - [...head].length);
+    expect((await admin.post("/api/departments").send({ name: okName })).status).toBe(201);
+    const res = await admin.post("/api/departments").send({ name: longName });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/40자/);
+  });
+});
+
+describe("직원 이름 길이와 공백 (W-30)", () => {
+  it("사전 등록의 이름이 상한을 넘으면 400이다", async () => {
+    const admin = await agentAs("admin", "len-b@gonjiam.com");
+    const res = await admin
+      .post("/api/employees")
+      .send({ name: "가".repeat(5000), email: "len-b-target@gonjiam.com" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/40자/);
+  });
+
+  it("수정의 이름이 상한을 넘으면 400이고, 통과한 이름은 앞뒤 공백이 지워진다", async () => {
+    const admin = await agentAs("admin", "len-c@gonjiam.com");
+    const id = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into employees (name, email) values ('대상','len-c-target@gonjiam.com') returning id");
+      return rows[0].id as string;
+    });
+    expect((await admin.patch(`/api/employees/${id}`).send({ name: "가".repeat(41) })).status).toBe(400);
+    // 이메일은 정규화되는데 이름은 아니었다 — 이 값은 카카오워크 DM 본문에 그대로 실린다.
+    const ok = await admin.patch(`/api/employees/${id}`).send({ name: "  홍길동  " });
+    expect(ok.status).toBe(200);
+    expect(ok.body.name).toBe("홍길동");
+  });
+
+  it("공백만 있는 이름은 400이다", async () => {
+    const admin = await agentAs("admin", "len-d@gonjiam.com");
+    const id = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into employees (name, email) values ('대상','len-d-target@gonjiam.com') returning id");
+      return rows[0].id as string;
+    });
+    expect((await admin.patch(`/api/employees/${id}`).send({ name: "   " })).status).toBe(400);
+  });
+});
+
+// alert_settings는 kind만 검증하고 나머지 값은 전부 그대로 흘려보냈다.
+// enabled에 문자열을 넣으면 22P02, repeat_policy에 없는 값을 넣으면 check 제약
+// 위반(23514)이 그대로 새어 500 "서버 오류가 발생했습니다"가 됐다.
+describe("알림 설정의 잘못된 값 (W-24)", () => {
+  // 이 스위트는 "막혀야 하는 저장"을 시도한다 — 막는 코드가 사라지면(변이 시험)
+  // 그 요청이 실제로 통과해 시드 설정을 바꾸고, 그 상태가 뒤이어 도는 다른
+  // 파일(jobs.test.ts의 반복 발송 판정)까지 조용히 무너뜨린다. 실제로 한 번
+  // 그렇게 됐다. 매 테스트 뒤에 시드 값(db/seed.sql)으로 되돌린다.
+  afterEach(async () => {
+    await withService((q) =>
+      q.query(`
+        update alert_settings set enabled=true, repeat_policy='until_daily_accum_below',
+          repeat_accum_threshold=80, heat_repeat_basis=null where kind='rain';
+        update alert_settings set enabled=true, repeat_policy='hourly_until_below',
+          repeat_accum_threshold=null, heat_repeat_basis=null where kind='snow';
+        update alert_settings set enabled=true, repeat_policy='hourly_until_below',
+          repeat_accum_threshold=null, heat_repeat_basis=null where kind='wind';
+        update alert_settings set enabled=true, repeat_policy='hourly_until_below',
+          repeat_accum_threshold=null, heat_repeat_basis='feels' where kind='heat';
+      `),
+    );
+  });
+
+  async function settingsOf(agent: any) {
+    const rows = (await agent.get("/api/alert-settings")).body;
+    return rows.find((r: any) => r.kind === "rain");
+  }
+
+  for (const [label, row] of [
+    ["enabled가 불리언이 아니면", { kind: "rain", enabled: "yes", repeat_policy: "once" }],
+    ["repeat_policy가 허용 목록 밖이면", { kind: "rain", enabled: true, repeat_policy: "nope" }],
+    ["repeat_accum_threshold가 숫자가 아니면", {
+      kind: "rain", enabled: true, repeat_policy: "once", repeat_accum_threshold: "많이",
+    }],
+    ["heat_repeat_basis가 허용 목록 밖이면", {
+      kind: "heat", enabled: true, repeat_policy: "once", heat_repeat_basis: "습도",
+    }],
+  ] as [string, Record<string, unknown>][]) {
+    it(`${label} 400이고 아무것도 바뀌지 않는다`, async () => {
+      const admin = await agentAs("admin", `as-${String(row.enabled)}-${String(row.repeat_policy)}@gonjiam.com`);
+      const before = await settingsOf(admin);
+      const res = await admin.put("/api/alert-settings").send({ rows: [row] });
+      expect(res.status).toBe(400);
+      expect(await settingsOf(admin)).toEqual(before);
+    });
+  }
+
+  it("올바른 값은 그대로 저장된다", async () => {
+    const admin = await agentAs("admin", "as-ok@gonjiam.com");
+    const before = await settingsOf(admin);
+    const res = await admin.put("/api/alert-settings").send({
+      rows: [{ kind: "rain", enabled: false, repeat_policy: "once", repeat_accum_threshold: null }],
+    });
+    expect(res.status).toBe(200);
+    expect((await settingsOf(admin)).enabled).toBe(false);
+    // 시드 값으로 되돌린다 — alert_settings는 RLS상 지우거나 새로 넣을 수 없다.
+    await admin.put("/api/alert-settings").send({
+      rows: [{
+        kind: "rain", enabled: before.enabled, repeat_policy: before.repeat_policy,
+        repeat_accum_threshold: before.repeat_accum_threshold, heat_repeat_basis: before.heat_repeat_basis,
+      }],
+    });
+    expect((await settingsOf(admin)).enabled).toBe(before.enabled);
   });
 });
