@@ -22,11 +22,14 @@ export type RecipientRow = {
 };
 // kakaowork_user_id도 함께 온다 — 화면이 "특보를 받을 수 있는 사람이 실제로 있는가"를
 // 이 값으로 센다(대시보드 셋업 체크리스트·알림 설정의 카카오워크 연결 표시).
+// department_id도 함께 온다(QA W-31) — 이 목록은 승인 권한을 지정하는 화면인데
+// 그 사람이 어느 부서인지 보이지 않아, 동명이인이 있으면 누구를 빼는지 알 수 없었다.
 export type AlertRecipientRow = {
   employee_id: string;
   name: string;
   role: EmpRole;
   kakaowork_user_id: string | null;
+  department_id: string | null;
 };
 
 export type AlertSettingRow = AlertSetting;
@@ -60,7 +63,14 @@ export const updateEmployee = (
   id: string,
   // email은 가입(POST /api/auth/signup)이 직원 행에 계정을 이어 붙이는 병합 키다 —
   // 서버가 정규화해 저장하고 중복이면 409를 준다(server/src/api/org.ts).
-  patch: Partial<Pick<EmployeeRow, "name" | "email" | "role" | "department_id" | "phone">>,
+  //
+  // kakaowork_user_id도 보낼 수 있다(QA W-16). 서버는 이 키가 본문에 있으면
+  // 이메일로 다시 조회하지 않고 보낸 값을 그대로 존중한다 — 자동 연결이 실패하는
+  // 사람(카카오워크 계정 이메일이 회사 이메일과 다른 경우 등)을 관리자가 손으로
+  // 이어 줄 수 있는 유일한 경로다. null·빈 문자열은 "연결 해제"다.
+  patch: Partial<
+    Pick<EmployeeRow, "name" | "email" | "role" | "department_id" | "phone" | "kakaowork_user_id">
+  >,
 ) => apiSend<EmployeeRow>("PATCH", `/api/employees/${encodeURIComponent(id)}`, patch);
 export const deleteEmployee = (id: string) => apiSend<null>("DELETE", `/api/employees/${encodeURIComponent(id)}`);
 

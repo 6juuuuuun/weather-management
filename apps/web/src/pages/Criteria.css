@@ -184,6 +184,13 @@
   gap: 12px;
 }
 
+/* 수신자가 한 명도 없는 상태는 "비어 있다"가 아니라 "아무도 승인할 수 없다"이다. */
+.criteria-recipients-empty {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--warn);
+}
+
 .criteria-add-btn {
   display: inline-flex;
   align-items: center;
