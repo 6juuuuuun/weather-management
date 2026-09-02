@@ -1,7 +1,29 @@
 // 대시보드 셋업 체크리스트 — 순수 함수 (부수효과 없음, 서버 조회 결과를 입력으로 받는다)
 
+// 기상청 단기예보 격자의 유효 범위. **server/src/kmaGrid.ts와 같은 값이어야 한다.**
+// 두 패키지가 코드를 공유하지 않으므로 값이 두 곳에 적힌다 — 서버가 저장을 막는
+// 범위와 화면이 "설정 완료"라고 말하는 범위가 다르면, 저장은 막히는데 화면은
+// 초록이거나 그 반대가 된다.
+export const GRID_NX_MAX = 149;
+export const GRID_NY_MAX = 253;
+
+/**
+ * 관측 지점 좌표가 쓸 수 있는 값인가.
+ *
+ * 이 검사가 없던 동안 `nx: -1`이 저장되면 기상청 호출이 매시간 실패해 **수집이
+ * 통째로 멈추는데** 체크리스트는 "관측 지점 ✓"로 6/6이었다(QA W-10). 행이
+ * 있는지가 아니라 그 값으로 수집이 될 수 있는지를 물어야 한다.
+ */
+export function isValidGridCoord(nx: unknown, ny: unknown): boolean {
+  return (
+    typeof nx === "number" && Number.isInteger(nx) && nx >= 1 && nx <= GRID_NX_MAX &&
+    typeof ny === "number" && Number.isInteger(ny) && ny >= 1 && ny <= GRID_NY_MAX
+  );
+}
+
 export type SetupInput = {
-  site: boolean; // 관측 지점(site_settings) 저장됨
+  // 관측 지점(site_settings)이 저장돼 있고 **그 좌표로 수집이 가능한가**.
+  site: boolean;
   criteria: boolean; // 특보 기준(weather_criteria) 8행 존재
   deptCount: number; // 리프 부서 수
   guidelineDeptCount: number; // 지침이 1개 이상 등록된 리프 부서 수

@@ -246,6 +246,48 @@ describe("Dashboard 재알림 배지", () => {
   });
 });
 
+// QA W-10 · 관측 지점 항목이 "행이 저장돼 있는가"만 봐서, nx=-1로 수집이 매시간
+// 실패하는 동안에도 체크리스트가 완료로 남았다. 관리자가 화면에서 이상을 알아챌
+// 자리가 여기뿐이었다.
+describe("Dashboard 셋업 체크리스트 — 관측 지점 좌표 (W-10)", () => {
+  async function renderWithSite(site: Record<string, unknown>) {
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
+    ]);
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
+    ]);
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+    ]);
+    mocks.listRecipients.mockResolvedValue([
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", kakaowork_user_id: "kw-2" },
+    ]);
+    mocks.siteSettings.mockResolvedValue(site);
+    const out = renderDashboard();
+    await waitFor(() => expect(mocks.guidelines).toHaveBeenCalled());
+    return out;
+  }
+
+  it("좌표가 격자 밖이면 완료로 세지 않고 이유를 말한다", async () => {
+    const { container } = await renderWithSite({ id: 1, site_name: "곤지암", nx: -1, ny: 121 });
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
+    // "미지정"이라고만 하면 관리자는 저장 화면에서 값이 들어 있는 것을 보고
+    // 정상이라고 판단한다 — 실제로는 그 값 때문에 수집이 죽어 있다.
+    expect(container.textContent).toMatch(/관측 지점 좌표가 기상청 격자 범위 밖입니다/);
+    expect(container.textContent).toMatch(/날씨 수집이 계속 실패합니다/);
+  });
+
+  it("좌표가 범위 안이면 다른 항목이 다 찼을 때 스트립이 사라진다", async () => {
+    const { container } = await renderWithSite({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeNull());
+  });
+});
+
 describe("Dashboard 셋업 체크리스트", () => {
   // 지침(action_guidelines)은 리프 부서에만 단다. 모든 부서를 리프로 세면
   // deptCount가 부풀려져 guidelineDeptCount >= deptCount가 영원히 참이 될 수 없고,
@@ -263,7 +305,7 @@ describe("Dashboard 셋업 체크리스트", () => {
       { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
       { department_id: "leaf2", kind: "rain", grade: "watch", staff_actions: ["점검"], guest_notice: "" },
     ]);
-    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
@@ -299,7 +341,7 @@ describe("Dashboard 셋업 체크리스트", () => {
       { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
       { department_id: "solo", kind: "rain", grade: "watch", staff_actions: ["순찰"], guest_notice: "" },
     ]);
-    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
@@ -329,7 +371,7 @@ describe("Dashboard 셋업 체크리스트", () => {
     mocks.guidelines.mockResolvedValue([
       { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
     ]);
-    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
@@ -356,7 +398,7 @@ describe("Dashboard 셋업 체크리스트", () => {
     mocks.guidelines.mockResolvedValue([
       { department_id: "leaf", kind: "rain", grade: "watch", staff_actions: ["안내"], guest_notice: "" },
     ]);
-    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
@@ -382,7 +424,7 @@ describe("Dashboard 셋업 체크리스트", () => {
     mocks.guidelines.mockResolvedValue([
       { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
     ]);
-    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
@@ -405,7 +447,7 @@ describe("Dashboard 셋업 체크리스트", () => {
     mocks.guidelines.mockResolvedValue([
       { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: [], guest_notice: "" },
     ]);
-    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
@@ -432,7 +474,7 @@ describe("Dashboard 셋업 체크리스트", () => {
     mocks.guidelines.mockResolvedValue([
       { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
     ]);
-    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
@@ -456,7 +498,7 @@ describe("Dashboard 셋업 체크리스트", () => {
     mocks.guidelines.mockResolvedValue([
       { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
     ]);
-    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암" });
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );

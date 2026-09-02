@@ -10,7 +10,7 @@ import type { CriteriaRow, HeartbeatRow, ObservationRow } from "../lib/api/dashb
 import { listDepartments, alertRecipients, listRecipients } from "../lib/api/org";
 import { guidelines as fetchGuidelines, dispatches as fetchDispatches } from "../lib/api/content";
 import type { DispatchRow } from "../lib/api/content";
-import { computeSetupChecklist } from "../lib/setup";
+import { computeSetupChecklist, isValidGridCoord } from "../lib/setup";
 import { leafDeptIds } from "../lib/deptTree";
 import type { SetupChecklist } from "../lib/setup";
 import type { Kind, WeatherEvent } from "../lib/types";
@@ -111,8 +111,12 @@ export default function Dashboard() {
   const { employee, isApprover } = useAuth();
   const [data, setData] = useState<DashboardData | null>(null);
   const [setup, setSetup] = useState<SetupChecklist | null>(null);
-  const [setupDetail, setSetupDetail] = useState<{ missingDeptCount: number; deptWithoutRecipientCount: number }>(
-    { missingDeptCount: 0, deptWithoutRecipientCount: 0 },
+  const [setupDetail, setSetupDetail] = useState<{
+    missingDeptCount: number;
+    deptWithoutRecipientCount: number;
+    siteCoordInvalid: boolean;
+  }>(
+    { missingDeptCount: 0, deptWithoutRecipientCount: 0, siteCoordInvalid: false },
   );
   const [siteName, setSiteName] = useState("곤지암");
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -193,7 +197,9 @@ export default function Dashboard() {
         );
 
         const checklist = computeSetupChecklist({
-          site: !!site,
+          // 행이 있는지가 아니라 **그 좌표로 수집이 될 수 있는지**를 묻는다.
+          // nx=-1은 저장은 되지만 수집을 통째로 멈춘다(QA W-10).
+          site: !!site && isValidGridCoord(site.nx, site.ny),
           criteria: criteriaRows.length >= 8,
           deptCount: leafIds.size,
           guidelineDeptCount: guidelineDeptIds.size,
@@ -207,6 +213,9 @@ export default function Dashboard() {
         setSetupDetail({
           missingDeptCount: Math.max(0, leafIds.size - guidelineDeptIds.size),
           deptWithoutRecipientCount: guidelineDeptWithoutRecipient.length,
+          // 저장은 돼 있는데 좌표가 격자 밖인 경우와, 아직 아무것도 저장하지 않은
+          // 경우를 구분한다 — 관리자가 할 일이 완전히 다르다.
+          siteCoordInvalid: !!site && !isValidGridCoord(site.nx, site.ny),
         });
       } else {
         setSetup(null);
@@ -334,6 +343,11 @@ export default function Dashboard() {
                         `부서별 지침 ${setupDetail.missingDeptCount}개 부서 미등록`
                       ) : item.label === "부서 수신자" ? (
                         `부서 수신자 ${setupDetail.deptWithoutRecipientCount}개 부서 미지정 — 그 부서 몫은 0명에게 발송됩니다`
+                      ) : item.label === "관측 지점" && setupDetail.siteCoordInvalid ? (
+                        // "미지정"이라고만 하면 관리자는 저장 화면을 열어 값이
+                        // 들어 있는 것을 보고 정상이라고 판단한다 — 실제로는 그
+                        // 값 때문에 수집이 죽어 있다(QA W-10).
+                        `관측 지점 좌표가 기상청 격자 범위 밖입니다 — 날씨 수집이 계속 실패합니다`
                       ) : (
                         `${item.label} 미지정`
                       )}

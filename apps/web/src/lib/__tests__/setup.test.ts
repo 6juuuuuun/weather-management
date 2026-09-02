@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { computeSetupChecklist } from "../setup";
+import { computeSetupChecklist, isValidGridCoord, GRID_NX_MAX, GRID_NY_MAX } from "../setup";
 
 // 완전히 준비된 상태. 각 테스트는 여기서 한 가지만 어긋뜨린다.
 const READY = {
@@ -82,5 +82,49 @@ describe("computeSetupChecklist", () => {
   test("지침이 한 건도 없으면 부서 수신자 항목도 완료가 아니다", () => {
     const r = computeSetupChecklist({ ...READY, guidelineDeptCount: 0, guidelineDeptWithoutRecipientCount: 0 });
     expect(r.items.find((i) => i.label === "부서 수신자")!.ok).toBe(false);
+  });
+});
+
+// QA W-10 · `nx: -1`을 저장하면 기상청 호출이 매시간 실패해 수집이 통째로 멈추는데,
+// 체크리스트는 "관측 지점 ✓"로 완료를 계속 표시했다. 저장된 행이 있는지가 아니라
+// 그 좌표로 수집이 될 수 있는지를 물어야 한다.
+describe("isValidGridCoord (W-10)", () => {
+  test("곤지암 시드 좌표는 유효하다", () => {
+    expect(isValidGridCoord(61, 121)).toBe(true);
+  });
+
+  test("음수·0은 격자 밖이다", () => {
+    expect(isValidGridCoord(-1, 121)).toBe(false);
+    expect(isValidGridCoord(0, 121)).toBe(false);
+    expect(isValidGridCoord(61, 0)).toBe(false);
+  });
+
+  test("격자 상한을 넘으면 밖이다", () => {
+    expect(isValidGridCoord(GRID_NX_MAX, GRID_NY_MAX)).toBe(true);
+    expect(isValidGridCoord(GRID_NX_MAX + 1, GRID_NY_MAX)).toBe(false);
+    expect(isValidGridCoord(GRID_NX_MAX, GRID_NY_MAX + 1)).toBe(false);
+    // 상수를 그대로 쓰는 위 세 줄은 상한을 아무리 크게 바꿔도 통과한다(변이 시험에서
+    // 확인). 실제 값으로도 못박는다 — 이 범위는 기상청 격자 정의에서 온 것이지
+    // 우리가 고를 수 있는 값이 아니다.
+    expect(isValidGridCoord(150, 121)).toBe(false);
+    expect(isValidGridCoord(61, 254)).toBe(false);
+  });
+
+  test("값이 없거나 숫자가 아니면 밖이다", () => {
+    expect(isValidGridCoord(undefined, undefined)).toBe(false);
+    expect(isValidGridCoord("61", "121")).toBe(false);
+    expect(isValidGridCoord(61.5, 121)).toBe(false);
+  });
+
+  // 서버(server/src/kmaGrid.ts)와 같은 범위여야 한다. 두 값이 갈라지면 저장은
+  // 막히는데 화면은 초록이거나 그 반대가 된다 — 이 결함의 본질이 그 어긋남이다.
+  test("범위 상수가 서버와 같은 값이다", () => {
+    expect([GRID_NX_MAX, GRID_NY_MAX]).toEqual([149, 253]);
+  });
+
+  test("좌표가 격자 밖이면 관측 지점 항목이 미완료가 된다", () => {
+    const r = computeSetupChecklist({ ...READY, site: false });
+    expect(r.items.find((i) => i.label === "관측 지점")!.ok).toBe(false);
+    expect(r.done).toBe(6);
   });
 });
