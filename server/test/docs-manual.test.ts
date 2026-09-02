@@ -146,6 +146,33 @@ describe("운영 안내서가 승인 권한 규칙을 밝히는가 (W-08)", () =
   });
 });
 
+// 검증이 남긴 Minor 두 건은 코드를 바꾸지 않고 **안내서로** 닫았다. 그렇게 닫은 것은
+// 코드가 바뀌면 조용히 거짓이 되므로, 여기서 코드와 묶어 둔다 — 안 그러면 "문서로
+// 닫았다"가 곧 "닫지 않았다"가 된다.
+describe("안내서로 닫은 항목이 코드와 같은 말을 하는가", () => {
+  // 회귀 검증 §F-2 — 반복 발송·해제 알림은 매 회차 부서 수신자를 다시 조회한다
+  // (QA W-06의 수정). 그래서 승인 화면에서 그 발송에 한해 편집한 명단은 1회차에만
+  // 남는다. 사용자 결정(D-2)이고 동작은 그대로 두되, 운영자가 그 성질을 모르면
+  // "내가 뺀 사람에게 계속 간다"로 읽는다.
+  it("반복 발송이 매 회차 명단을 다시 읽는다는 사실을 안내서가 적는다", () => {
+    const tick = read("server/src/jobs/weatherTick.ts");
+    // 코드가 실제로 그렇게 동작한다(반복·해제 모두 refreshRecipients를 거친다).
+    expect([...tick.matchAll(/refreshRecipients\(/g)].length).toBeGreaterThanOrEqual(3);
+    expect(manual).toContain("매 회차 부서 수신자 명단을 다시 읽습니다");
+    expect(manual).toMatch(/1회차에만/);
+  });
+
+  // 회귀 검증 §D-1 — 0015가 운영자가 손수 넣은 누적 임계값을 말없이 지운다.
+  // 기존 마이그레이션 파일은 고칠 수 없고(전역 제약) 새 파일로 되살릴 값도 이미
+  // 사라졌다. 동작상 피해는 없으므로 안내서가 그 사실을 적는 것으로 닫는다.
+  it("0015가 폭설 누적 임계값을 비운다는 사실을 안내서가 적는다", () => {
+    const mig = read("db/migrations/0015_snow_repeat_policy.sql");
+    expect(mig).toMatch(/repeat_accum_threshold\s*=\s*null/i);
+    expect(manual).toContain("repeat_accum_threshold");
+    expect(manual).toMatch(/비웁니다/);
+  });
+});
+
 // 안내서가 "이 화면에서 하세요"라고 지시하는 곳은 실제 메뉴 이름이어야 한다.
 // 없는 메뉴 이름을 적으면(예전 §3-3의 "조직·수신자 화면") 읽는 사람은 그 화면을
 // 찾다가 포기한다.
