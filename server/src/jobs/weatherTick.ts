@@ -327,6 +327,20 @@ export async function runWeatherTick(
                   ? await channel.send(r.kakaowork_user_id, renderMessage(b, { kindLabel: KIND_LABEL[a.kind],
                       gradeLabel: GRADE_LABEL[a.grade], siteName: site.site_name, obsLine: lineFor(a.kind) }))
                   : { ok: false, error: "카카오워크 미연결" }) });
+          // **명단에는 사람이 있는데 한 명도 못 받은 회차**를 실패로 센다(검증 §신규-1).
+          //
+          // 위 `targets === 0`은 "수신자가 지정되지 않았다"만 잡는다. 전원이 카카오워크
+          // 미연결이면 targets는 2인데 실제 전달은 0명이고, 예전에는 그 회차가 조용히
+          // 성공으로 기록됐다 — 하트비트가 ok=true라 health/deep도 워치독도 초록이었다.
+          // 여기서 액션 실패로 세면 heartbeats.ok=false가 되고, checkHealth의
+          // "마지막 수집·판정이 실패로 끝났습니다 (action-failed:N)"가 그 사실을 말한다.
+          const repeatSent = (results as { ok?: boolean }[]).filter((r) => r.ok).length;
+          if (results.length > 0 && repeatSent === 0) {
+            actionFailures++;
+            console.error(
+              `[weather-tick] 반복 발송이 ${results.length}명 중 0명에게 전달됐습니다 (event=${a.eventId}) — 부서 수신자의 카카오워크 연결을 확인하세요`,
+            );
+          }
           await withService(async (q) => {
             // 회차 채번은 weather_events.repeat_count 단일 소스 (승인 발송이 1회차 → 이후 +1씩).
             const { rows: evRows } = await q.query("select repeat_count from weather_events where id = $1", [a.eventId]);

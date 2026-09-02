@@ -360,6 +360,31 @@ describe("EventReview", () => {
     expect(await screen.findByText(/수신자가 한 명도 없습니다/)).toBeInTheDocument();
   });
 
+  // 검증 §신규-1 — 서버가 이제 0명 전달을 502로 돌려준다. 화면이 이걸 성공으로
+  // 그리면(예전에는 200 ok:true였다) 승인자는 폭설 특보가 나갔다고 믿고 자리를 뜬다.
+  it("한 명에게도 전달되지 않으면 이력으로 넘어가지 않고 사유를 그대로 보여준다", async () => {
+    send.push("/api/send", () =>
+      jsonResponse(
+        {
+          ok: false,
+          error:
+            "2명 중 아무에게도 전달되지 않았습니다 (실제 발송 0명). 수신자의 카카오워크 연결 상태를 확인해 주세요. " +
+            "승인은 취소했습니다 — 상태를 확인한 뒤 다시 승인해 주세요.",
+          recipient_count: 2,
+          sent_count: 0,
+        },
+        502,
+      ),
+    );
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /승인 및 발송/ }));
+    expect(await screen.findByText(/아무에게도 전달되지 않았습니다/)).toBeInTheDocument();
+    expect(await screen.findByText(/승인은 취소했습니다/)).toBeInTheDocument();
+    // 이력으로 넘어가면 "보냈다"는 뜻이 된다.
+    expect(screen.queryByText("이력 화면")).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /승인 및 발송/ })).not.toBeDisabled();
+  });
+
   it("fail_count가 있으면 danger 배너를 보여주고 이동하지 않는다", async () => {
     send.push("/api/send", () => jsonResponse({ ok: true, dispatch_id: 2, fail_count: 1 }));
     renderPage();

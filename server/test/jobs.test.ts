@@ -790,6 +790,33 @@ describe("반복 발송 수신자 갱신", () => {
     expect(d.results).toEqual([]);
   });
 
+  // 검증 §신규-1 — 명단에는 사람이 있는데 **전원 미연결**인 경우.
+  // 위 테스트("부서 수신자가 비면")는 targets === 0만 잡는다. 여기서는 targets가 1인데
+  // 실제 전달은 0명이고, 예전에는 그 회차가 조용히 성공으로 기록돼 하트비트가
+  // ok=true였다 — 매시간 반복 발송이 0명에게 나가는데 모든 지표가 초록이었다.
+  it("수신자가 전원 미연결이면 그 회차를 실패로 기록해 지표에 남긴다", async () => {
+    const day = await makeEmployee({ name: "주간담당", email: "shift-unlinked@gonjiam.com", kw: "kw-day" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", day);
+    await activeWithSnapshot(deptId, day);
+    // 카카오워크 계정이 사라졌거나 이메일이 달라 조회에 실패한 상태.
+    await withService((q) =>
+      q.query("update employees set kakaowork_user_id = null where id = $1", [day]));
+
+    stubKma(RAIN_32MM);
+    const rec = recorder();
+    const out = await runWeatherTick({ channel: rec.channel });
+
+    expect(rec.sent).toEqual([]);
+    expect(out.actionFailures).toBeGreaterThan(0);
+    // 하트비트가 실패로 남아야 checkHealth·워치독이 그 사실을 말할 수 있다.
+    const beat = await withService(async (q) => {
+      const { rows } = await q.query("select ok, note from heartbeats where name = 'weather-tick'");
+      return rows[0];
+    });
+    expect(beat.ok).toBe(false);
+    expect(String(beat.note)).toMatch(/action-failed/);
+  });
+
   it("해제 알림도 지금 근무 중인 사람에게 간다", async () => {
     const day = await makeEmployee({ name: "주간담당", email: "shift-res-day@gonjiam.com", kw: "kw-day" });
     const deptId = await makeDeptWithGuideline("rain", "watch", day);
@@ -1426,6 +1453,66 @@ describe("POST /api/send — 모드별 동작", () => {
     expect(retry.ok).toBe(true);
     expect(rec.sent.map((x) => x.to)).toEqual(["kw-staff"]);
     expect((await state()).event.status).toBe("ACTIVE");
+  });
+
+  // 검증 §신규-1·W-09 — **실제 채널은 던지지 않는다.**
+  //
+  // 위 테스트는 주입한 채널이 예외를 던지므로 통과했다. 하지만 진짜 채널
+  // (shared/kakaowork.ts)은 네트워크 예외까지 삼키고 `{ok:false}`를 돌려준다 —
+  // 그래서 unapprove()는 **운영에서 한 번도 실행되지 않는 코드**였다. 봇 키 오타나
+  // 카카오워크 장애에서 결과는 "승인됨 · ACTIVE · ok:true · 0명 전달"이었다.
+  it("채널이 예외를 삼키고 실패만 돌려줘도 0명 전달이면 승인을 되돌린다", async () => {
+    const staff = await makeEmployee({ name: "객실직원", email: "send-swallow-staff@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", staff);
+    const { eventId, content } = await pendingEventWithDraft(deptId, staff);
+    const approver = await makeEmployee({ name: "사업부장", email: "send-swallow-appr@gonjiam.com", kw: "kw-appr" });
+    await makeAlertRecipient(approver);
+
+    // 실제 kakaowork.ts와 같은 모양: 던지지 않고 { ok:false }만 돌려준다.
+    const swallowing: NotificationChannel = {
+      async send() { return { ok: false, error: "카카오워크 장애" }; },
+    };
+    const out = await runSend({ mode: "approve", event_id: eventId, content }, approver, { channel: swallowing });
+
+    expect(out.ok).toBe(false);
+    expect(out.status).toBe(502);
+    expect(out.sent_count).toBe(0);
+    expect(out.recipient_count).toBe(1);
+    expect(out.error).toMatch(/승인은 취소했습니다/);
+
+    const st = await state();
+    expect(st.event.status).toBe("PENDING_APPROVAL");
+    expect(st.message.status).toBe("draft");
+    // 이력은 남는다 — 무엇이 실패했는지 화면에서 볼 수 있어야 한다.
+    expect(st.dispatches.length).toBe(1);
+  });
+
+  // 같은 뿌리의 다른 입구: 채널은 멀쩡한데 **받을 사람이 아무도 연결돼 있지 않다.**
+  // 검증이 실제로 만든 상태이고, 그때 API는 200 {"ok":true,"sent_count":0}을 돌려줬다.
+  it("수신자 전원이 카카오워크 미연결이면 승인을 성공으로 보고하지 않는다", async () => {
+    const a = await makeEmployee({ name: "안전1", email: "send-nolink-a@gonjiam.com", kw: null });
+    const b = await makeEmployee({ name: "안전2", email: "send-nolink-b@gonjiam.com", kw: null });
+    const deptId = await makeDeptWithGuideline("rain", "watch", a);
+    const { eventId } = await pendingEventWithDraft(deptId, a);
+    const approver = await makeEmployee({ name: "사업부장", email: "send-nolink-appr@gonjiam.com", kw: "kw-appr" });
+    await makeAlertRecipient(approver);
+    const content = [{ department_id: deptId, department_name: "객실",
+      staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
+      recipients: [
+        { employee_id: a, name: "안전1", kakaowork_user_id: null },
+        { employee_id: b, name: "안전2", kakaowork_user_id: null },
+      ], selected: true }];
+
+    const rec = recorder();
+    const out = await runSend({ mode: "approve", event_id: eventId, content }, approver, { channel: rec.channel });
+
+    expect(rec.sent).toEqual([]); // 채널은 한 번도 불리지 않는다
+    expect(out.ok).toBe(false);
+    expect(out.status).toBe(502);
+    expect(out.recipient_count).toBe(2);
+    expect(out.sent_count).toBe(0);
+    // 승인이 굳지 않아야 연결을 고친 뒤 다시 승인할 수 있다(409로 막히지 않는다).
+    expect((await state()).event.status).toBe("PENDING_APPROVAL");
   });
 
   // 반대쪽 경계: 일부라도 나갔으면 되돌리지 않는다. 나간 DM은 회수할 수 없으므로
