@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { computeSetupChecklist, isValidGridCoord, GRID_NX_MAX, GRID_NY_MAX } from "../setup";
+import {
+  computeSetupChecklist,
+  hasGuidelineContent,
+  isValidGridCoord,
+  GRID_NX_MAX,
+  GRID_NY_MAX,
+} from "../setup";
 
 // 완전히 준비된 상태. 각 테스트는 여기서 한 가지만 어긋뜨린다.
 const READY = {
@@ -10,6 +16,7 @@ const READY = {
   alertRecipientCount: 1,
   notifiableAlertRecipientCount: 1,
   guidelineDeptWithoutRecipientCount: 0,
+  guidelineDeptWithoutNotifiableRecipientCount: 0,
 };
 
 describe("computeSetupChecklist", () => {
@@ -35,6 +42,7 @@ describe("computeSetupChecklist", () => {
       alertRecipientCount: 0,
       notifiableAlertRecipientCount: 0,
       guidelineDeptWithoutRecipientCount: 0,
+      guidelineDeptWithoutNotifiableRecipientCount: 0,
     });
     expect(r.done).toBe(0);
     expect(r.items).toHaveLength(7);
@@ -82,6 +90,45 @@ describe("computeSetupChecklist", () => {
   test("지침이 한 건도 없으면 부서 수신자 항목도 완료가 아니다", () => {
     const r = computeSetupChecklist({ ...READY, guidelineDeptCount: 0, guidelineDeptWithoutRecipientCount: 0 });
     expect(r.items.find((i) => i.label === "부서 수신자")!.ok).toBe(false);
+  });
+
+  // 검증 §신규-1 — "알릴 수 없는데 전부 초록"의 네 번째 경로.
+  // 부서 수신자를 **지정은 했는데** 그 사람들이 전원 카카오워크 미연결이면 승인
+  // 발송도 매시간 반복 발송도 0명에게 나간다. 앞의 여섯 항목은 전부 초록이었다 —
+  // `카카오워크 연결` 항목은 Alert 수신자(승인자)만 세기 때문이다.
+  test("부서 수신자를 지정했어도 그 부서에 연결된 사람이 0명이면 미완료다", () => {
+    const r = computeSetupChecklist({
+      ...READY,
+      guidelineDeptWithoutRecipientCount: 0,
+      guidelineDeptWithoutNotifiableRecipientCount: 1,
+    });
+    expect(r.items.find((i) => i.label === "부서 수신자")!.ok).toBe(false);
+    // 승인자 쪽은 멀쩡하다 — 이 항목이 **다른 명단**을 본다는 것이 요점이다.
+    expect(r.items.find((i) => i.label.includes("카카오워크"))!.ok).toBe(true);
+    expect(r.done).toBe(6);
+  });
+});
+
+// 회귀 검증 §B-1 — "지침이 있다"를 무엇으로 셀지가 네 곳에서 갈라져 있었다.
+// 공백만 든 지침 한 줄이 발송에서는 걸러지는데 `/api/health/deep`만 503으로 만들었고,
+// 같은 순간 이 화면은 그 부서를 "지침 없음"으로 셌다. 규칙은 여기 하나뿐이고
+// **server/src/guidelineContent.ts와 같은 판정**이어야 한다.
+describe("hasGuidelineContent (회귀 §B-1)", () => {
+  test("공백만 든 항목은 내용이 아니다", () => {
+    expect(hasGuidelineContent({ staff_actions: ["  "], guest_notice: "" })).toBe(false);
+    expect(hasGuidelineContent({ staff_actions: ["\n\t"], guest_notice: "   " })).toBe(false);
+  });
+
+  test("항목이나 안내문 중 하나라도 내용이 있으면 내용이 있다", () => {
+    expect(hasGuidelineContent({ staff_actions: ["제설 대기"], guest_notice: "" })).toBe(true);
+    expect(hasGuidelineContent({ staff_actions: ["  "], guest_notice: "안내문" })).toBe(true);
+    expect(hasGuidelineContent({ staff_actions: [" ", "제설"], guest_notice: "" })).toBe(true);
+  });
+
+  test("빈 배열·null도 내용이 없는 것으로 본다", () => {
+    expect(hasGuidelineContent({ staff_actions: [], guest_notice: "" })).toBe(false);
+    expect(hasGuidelineContent({})).toBe(false);
+    expect(hasGuidelineContent({ staff_actions: null, guest_notice: null })).toBe(false);
   });
 });
 

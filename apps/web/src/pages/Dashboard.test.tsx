@@ -438,6 +438,66 @@ describe("Dashboard 셋업 체크리스트", () => {
     expect(container.querySelector(".setup-strip")!.textContent).toMatch(/부서 수신자/);
   });
 
+  // 검증 §신규-1 — "알릴 수 없는데 전부 초록"의 **네 번째** 경로.
+  // 부서 수신자를 지정만 하고 그 사람들이 전원 카카오워크 미연결이면 승인 발송도
+  // 매시간 반복 발송도 0명에게 나간다. 체크리스트는 7/7 초록이었다 —
+  // `카카오워크 연결` 항목이 Alert 수신자(승인자)만 세기 때문이다.
+  it("부서 수신자가 전원 카카오워크 미연결이면 체크리스트가 완료되지 않는다", async () => {
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
+    ]);
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
+    ]);
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    // 승인자 쪽은 정상이다 — 그래서 지금까지 전부 초록이었다.
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+    ]);
+    mocks.listRecipients.mockResolvedValue([
+      { department_id: "leaf1", employee_id: "e2", name: "안전1", role: "staff", kakaowork_user_id: null },
+      { department_id: "leaf1", employee_id: "e3", name: "안전2", role: "staff", kakaowork_user_id: null },
+    ]);
+
+    const { container } = renderDashboard();
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
+    // "미지정"이 아니라 "미연결"이라고 말해야 한다 — 이미 지정해 둔 관리자는
+    // "수신자를 지정하세요"를 자기 이야기가 아니라고 읽고 지나간다.
+    expect(container.querySelector(".setup-strip")!.textContent).toMatch(
+      /부서 수신자 1개 부서 카카오워크 미연결/,
+    );
+  });
+
+  // 위 테스트가 "스트립이 늘 뜬다"로 통과하지 않도록 반대쪽을 함께 고정한다.
+  it("부서 수신자 중 한 명이라도 연결돼 있으면 체크리스트가 완료된다", async () => {
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
+    ]);
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
+    ]);
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+    ]);
+    mocks.listRecipients.mockResolvedValue([
+      { department_id: "leaf1", employee_id: "e2", name: "안전1", role: "staff", kakaowork_user_id: null },
+      { department_id: "leaf1", employee_id: "e3", name: "안전2", role: "staff", kakaowork_user_id: "kw-3" },
+    ]);
+
+    const { container } = renderDashboard();
+    await waitFor(() => expect(mocks.guidelines).toHaveBeenCalled());
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeNull());
+  });
+
   // 내용을 비운 지침은 제목만 있는 DM이 된다 — "등록됨"으로 세면 안 된다(QA W-22).
   it("내용이 빈 지침은 등록된 것으로 세지 않는다", async () => {
     mocks.listDepartments.mockResolvedValue([

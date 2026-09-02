@@ -9,6 +9,7 @@ import { Modal } from "../components/Modal";
 import { useAuth } from "../auth/AuthProvider";
 import { ApiError } from "../lib/api/client";
 import { listDepartments, listEmployees, listRecipients, saveRecipients } from "../lib/api/org";
+import { hasGuidelineContent } from "../lib/setup";
 import type { DepartmentRow, EmployeeRow, RecipientRow } from "../lib/api/org";
 import { guidelines as fetchGuidelines, saveGuidelines, deleteGuideline } from "../lib/api/content";
 import type { GuidelineRow } from "../lib/api/content";
@@ -176,11 +177,17 @@ export default function Guidelines() {
   // 내용이 비어 있는 지침은 "등록됨"이 아니다 — 실제 DM은 제목만 나가고(QA W-22),
   // 서버의 발송 초안·상태 점검·대시보드 체크리스트도 같은 기준으로 센다.
   function hasContent(g: GuidelineRow | undefined): boolean {
-    return !!g && (g.staff_actions.some((a) => a.trim() !== "") || g.guest_notice.trim() !== "");
+    return !!g && hasGuidelineContent(g);
   }
 
   function recipientCountFor(deptId: string): number {
     return recipients.filter((r) => r.department_id === deptId).length;
+  }
+
+  // 그 부서 수신자 중 실제로 DM이 닿는 사람 수. 지정 인원과 이 값이 다르면 그
+  // 차이만큼이 "명단에는 있는데 특보를 못 받는 사람"이다(검증 §신규-1).
+  function notifiableCountFor(deptId: string): number {
+    return recipients.filter((r) => r.department_id === deptId && !!r.kakaowork_user_id).length;
   }
 
   function toggleGroup(id: string) {
@@ -297,6 +304,7 @@ export default function Guidelines() {
       const watchGuideline = hasContent(guidelineFor(node.dept.id, kind, "watch"));
       const warningGuideline = hasContent(guidelineFor(node.dept.id, kind, "warning"));
       const count = recipientCountFor(node.dept.id);
+      const notifiable = notifiableCountFor(node.dept.id);
       return (
         <button
           type="button"
@@ -316,7 +324,15 @@ export default function Guidelines() {
               aria-hidden="true"
             />
             {count > 0 ? (
-              <span className="guidelines-count">{count}명</span>
+              // 인원 수만 보여 주면 "3명 지정됨"이 곧 "3명에게 간다"로 읽힌다.
+              // 전원이 카카오워크 미연결이면 그 부서 몫은 승인해도 0명에게 나가는데,
+              // 이 화면이 그 명단을 지정하는 **유일한** 화면인데도 연결 상태를 말하는
+              // 자리가 없었다(검증 §신규-1).
+              <span
+                className={notifiable === 0 ? "guidelines-unassigned" : "guidelines-count"}
+              >
+                {notifiable === 0 ? `${count}명 · 전원 미연결` : `${count}명`}
+              </span>
             ) : (
               <span className="guidelines-unassigned">미지정</span>
             )}
@@ -521,7 +537,16 @@ export default function Guidelines() {
                         return (
                           <Chip
                             key={id}
-                            label={`${emp.name} · ${ROLE_LABEL[emp.role]}`}
+                            // 특보 기준 화면의 Alert 수신자 칩에는 이 표시가 있는데
+                            // (QA W-31), 정작 **발송 대상 명단**인 이 화면에만 없었다.
+                            // 미연결인 사람을 부서 수신자로 지정해 두면 그 사람 몫은
+                            // 승인해도 나가지 않는데, 지정하는 순간 그 사실을 알 수
+                            // 있는 자리가 제품 안에 하나도 없었다(검증 §신규-1).
+                            label={
+                              `${emp.name} · ${ROLE_LABEL[emp.role]}` +
+                              (emp.kakaowork_user_id ? "" : " · 카카오워크 미연결")
+                            }
+                            tone={emp.kakaowork_user_id ? "default" : "warn"}
                             onRemove={isAdmin ? () => removeRecipient(id) : undefined}
                           />
                         );
@@ -617,7 +642,12 @@ export default function Guidelines() {
                     onClick={() => addRecipient(emp.id)}
                   >
                     <span>{emp.name}</span>
-                    <span className="guidelines-search-result-email">{emp.email}</span>
+                    <span className="guidelines-search-result-email">
+                      {/* 고르는 순간에 말해 준다. 지정한 뒤에 칩에서 알게 되면
+                          관리자는 이미 "지정 끝났다"고 판단한 뒤다. */}
+                      {emp.email}
+                      {emp.kakaowork_user_id ? "" : " · 카카오워크 미연결"}
+                    </span>
                   </button>
                 </li>
               ))

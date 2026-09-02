@@ -374,6 +374,77 @@ describe("Guidelines 본문 길이 상한 (W-30)", () => {
     expect(screen.getByPlaceholderText(/안녕하세요/)).toHaveAttribute("maxlength", "1000");
   });
 
+  // 검증 §신규-1 — "알릴 수 없는데 전부 초록"의 네 번째 경로.
+  // 부서 수신자는 특보를 **실제로 받는 사람**인데, 그 명단을 지정하는 유일한 화면인
+  // 여기에만 연결 상태 표시가 없었다(특보 기준 화면의 Alert 수신자 칩에는 있다).
+  // 전원이 미연결이면 승인해도 그 부서 몫은 0명에게 나간다.
+  describe("부서 수신자의 카카오워크 연결 상태 (검증 §신규-1)", () => {
+    function renderWithRecipients(recipients: unknown[], employees: unknown[]) {
+      mocks.authState.employee = adminEmployee();
+      mocks.listDepartments.mockResolvedValue([
+        { id: "g1", parent_id: null, name: "리조트", sort_order: 0 },
+        { id: "l1", parent_id: "g1", name: "객실", sort_order: 0 },
+      ]);
+      mocks.listEmployees.mockResolvedValue(employees);
+      mocks.listRecipients.mockResolvedValue(recipients);
+      render(
+        <MemoryRouter>
+          <Guidelines />
+        </MemoryRouter>,
+      );
+    }
+
+    const UNLINKED = {
+      ...staffEmployee(),
+      id: "emp-unlinked",
+      name: "안전일",
+      email: "safe1@example.com",
+      kakaowork_user_id: null,
+      department_id: "l1",
+    };
+    const LINKED = {
+      ...staffEmployee(),
+      id: "emp-linked",
+      name: "안전이",
+      email: "safe2@example.com",
+      kakaowork_user_id: "kw-2",
+      department_id: "l1",
+    };
+    const recipientOf = (e: { id: string; name: string; kakaowork_user_id: string | null }) => ({
+      department_id: "l1",
+      employee_id: e.id,
+      name: e.name,
+      role: "staff",
+      kakaowork_user_id: e.kakaowork_user_id,
+    });
+
+    it("미연결 수신자 칩에 '카카오워크 미연결'이 붙는다", async () => {
+      renderWithRecipients([recipientOf(UNLINKED), recipientOf(LINKED)], [UNLINKED, LINKED]);
+      expect(await screen.findByText(/안전일 · 실무자 · 카카오워크 미연결/)).toBeInTheDocument();
+      // 연결된 사람에게는 붙지 않는다 — 라벨이 늘 붙어 있으면 아무 정보도 아니다.
+      expect(screen.getByText("안전이 · 실무자")).toBeInTheDocument();
+    });
+
+    it("부서 트리가 '전원 미연결'을 말한다 — 인원 수만 보면 초록으로 읽힌다", async () => {
+      renderWithRecipients([recipientOf(UNLINKED)], [UNLINKED]);
+      expect(await screen.findByText("1명 · 전원 미연결")).toBeInTheDocument();
+    });
+
+    it("한 명이라도 연결돼 있으면 인원 수만 보여 준다", async () => {
+      renderWithRecipients([recipientOf(UNLINKED), recipientOf(LINKED)], [UNLINKED, LINKED]);
+      expect(await screen.findByText("2명")).toBeInTheDocument();
+      expect(screen.queryByText(/전원 미연결/)).not.toBeInTheDocument();
+    });
+
+    it("수신자를 고르는 검색 목록에서도 미연결이 보인다", async () => {
+      renderWithRecipients([], [UNLINKED, LINKED]);
+      await screen.findByText("폭우 대응 지침");
+      fireEvent.click(screen.getByRole("button", { name: "+ 수신자 추가" }));
+      expect(await screen.findByText(/safe1@example.com · 카카오워크 미연결/)).toBeInTheDocument();
+      expect(screen.getByText("safe2@example.com")).toBeInTheDocument();
+    });
+  });
+
   // 21번째 항목을 만들 수 있으면 저장 한 번이 통째로 400으로 거부된다 —
   // 그 부서의 지침 편집이 그 자리에서 막힌다.
   it("항목이 20개가 되면 더 추가할 수 없다", async () => {

@@ -10,7 +10,7 @@ import type { CriteriaRow, HeartbeatRow, ObservationRow } from "../lib/api/dashb
 import { listDepartments, alertRecipients, listRecipients } from "../lib/api/org";
 import { guidelines as fetchGuidelines, dispatches as fetchDispatches } from "../lib/api/content";
 import type { DispatchRow } from "../lib/api/content";
-import { computeSetupChecklist, isValidGridCoord } from "../lib/setup";
+import { computeSetupChecklist, hasGuidelineContent, isValidGridCoord } from "../lib/setup";
 import { leafDeptIds } from "../lib/deptTree";
 import type { SetupChecklist } from "../lib/setup";
 import type { Kind, WeatherEvent } from "../lib/types";
@@ -114,9 +114,15 @@ export default function Dashboard() {
   const [setupDetail, setSetupDetail] = useState<{
     missingDeptCount: number;
     deptWithoutRecipientCount: number;
+    deptWithoutNotifiableRecipientCount: number;
     siteCoordInvalid: boolean;
   }>(
-    { missingDeptCount: 0, deptWithoutRecipientCount: 0, siteCoordInvalid: false },
+    {
+      missingDeptCount: 0,
+      deptWithoutRecipientCount: 0,
+      deptWithoutNotifiableRecipientCount: 0,
+      siteCoordInvalid: false,
+    },
   );
   const [siteName, setSiteName] = useState("곤지암");
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -187,13 +193,24 @@ export default function Dashboard() {
         // 없다(QA W-22). 서버의 checkHealth·발송 초안과 같은 기준으로 거른다.
         const guidelineDeptIds = new Set(
           guidelineRows
-            .filter((g) => (g.staff_actions ?? []).some((a) => a.trim() !== "") || (g.guest_notice ?? "").trim() !== "")
+            .filter(hasGuidelineContent)
             .map((g) => g.department_id)
             .filter((id) => leafIds.has(id)),
         );
         const deptIdsWithRecipient = new Set(deptRecipientRows.map((r) => r.department_id));
+        // 카카오워크에 연결된 수신자가 한 명이라도 있는 부서. "지정됐는가"와
+        // "닿을 수 있는가"는 다른 질문이고, 발송은 뒤쪽으로만 나간다(검증 §신규-1).
+        const deptIdsWithNotifiable = new Set(
+          deptRecipientRows.filter((r) => !!r.kakaowork_user_id).map((r) => r.department_id),
+        );
         const guidelineDeptWithoutRecipient = [...guidelineDeptIds].filter(
           (id) => !deptIdsWithRecipient.has(id),
+        );
+        // 수신자가 아예 없는 부서는 위에서 이미 세므로 여기서 빼고, "지정은 했는데
+        // 아무도 연결되지 않은" 부서만 센다 — 두 문구가 같은 부서를 두 번 부르면
+        // 관리자는 부서 수를 두 배로 읽는다.
+        const guidelineDeptWithoutNotifiable = [...guidelineDeptIds].filter(
+          (id) => deptIdsWithRecipient.has(id) && !deptIdsWithNotifiable.has(id),
         );
 
         const checklist = computeSetupChecklist({
@@ -208,11 +225,13 @@ export default function Dashboard() {
           // 가지 않는다. "지정했는가"가 아니라 "닿을 수 있는가"를 센다.
           notifiableAlertRecipientCount: alertRecipientRows.filter((r) => !!r.kakaowork_user_id).length,
           guidelineDeptWithoutRecipientCount: guidelineDeptWithoutRecipient.length,
+          guidelineDeptWithoutNotifiableRecipientCount: guidelineDeptWithoutNotifiable.length,
         });
         setSetup(checklist);
         setSetupDetail({
           missingDeptCount: Math.max(0, leafIds.size - guidelineDeptIds.size),
           deptWithoutRecipientCount: guidelineDeptWithoutRecipient.length,
+          deptWithoutNotifiableRecipientCount: guidelineDeptWithoutNotifiable.length,
           // 저장은 돼 있는데 좌표가 격자 밖인 경우와, 아직 아무것도 저장하지 않은
           // 경우를 구분한다 — 관리자가 할 일이 완전히 다르다.
           siteCoordInvalid: !!site && !isValidGridCoord(site.nx, site.ny),
@@ -342,7 +361,13 @@ export default function Dashboard() {
                       ) : item.label === "부서별 지침" ? (
                         `부서별 지침 ${setupDetail.missingDeptCount}개 부서 미등록`
                       ) : item.label === "부서 수신자" ? (
-                        `부서 수신자 ${setupDetail.deptWithoutRecipientCount}개 부서 미지정 — 그 부서 몫은 0명에게 발송됩니다`
+                        // 미지정과 미연결은 관리자가 할 일이 다르다. "수신자를
+                        // 지정하세요"라고만 말하면, 이미 지정해 둔 관리자는 그 문구를
+                        // 자기 상태가 아니라고 읽고 지나간다 — 그 부서 몫은 승인해도
+                        // 0명에게 나간다(검증 §신규-1).
+                        setupDetail.deptWithoutRecipientCount > 0
+                          ? `부서 수신자 ${setupDetail.deptWithoutRecipientCount}개 부서 미지정 — 그 부서 몫은 0명에게 발송됩니다`
+                          : `부서 수신자 ${setupDetail.deptWithoutNotifiableRecipientCount}개 부서 카카오워크 미연결 — 그 부서 몫은 승인해도 0명에게 발송됩니다`
                       ) : item.label === "관측 지점" && setupDetail.siteCoordInvalid ? (
                         // "미지정"이라고만 하면 관리자는 저장 화면을 열어 값이
                         // 들어 있는 것을 보고 정상이라고 판단한다 — 실제로는 그

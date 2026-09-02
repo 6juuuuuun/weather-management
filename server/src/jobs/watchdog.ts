@@ -9,6 +9,7 @@ import { withService, type Querier } from "../db.ts";
 import { envChannel, alertRecipientKakaoIds } from "./common.ts";
 import { alertRecipientLinkCounts } from "../kakaoLink.ts";
 import { GRID_NX_MAX, GRID_NY_MAX, isValidGrid } from "../kmaGrid.ts";
+import { effectiveGuidelineSql } from "../guidelineContent.ts";
 import type { NotificationChannel } from "../shared/channel.ts";
 
 /** 관측은 매시 1회다. 130분이면 최소 2회를 연속으로 놓친 상태다. */
@@ -161,16 +162,34 @@ export async function checkHealth(deps: { runner?: Runner } = {}): Promise<Healt
       //     "0명에게 발송 성공"이 된다(QA W-02). 내용이 비어 있는 지침(인력 조정
       //     지침도 고객 안내도 없는 행)은 제목만 있는 DM을 만들 뿐이므로
       //     `composeDraft` 호출부와 같은 기준으로 **없는 것으로 센다**(QA W-22).
+      // **부서를 센다**(회귀 검증 §B-2). 예전에는 count(*)가 action_guidelines의 **행**을
+      //     셌다 — 한 부서에 (종류×등급) 지침을 여러 개 달면 "부서가 3곳입니다"가 되고,
+      //     운영자는 있지도 않은 두 부서를 찾아 헤맨다. 시드 조직에서 4종×2등급을 다
+      //     채우면 "8곳"이 된다.
+      // 그리고 "내용이 있는 지침"의 기준은 guidelineContent.ts 한 곳에서 온다
+      //     (회귀 검증 §B-1). 예전에는 여기만 `cardinality(staff_actions) > 0`이라
+      //     공백만 든 지침 행 하나가 발송에는 아무 영향이 없는데 503을 만들었고,
+      //     같은 순간 대시보드는 그 부서를 "지침 없음"으로 셌다.
       const { rows: guideRows } = await q.query(
-        `select count(*)::int as effective,
-                count(*) filter (
+        `select count(distinct g.department_id)::int as effective,
+                count(distinct g.department_id) filter (
                   where not exists (select 1 from recipients r where r.department_id = g.department_id)
-                )::int as no_recipient
+                )::int as no_recipient,
+                count(distinct g.department_id) filter (
+                  where not exists (
+                    select 1 from recipients r
+                      join employees e on e.id = r.employee_id
+                     where r.department_id = g.department_id and e.kakaowork_user_id is not null)
+                )::int as no_reachable
            from action_guidelines g
-          where cardinality(g.staff_actions) > 0 or g.guest_notice <> ''`,
+          where ${effectiveGuidelineSql("g")}`,
       );
       const effective = Number(guideRows[0]?.effective);
       const noRecipient = Number(guideRows[0]?.no_recipient);
+      // 수신자가 아예 없는 부서는 위 사유가 이미 말한다 — 여기서는 "지정은 했는데
+      // 그 사람들에게 닿을 수 없는" 부서만 센다. 두 사유가 같은 부서를 두 번 부르면
+      // 운영자는 부서 수를 두 배로 읽는다.
+      const noReachable = Number(guideRows[0]?.no_reachable) - noRecipient;
       if (effective === 0) {
         reasons.push(
           "내용이 있는 행동지침이 한 건도 없습니다 — 특보가 떠도 발송할 부서·내용이 만들어지지 않습니다",
@@ -178,6 +197,20 @@ export async function checkHealth(deps: { runner?: Runner } = {}): Promise<Healt
       } else if (noRecipient > 0) {
         reasons.push(
           `지침은 있는데 수신자가 한 명도 없는 부서가 ${noRecipient}곳입니다 — 그 부서 몫은 0명에게 발송됩니다`,
+        );
+      }
+      // **특보를 실제로 받는 사람들**의 연결 상태를 여기서 처음 센다(검증 §신규-1).
+      //
+      // 이 시스템은 "아무에게도 알릴 수 없는데 모든 지표가 초록"을 세 번 고쳤고,
+      // 검증이 네 번째를 찾았다. 원인이 구조적이었다: checkHealth도 셋업 체크리스트도
+      // **Alert 수신자(승인자)의 연결만** 셌고, 정작 특보가 나갈 대상인 부서 수신자의
+      // 연결은 서버 어디에서도 세지 않았다. 그래서 부서 수신자 전원이 미연결이면
+      // 승인 발송과 매시간 반복 발송이 0명에게 나가는데 하트비트·워치독·health/deep·
+      // 체크리스트가 전부 초록이었다. 승인자가 폭설 새벽 4시에 승인 버튼을 누른
+      // **다음에야** 알게 되는 상태였고, 그때는 고칠 시간이 없다.
+      if (effective > 0 && noReachable > 0) {
+        reasons.push(
+          `지침과 수신자는 있는데 카카오워크에 연결된 수신자가 한 명도 없는 부서가 ${noReachable}곳입니다 — 그 부서 몫은 승인해도 0명에게 발송됩니다`,
         );
       }
 

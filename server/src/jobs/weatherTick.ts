@@ -9,6 +9,7 @@
 //     오류가 났을 때 방금 저장한 관측까지 함께 롤백돼 "수집은 됐다"는 사실이 사라진다.
 // (2) 카카오워크 발송(네트워크)이 트랜잭션 안에 들어가면 그동안 커넥션이 붙잡힌다.
 //     그래서 발송은 항상 withService 블록 바깥에서 한다.
+import { hasGuidelineContent } from "../guidelineContent.ts";
 import { withService, type Querier } from "../db.ts";
 import { baseDateTime, fetchObservation, type KmaObservation } from "../shared/kma.ts";
 import { feelsLikeC, snowNewCm } from "../shared/derive.ts";
@@ -266,9 +267,10 @@ export async function runWeatherTick(
       // 만든다(QA W-22). shared/template.ts의 composeDraft는 행이 있으면 무조건 블록을
       // 만들므로 — 그 파일은 손댈 수 없다 — 여기서 걸러서 넘긴다. checkHealth·대시보드
       // 체크리스트도 같은 기준으로 센다.
-      const effective = (gRows as any[]).filter(
-        (g) => (g.staff_actions ?? []).some((a: string) => a.trim() !== "") || (g.guest_notice ?? "").trim() !== "",
-      );
+      // 기준은 guidelineContent.ts 한 곳에 있다 — checkHealth의 SQL도 같은 파일에서
+      // 온다. 두 곳에 따로 적혀 있던 동안 공백만 든 지침 한 줄이 발송에서는 걸러지고
+      // health/deep만 503으로 만들었다(회귀 검증 §B-1).
+      const effective = (gRows as any[]).filter(hasGuidelineContent);
       const blocks = composeDraft(kind, grade, effective as any, rRows as any);
       await q.query("insert into messages (event_id, content) values ($1, $2::jsonb)",
         [ev.id, JSON.stringify(blocks)]);

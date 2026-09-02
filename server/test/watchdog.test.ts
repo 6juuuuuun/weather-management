@@ -88,10 +88,16 @@ async function ensureGuideline(): Promise<void> {
     const deptId =
       d[0]?.id ??
       (await q.query("select id from departments where name = $1", [GUIDE.dept])).rows[0].id;
+    // **카카오워크 ID를 채운다.** 채우지 않으면 이 부서 몫은 승인해도 0명에게
+    // 나간다 — 그리고 그것이 검증 §신규-1이 찾아낸 상태다. 이 파일의 "정상" 전제가
+    // 그동안 정확히 그 상태였다(지정은 돼 있고 아무도 닿을 수 없는).
     const { rows: e } = await q.query(
-      `insert into employees (name, email, role) values ('감시수신', $1, 'staff')
-       on conflict (email) do update set name = excluded.name returning id`,
-      [GUIDE.email],
+      `insert into employees (name, email, role, kakaowork_user_id)
+       values ('감시수신', $1, 'staff', $2)
+       on conflict (email) do update
+         set name = excluded.name, kakaowork_user_id = excluded.kakaowork_user_id
+       returning id`,
+      [GUIDE.email, "zzwatchdog-recv-kakao"],
     );
     await q.query(
       `insert into action_guidelines (department_id, kind, grade, staff_actions, guest_notice)
@@ -663,6 +669,86 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
     const out = await checkHealth();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/수신자가 한 명도 없는 부서가 1곳/);
+  });
+
+  // 검증 §신규-1 — 이 프로젝트가 네 번째로 만난 "알릴 수 없는데 전부 초록".
+  //
+  // 부서 수신자는 **특보를 실제로 받는 사람**인데, checkHealth도 셋업 체크리스트도
+  // Alert 수신자(승인자)의 연결만 셌다. 그래서 부서 수신자 전원이 미연결이면
+  // 승인 발송·매시간 반복 발송이 0명에게 나가는데 하트비트·워치독·health/deep이
+  // 전부 초록이었다(실측: `sent_count:0` + `ok:true`).
+  it("지침·수신자는 있는데 그 부서에 카카오워크 연결자가 0명이면 문제로 본다", async () => {
+    await healthyPipes();
+    await ensureGuideline();
+    await withService((q) =>
+      q.query("update employees set kakaowork_user_id = null where email = $1", [GUIDE.email]),
+    );
+    const out = await checkHealth();
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/연결된 수신자가 한 명도 없는 부서가 1곳/);
+  });
+
+  // 수신자가 아예 없는 부서를 두 사유가 각각 세면 운영자는 부서 수를 두 배로 읽고
+  // 있지도 않은 부서를 찾아 헤맨다. 앞의 사유("수신자가 한 명도 없는")만 낸다.
+  it("수신자가 아예 없는 부서를 '미연결'로 두 번 세지 않는다", async () => {
+    await healthyPipes();
+    await ensureGuideline();
+    await withService((q) =>
+      q.query(
+        "delete from recipients where department_id in (select id from departments where name = $1)",
+        [GUIDE.dept],
+      ),
+    );
+    const out = await checkHealth();
+    expect(out.reasons.join()).toMatch(/수신자가 한 명도 없는 부서가 1곳/);
+    expect(out.reasons.join()).not.toMatch(/연결된 수신자가 한 명도 없는 부서/);
+  });
+
+  // 회귀 검증 §B-2 — `count(*)`가 부서가 아니라 **지침 행**을 셌다. 한 부서에
+  // (종류×등급) 지침을 여러 개 달면 "부서가 3곳입니다"가 되고, 운영자는 있지도
+  // 않은 두 부서를 찾아 헤맨다. 시드 조직을 다 채우면 "8곳"이 된다.
+  it("'부서 N곳'이 지침 행 수가 아니라 부서 수다", async () => {
+    await healthyPipes();
+    await ensureGuideline();
+    await withService(async (q) => {
+      const { rows } = await q.query("select id from departments where name = $1", [GUIDE.dept]);
+      // 같은 부서에 지침 3건(rain/watch는 ensureGuideline이 이미 넣었다).
+      for (const [kind, grade] of [["rain", "warning"], ["snow", "watch"]]) {
+        await q.query(
+          `insert into action_guidelines (department_id, kind, grade, staff_actions, guest_notice)
+           values ($1, $2, $3, $4, '안내문')`,
+          [rows[0].id, kind, grade, ["제설 대기"]],
+        );
+      }
+      await q.query(
+        "delete from recipients where department_id in (select id from departments where name = $1)",
+        [GUIDE.dept],
+      );
+    });
+    const out = await checkHealth();
+    expect(out.reasons.join()).toMatch(/수신자가 한 명도 없는 부서가 1곳/);
+    expect(out.reasons.join()).not.toMatch(/부서가 3곳/);
+  });
+
+  // 회귀 검증 §B-1 — 발송에 아무 영향도 없는 행 하나가 시스템 전체를 503으로 만들었다.
+  // `composeDraft` 호출부·대시보드 체크리스트·지침 화면은 그 행을 "없는 지침"으로
+  // 세는데 checkHealth만 `cardinality(staff_actions) > 0`이라 "있다"로 셌다.
+  // 두 화면이 같은 순간 정반대로 말했다.
+  it("공백만 든 지침은 '있는 지침'으로 세지 않는다", async () => {
+    await healthyPipes();
+    await ensureGuideline();
+    await withService(async (q) => {
+      // 공백만 든 항목 + 빈 안내문. 수신자도 지운다 — 옛 기준이면 "수신자가 없는
+      // 부서 1곳"으로 503이 되고, 새 기준이면 "지침이 한 건도 없습니다"가 된다.
+      await q.query("update action_guidelines set staff_actions = $1, guest_notice = ''", [["  "]]);
+      await q.query(
+        "delete from recipients where department_id in (select id from departments where name = $1)",
+        [GUIDE.dept],
+      );
+    });
+    const out = await checkHealth();
+    expect(out.reasons.join()).not.toMatch(/수신자가 한 명도 없는 부서/);
+    expect(out.reasons.join()).toMatch(/행동지침이 한 건도 없습니다/);
   });
 
   // 앱이 "이번 수집 실패했다"고 스스로 적어 둔 값을 점검이 안 읽으면, 수집은

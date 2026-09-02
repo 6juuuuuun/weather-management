@@ -15,6 +15,7 @@ import { callSend } from "../lib/api/send";
 import type { AlertRecipientRow } from "../lib/api/org";
 import type { AlertSetting, Kind } from "../lib/types";
 import "./Settings.css";
+import { describeGrid } from "../lib/kmaGrid";
 
 const KIND_ORDER: Kind[] = ["rain", "snow", "wind", "heat"];
 
@@ -480,6 +481,16 @@ export default function Settings() {
                 />
               </label>
             </div>
+            {/* 격자 범위 검사는 "형식이 맞는가"만 본다. 곤지암(61, 121) 대신 제주
+                격자(52, 38)를 넣어도 저장되고, 그때부터 **남의 동네 날씨로 특보를
+                판정한다** — 수집은 정상이라 모든 지표가 초록이다(검증 §신규-2).
+                값 검증으로는 잡을 수 없고, 잡을 수 있는 사람은 이 화면을 보는
+                관리자뿐이다. 그래서 숫자 두 개가 어디를 가리키는지 되짚어 보여 준다. */}
+            <p className="settings-field-hint" data-testid="site-grid-where">
+              {describeGrid(siteSettings.nx, siteSettings.ny) ??
+                "좌표가 기상청 격자 범위를 벗어나 위치를 확인할 수 없습니다"}
+              {" — 이 지점의 날씨로 특보를 판정합니다. 주소와 다른 지역이면 좌표가 잘못된 것입니다"}
+            </p>
             <p className="settings-field-hint">
               격자 좌표는 주소 검색 시 자동 변환됩니다 · nx는 1~{GRID_NX_MAX}, ny는 1~{GRID_NY_MAX} ·
               이 범위를 벗어난 좌표를 저장하면 기상청 조회가 매시간 실패해 날씨 수집이 멈춥니다

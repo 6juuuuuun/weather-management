@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { ApiError } from "../lib/api/client";
 import { jsonResponse, makeFetchQueue } from "../test-support/fetchQueue";
@@ -338,6 +338,25 @@ describe("Settings 관측 지점·재알림 값 검증 (W-10 · W-30)", () => {
     await loaded();
     expect(screen.getByText(/nx는 1~149, ny는 1~253/)).toBeInTheDocument();
     expect(screen.getByText(/간격은 5~1440분/)).toBeInTheDocument();
+  });
+
+  // 검증 §신규-2 — 격자 **범위 안의** 엉뚱한 좌표는 값 검증으로 잡히지 않는다.
+  // 저장도 되고 수집도 정상이라 모든 지표가 초록인 채로 남의 동네 날씨로 판정한다.
+  // 이 화면이 좌표가 가리키는 곳을 말해 주는 것이 유일한 방어선이다.
+  it("저장된 좌표가 어느 지역을 가리키는지 화면이 말한다", async () => {
+    await loaded();
+    const where = screen.getByTestId("site-grid-where");
+    expect(where.textContent).toMatch(/경기 부근/);
+    expect(where.textContent).toMatch(/주소와 다른 지역이면 좌표가 잘못된 것입니다/);
+  });
+
+  it("제주 격자를 넣으면 화면 문구가 곧바로 제주로 바뀐다", async () => {
+    await loaded();
+    fireEvent.change(nxInput(), { target: { value: "52" } });
+    fireEvent.change(nyInput(), { target: { value: "38" } });
+    await waitFor(() =>
+      expect(screen.getByTestId("site-grid-where").textContent).toMatch(/제주 부근/),
+    );
   });
 });
 
