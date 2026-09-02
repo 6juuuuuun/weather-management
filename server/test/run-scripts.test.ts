@@ -47,3 +47,30 @@ describe("npm 스크립트가 실제로 서버를 띄울 수 있다", () => {
     });
   }
 });
+
+// QA W-23(g) · `ops/make-admin.sh`는 **관리자 0명 상태를 푸는 유일한 절차**다.
+// 그런데 스택을 기본 이름이 아닌 compose 프로젝트로 올리면(`-p`/`COMPOSE_PROJECT_NAME`)
+// `docker compose exec`가 서비스를 찾지 못하고 도커 원문("service \"postgres\" is not
+// running")만 나왔다. 검증에서 실제로 이렇게 막혔고, 그 문장은 "그런 직원이 없습니다"도
+// 아니라 처음 설치하는 사람은 **가입이 잘못된 줄 알고 가입을 계속 다시 한다.**
+// 스크립트를 여기서 실행해 볼 수는 없으므로(도커가 필요하다) 계약을 파일 내용으로 묶는다.
+describe("ops/make-admin.sh가 막히는 이유를 사람 말로 알려 준다 (W-23g)", () => {
+  const script = readFileSync(join(here, "..", "..", "ops", "make-admin.sh"), "utf8");
+
+  it("postgres 컨테이너를 못 찾으면 도커 원문 대신 안내를 낸다", () => {
+    expect(script).toContain("docker compose ps -q postgres");
+    expect(script).toMatch(/postgres\) 컨테이너를 찾지 못했습니다/);
+  });
+
+  it("다른 compose 프로젝트 이름을 쓰는 법을 그 자리에서 알려 준다", () => {
+    expect(script).toContain("COMPOSE_PROJECT_NAME=");
+    expect(script).toContain("docker compose ls");
+  });
+
+  it("운영 안내서 §1-5도 같은 탈출구를 적는다", () => {
+    const manual = readFileSync(join(here, "..", "..", "docs", "운영.md"), "utf8");
+    expect(manual).toContain("COMPOSE_PROJECT_NAME=프로젝트이름 ./ops/make-admin.sh");
+    // 가입을 다시 하는 것이 해법이라고 오해하지 않게 못박는다.
+    expect(manual).toMatch(/가입을 다시 할 필요는\n?없습니다/);
+  });
+});

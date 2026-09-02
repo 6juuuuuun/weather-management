@@ -14,6 +14,22 @@ EMAIL="${1:?이메일을 넘기세요 (예: ./ops/make-admin.sh hong@gonjiam.com
 
 cd "$(dirname "$0")/.."
 
+# 이 스크립트는 관리자 0명 상태를 푸는 **유일한** 절차다. 막히면 제품 안에 탈출구가
+# 없으므로, 막히는 이유를 도커 원문("service \"postgres\" is not running") 대신
+# 사람 말로 알려 준다. 실제로 QA에서 이렇게 막혔다: 스택을 `-p weatherqa1`처럼 다른
+# 프로젝트 이름으로 올리면 `docker compose exec`가 서비스를 찾지 못하는데, 나오는
+# 문장이 "그런 직원이 없습니다"도 아니라 처음 설치하는 사람은 **가입이 잘못된 줄 알고
+# 가입을 계속 다시 한다**(QA W-23g).
+if [ -z "$(docker compose ps -q postgres 2>/dev/null)" ]; then
+  echo "이 디렉터리의 compose 프로젝트에서 데이터베이스(postgres) 컨테이너를 찾지 못했습니다." >&2
+  echo "" >&2
+  echo "1) 스택이 떠 있는지 보세요:  docker compose ps" >&2
+  echo "2) 다른 프로젝트 이름으로 올렸다면(-p 또는 COMPOSE_PROJECT_NAME) 같은 이름을 주고 실행하세요:" >&2
+  echo "     COMPOSE_PROJECT_NAME=<프로젝트이름> ./ops/make-admin.sh $EMAIL" >&2
+  echo "   떠 있는 프로젝트 이름은 'docker compose ls'로 볼 수 있습니다." >&2
+  exit 1
+fi
+
 # 이메일은 psql의 -v로 넘겨 :'변수'로 꽂는다 — 문자열을 이어 붙이지 않는다.
 # 주의: psql -c로 준 문장은 변수 치환을 거치지 않고 서버로 그대로 간다
 # (`syntax error at or near ":"`). 문장을 표준입력으로 흘려 -f - 로 읽혀야 한다.
