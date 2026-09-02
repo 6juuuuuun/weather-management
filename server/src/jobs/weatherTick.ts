@@ -225,6 +225,30 @@ export async function runWeatherTick(
     temp: saved.temp_c, feels: saved.feels_c, wind: saved.wind_ms };
   const actions = evaluate(obs, criteria, settings, open);
 
+  // **꺼진 종류에 열린 특보가 남아 있으면 여기서 닫는다**(검증 W-03 잔여분).
+  //
+  // shared/engine.ts의 `if (!s || !s.enabled) continue`는 그 종류를 통째로 건너뛴다 —
+  // 감지만이 아니라 **해제 판정까지** 건너뛴다. 그래서 진행 중(ACTIVE)인 특보가 있는
+  // 종류를 알림 설정에서 끄면 그 특보가 영구히 굳었다: 대시보드는 "대응 중"을 무기한
+  // 표시하고, `dismiss`는 PENDING_APPROVAL만 받으므로 409, health/deep은 초록.
+  // **제품 안에 되돌릴 길이 하나도 없었다.**
+  //
+  // engine.ts는 원본과 바이트 단위로 같아야 하므로 호출부에서 해결한다. 판정을
+  // 끈 종류의 특보를 "대응 중"으로 계속 두는 것은 거짓말이다 — 아무도 그 특보가
+  // 아직 유효한지 보고 있지 않다. 그래서 닫되, **평소의 해제와 똑같은 경로로**
+  // 닫는다(아래 resolve 분기): 발송받았던 부서에 해제 알림이 나가고 이력에도 남는다.
+  // 조용히 지우면 "대응 중"이라고 들었던 사람들이 끝났다는 말을 영영 못 듣는다.
+  // 화면(알림 설정)은 끄기 전에 몇 건이 함께 해제되는지 먼저 알려 준다.
+  const disabledKinds = new Set(settings.filter((s) => !s.enabled).map((s) => s.kind));
+  for (const e of open) {
+    if (!disabledKinds.has(e.kind)) continue;
+    if (e.status !== "PENDING_APPROVAL" && e.status !== "ACTIVE") continue;
+    console.warn(
+      `[weather-tick] ${e.kind} 특보가 꺼진 종류에 열려 있어 해제합니다 (event=${e.id}) — 판정이 꺼져 있어 스스로 해제되지 않습니다`,
+    );
+    actions.push({ type: "resolve", eventId: e.id, kind: e.kind, grade: e.grade });
+  }
+
   const obsLine = formatObsLine(saved);
 
   // 폭설 메시지에 적설량이 한 글자도 없었다(QA W-04) — 받는 사람은 얼마나 왔는지 모른 채

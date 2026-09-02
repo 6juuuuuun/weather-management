@@ -3,7 +3,12 @@ import { AppLayout } from "../components/AppLayout";
 import { Toggle } from "../components/Toggle";
 import { Button } from "../components/Button";
 import { useAuth } from "../auth/AuthProvider";
-import { siteSettings as fetchSiteSettings, saveSiteSettings, heartbeat as fetchHeartbeat } from "../lib/api/dashboard";
+import {
+  siteSettings as fetchSiteSettings,
+  saveSiteSettings,
+  heartbeat as fetchHeartbeat,
+  openEvents as fetchOpenEvents,
+} from "../lib/api/dashboard";
 import type { HeartbeatRow, SiteSettingsRow } from "../lib/api/dashboard";
 import {
   alertSettings as fetchAlertSettings,
@@ -160,22 +165,29 @@ export default function Settings() {
   const [toast, setToast] = useState<ToastState>(null);
   // null = 아직 모른다/조회 실패. 배열이면 그 길이와 연결 수를 그대로 쓴다.
   const [alertRecipientRows, setAlertRecipients] = useState<AlertRecipientRow[] | null>(null);
+  // 종류를 끄면 그 종류의 **진행 중 특보가 함께 해제된다**(검증 W-03). 저장을 누르고
+  // 나서 대시보드의 "대응 중"이 사라진 것을 보고 알게 되면 늦다 — 끄기 전에 말한다.
+  // 조회가 실패해도 화면 전체가 막히면 안 되므로 빈 배열로 떨어뜨린다.
+  const [openEventKinds, setOpenEventKinds] = useState<Kind[]>([]);
+  const openCountOf = (kind: Kind) => openEventKinds.filter((k) => k === kind).length;
 
   useEffect(() => {
     let active = true;
     (async () => {
       setLoadError(null);
       try {
-        const [alertRows, site, hb, recipients] = await Promise.all([
+        const [alertRows, site, hb, recipients, openRows] = await Promise.all([
           fetchAlertSettings(),
           fetchSiteSettings(),
           fetchHeartbeat("weather-tick"),
           // 이 조회만 실패해도 화면 전체가 못 뜨면 안 된다 — 아래 카카오워크 줄이
           // "확인 안 됨"으로 내려가는 것으로 충분하다.
           fetchAlertRecipients().catch(() => null),
+          fetchOpenEvents().catch(() => []),
         ]);
         if (!active) return;
         setAlertRecipients(recipients);
+        setOpenEventKinds(openRows.map((e) => e.kind));
         const map = {} as Record<Kind, AlertSetting>;
         for (const row of alertRows) map[row.kind] = row;
         setAlertSettings(map);
@@ -359,6 +371,15 @@ export default function Settings() {
                       label={`${KIND_LABEL[kind]} 알림 활성화`}
                       disabled={!isAdmin}
                     />
+                    {/* 판정이 꺼진 종류의 특보를 "대응 중"으로 계속 둘 수는 없다
+                        (아무도 그것이 아직 유효한지 보고 있지 않다). 그래서 다음
+                        수집 때 해제되는데, 그 사실을 저장 전에 알려 준다. */}
+                    {!setting.enabled && openCountOf(kind) > 0 && (
+                      <p className="settings-alert-warning" data-testid={`open-warning-${kind}`}>
+                        진행 중인 {KIND_LABEL[kind]} 특보 {openCountOf(kind)}건이 다음 수집 때 함께 해제됩니다
+                        — 발송받은 부서에 해제 알림이 나갑니다
+                      </p>
+                    )}
                   </div>
                 );
               })}

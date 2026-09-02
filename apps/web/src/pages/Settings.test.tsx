@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   siteSettings: vi.fn(),
   saveSiteSettings: vi.fn(),
   heartbeat: vi.fn(),
+  openEvents: vi.fn(),
   authState: { employee: null as Employee | null, loading: false, isApprover: false },
 }));
 
@@ -28,6 +29,7 @@ vi.mock("../lib/api/dashboard", () => ({
   siteSettings: (...a: unknown[]) => mocks.siteSettings(...a),
   saveSiteSettings: (...a: unknown[]) => mocks.saveSiteSettings(...a),
   heartbeat: (...a: unknown[]) => mocks.heartbeat(...a),
+  openEvents: (...a: unknown[]) => mocks.openEvents(...a),
 }));
 
 const admin: Employee = {
@@ -86,6 +88,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue([{ employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" }]);
   mocks.saveAlertSettings.mockReset().mockResolvedValue(alertRows);
+  mocks.openEvents.mockReset().mockResolvedValue([]);
   mocks.siteSettings.mockReset().mockResolvedValue(site);
   mocks.saveSiteSettings.mockReset().mockResolvedValue(site);
   mocks.heartbeat.mockReset().mockResolvedValue({
@@ -193,6 +196,48 @@ describe("Settings 카카오워크 연결 표시", () => {
     const { container } = renderPage();
     await screen.findByText("카카오워크 연결");
     expect(container.textContent).not.toMatch(/봇 이름 날씨경영/);
+  });
+});
+
+// 검증 W-03 잔여분 — 진행 중인 특보가 있는 종류를 끄면 그 특보가 영구히 굳었다.
+// 이제 다음 수집 때 함께 해제되는데, **끄기 전에** 그 사실을 말해 줘야 한다.
+// 저장하고 나서 대시보드의 "대응 중"이 사라진 것을 보고 알게 되면 늦다.
+describe("Settings 진행 중 특보가 있는 종류 끄기 (W-03)", () => {
+  it("진행 중인 특보가 있는 종류를 끄면 함께 해제된다고 알려 준다", async () => {
+    mocks.openEvents.mockResolvedValue([
+      { id: "ev-1", kind: "heat", grade: "watch", status: "ACTIVE" },
+    ]);
+    renderPage();
+    fireEvent.click(await screen.findByLabelText("폭염 알림 활성화"));
+    const warn = await screen.findByTestId("open-warning-heat");
+    expect(warn.textContent).toMatch(/진행 중인 폭염 특보 1건이 다음 수집 때 함께 해제됩니다/);
+  });
+
+  // 켜 둔 채로는 아무 말도 하지 않아야 한다 — 늘 떠 있는 경고는 아무 정보도 아니다.
+  it("켜져 있는 동안에는 경고를 띄우지 않는다", async () => {
+    mocks.openEvents.mockResolvedValue([
+      { id: "ev-1", kind: "heat", grade: "watch", status: "ACTIVE" },
+    ]);
+    renderPage();
+    await screen.findByLabelText("폭염 알림 활성화");
+    expect(screen.queryByTestId("open-warning-heat")).toBeNull();
+  });
+
+  // 다른 종류의 특보 때문에 경고가 뜨면 관리자는 그 문구를 믿지 않게 된다.
+  it("열린 특보가 없는 종류를 끌 때는 경고가 없다", async () => {
+    mocks.openEvents.mockResolvedValue([
+      { id: "ev-1", kind: "heat", grade: "watch", status: "ACTIVE" },
+    ]);
+    renderPage();
+    fireEvent.click(await screen.findByLabelText("폭우 알림 활성화"));
+    expect(screen.queryByTestId("open-warning-rain")).toBeNull();
+  });
+
+  // 이 조회가 실패해도 알림 설정 화면 자체는 떠야 한다.
+  it("열린 특보 조회가 실패해도 화면은 뜬다", async () => {
+    mocks.openEvents.mockRejectedValue(new ApiError(500, "서버 오류"));
+    renderPage();
+    expect(await screen.findByText("특보 알림 활성화")).toBeInTheDocument();
   });
 });
 

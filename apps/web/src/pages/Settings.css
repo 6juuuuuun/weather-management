@@ -72,9 +72,20 @@
 .settings-alert-row {
   display: flex;
   align-items: center;
+  /* 경고 한 줄이 토글 아래로 접혀 내려가도록 — 같은 줄에 끼우면 토글이 밀린다. */
+  flex-wrap: wrap;
   gap: 16px;
   padding: 16px 0;
   border-top: 1px solid var(--divider-soft);
+}
+
+/* 끄면 진행 중인 특보가 함께 해제된다는 안내(검증 W-03). 저장 전에 보여야 한다. */
+.settings-alert-warning {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--warn);
 }
 
 .settings-alert-row:first-child {

@@ -68,6 +68,10 @@ beforeEach(async () => {
     // resolve_notice는 시드 기본값이 true다. 아래 해제 알림 테스트가 이 값을 뒤집으므로
     // 매 테스트 시작 시 기본값으로 되돌린다 — 시드를 지우는 게 아니라 되돌리는 것이다.
     await q.query("update site_settings set resolve_notice = true where id = 1");
+    // alert_settings.enabled도 같은 이유로 되돌린다. 이제 weatherTick이 **꺼진 종류에
+    // 열린 특보를 해제**하므로(검증 W-03), 다른 파일이 꺼 둔 채로 끝나면 이 파일의
+    // 특보들이 만들어지자마자 닫힌다 — 항목 8과 똑같은 종류의 파일 간 오염이다.
+    await q.query("update alert_settings set enabled = true");
   });
 });
 
@@ -404,6 +408,95 @@ describe("특보 승격(escalate)", () => {
     expect(msgs.map((m: any) => m.event_id)).toEqual([warning.id]);
     expect(rec.sent.map((x) => x.to)).toEqual(["kw-appr"]);
     expect(rec.sent[0]!.text).toContain("폭우 경보");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 꺼진 종류에 열린 특보가 갇히는 문제 — 검증 W-03 잔여분
+// ---------------------------------------------------------------------------
+//
+// shared/engine.ts의 `if (!s || !s.enabled) continue`는 감지만이 아니라 **해제 판정까지**
+// 건너뛴다. 그래서 진행 중인 특보가 있는 종류를 끄면 그 특보가 영구히 굳었다:
+// 대시보드는 "대응 중"을 무기한 표시하고, dismiss는 PENDING만 받으므로 409,
+// health/deep은 초록 — 제품 안에 되돌릴 길이 하나도 없었다. engine.ts는 손댈 수
+// 없으므로 호출부(weatherTick)에서 닫는다.
+describe("꺼진 종류에 남은 열린 특보", () => {
+  async function activeEvent(kind: string, recipientId: string, deptId: string) {
+    return withService(async (q) => {
+      const { rows } = await q.query(
+        `insert into weather_events (kind, grade, status, repeat_count)
+         values ($1,'watch','ACTIVE', 1) returning id`,
+        [kind],
+      );
+      await q.query(
+        "insert into messages (event_id, status, content) values ($1, 'approved', $2::jsonb)",
+        [rows[0].id, JSON.stringify([{ department_id: deptId, department_name: "객실",
+          staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
+          recipients: [{ employee_id: recipientId, name: "객실담당", kakaowork_user_id: "kw-staff" }],
+          selected: true }])],
+      );
+      return rows[0].id as string;
+    });
+  }
+
+  it("종류를 끄면 그 종류의 진행 중 특보가 다음 tick에서 해제된다", async () => {
+    const staff = await makeEmployee({ name: "객실담당", email: "off-heat@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("heat", "watch", staff);
+    const eventId = await activeEvent("heat", staff, deptId);
+    await withService((q) => q.query("update alert_settings set enabled = false where kind = 'heat'"));
+
+    // 비가 오는 상황: 폭염과 무관한 관측이어도 결과는 같아야 한다.
+    stubKma(RAIN_32MM);
+    const rec = recorder();
+    await runWeatherTick({ channel: rec.channel });
+
+    const ev = await withService(async (q) => {
+      const { rows } = await q.query("select status, closed_at from weather_events where id = $1", [eventId]);
+      return rows[0];
+    });
+    expect(ev.status).toBe("RESOLVED");
+    expect(ev.closed_at).not.toBeNull();
+    // 조용히 지우지 않는다 — "대응 중"이라고 들었던 사람들이 끝났다는 말을 들어야 한다.
+    expect(rec.sent.map((x) => x.text).join()).toMatch(/해제/);
+  });
+
+  // 켜져 있는 종류의 특보까지 함께 닫으면 그건 훨씬 더 나쁜 사고다.
+  it("켜져 있는 종류의 진행 중 특보는 건드리지 않는다", async () => {
+    const staff = await makeEmployee({ name: "객실담당", email: "off-keep@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", staff);
+    const eventId = await activeEvent("rain", staff, deptId);
+    await withService((q) => q.query("update alert_settings set enabled = false where kind = 'heat'"));
+
+    stubKma(RAIN_32MM);
+    await runWeatherTick({ channel: recorder().channel });
+
+    const ev = await withService(async (q) => {
+      const { rows } = await q.query("select status from weather_events where id = $1", [eventId]);
+      return rows[0];
+    });
+    expect(ev.status).toBe("ACTIVE");
+  });
+
+  // 승인 대기 중이던 초안도 같이 닫힌다 — 판정을 끈 종류의 초안을 승인 대기로
+  // 남겨 두면 승인자에게 재알림만 계속 가고, 승인해도 판정은 이미 꺼져 있다.
+  it("승인 대기 중이던 초안도 함께 닫는다", async () => {
+    const staff = await makeEmployee({ name: "객실담당", email: "off-pending@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("wind", "watch", staff);
+    const eventId = await withService(async (q) => {
+      const { rows } = await q.query(
+        `insert into weather_events (kind, grade, status) values ('wind','watch','PENDING_APPROVAL') returning id`);
+      return rows[0].id as string;
+    });
+    await withService((q) => q.query("update alert_settings set enabled = false where kind = 'wind'"));
+
+    stubKma(RAIN_32MM);
+    await runWeatherTick({ channel: recorder().channel });
+
+    const ev = await withService(async (q) => {
+      const { rows } = await q.query("select status from weather_events where id = $1", [eventId]);
+      return rows[0];
+    });
+    expect(ev.status).toBe("RESOLVED");
   });
 });
 
