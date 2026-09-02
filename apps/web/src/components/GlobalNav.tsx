@@ -17,25 +17,35 @@ const NAV_LINKS: NavLink[] = [
   { to: "/employees", label: "직원 관리", roles: ["admin", "approver"] },
 ];
 
-function minutesAgoLabel(lastRunAt: string): string {
-  const diffMin = Math.max(0, Math.floor((Date.now() - new Date(lastRunAt).getTime()) / 60000));
+function minutesAgoLabel(lastRunAt: string, now: number): string {
+  const diffMin = Math.max(0, Math.floor((now - new Date(lastRunAt).getTime()) / 60000));
   return `마지막 수집 ${diffMin}분 전`;
 }
+
+// 이 줄은 "수집이 살아 있는가"를 한눈에 말해 주는 유일한 상시 표시다. 대시보드는
+// 30초마다 다시 부르는데 바로 위 네비게이션만 마운트 시점 값을 들고 있었다 —
+// 탭을 열어 둔 채 하루를 보내면 아침 값이 "마지막 수집 3분 전"이라고 계속 말한다
+// (QA W-32). 대시보드보다 느슨한 1분 주기면 충분하다(관측 자체가 매시 1회다).
+export const NAV_POLL_MS = 60_000;
 
 export function GlobalNav() {
   const { employee } = useAuth();
   const location = useLocation();
   const [siteName, setSiteName] = useState<string | null>(null);
   const [lastRunAt, setLastRunAt] = useState<string | null>(null);
+  // "N분 전"은 조회 결과가 아니라 **지금 시각**에서 나온다. 서버 값이 그대로여도
+  // 시간이 흐르면 숫자가 달라져야 하므로 현재 시각도 상태로 들고 함께 갱신한다.
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     let active = true;
-    (async () => {
+    const load = async () => {
       try {
         const [site, hb] = await Promise.all([siteSettings(), heartbeat("weather-tick")]);
         if (!active) return;
         setSiteName(site?.site_name ?? null);
         setLastRunAt(hb?.last_run_at ?? null);
+        setNow(Date.now());
       } catch {
         // 조용히 삼킨다. 이 조회는 네비게이션 우측의 "지점명 · 마지막 수집 N분 전"
         // 한 줄을 채우는 게 전부고, 실패하면 siteName이 null로 남아 그 span 자체가
@@ -44,9 +54,12 @@ export function GlobalNav() {
         // 자기 로더에서 같은 실패를 이미 보여준다(중복이고, 이 컴포넌트에는 재시도
         // 수단도 로딩 표시도 없다). 던지게 두면 처리되지 않은 rejection만 남는다.
       }
-    })();
+    };
+    load();
+    const t = setInterval(load, NAV_POLL_MS);
     return () => {
       active = false;
+      clearInterval(t);
     };
   }, []);
 
@@ -91,7 +104,7 @@ export function GlobalNav() {
         <div className="global-nav-meta">
           {siteName && (
             <span className="global-nav-site">
-              {siteName} · {lastRunAt ? minutesAgoLabel(lastRunAt) : "수집 정보 없음"}
+              {siteName} · {lastRunAt ? minutesAgoLabel(lastRunAt, now) : "수집 정보 없음"}
             </span>
           )}
           {employee && (
