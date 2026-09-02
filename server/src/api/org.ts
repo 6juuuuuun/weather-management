@@ -2,6 +2,7 @@ import { Router } from "express";
 import { UUID, withUser, withService } from "../db.ts";
 import { requireAuth, requireAdmin } from "../auth/middleware.ts";
 import { isAllowedEmailDomain, isValidEmailShape } from "../auth/emailDomain.ts";
+import { normalizePhone, PHONE_ERROR } from "../phone.ts";
 import { linkKakaoworkUserId, clearKakaoworkUserId } from "../kakaoLink.ts";
 
 export const orgRouter = Router();
@@ -53,8 +54,9 @@ const HEAT_BASES = ["temp", "feels"] as const;
 // 있으므로 최종 관문은 여기다.
 export const MAX_DEPT_NAME = 40;
 export const MAX_EMP_NAME = 40;
-export const MAX_PHONE = 30;
 export const MAX_KAKAOWORK_ID = 64;
+// MAX_PHONE(30자)은 없앴다 — 전화번호는 이제 길이가 아니라 **형식**으로 막는다
+// (src/phone.ts). 정규형은 13자를 넘을 수 없으므로 길이 상한이 따로 할 일이 없다.
 
 // 글자 수는 코드 포인트로 센다. UTF-16 code unit(String.length)으로 세면 이모지
 // 하나가 2자로 잡혀 같은 "글자 수"가 입력에 따라 다르게 걸린다.
@@ -365,8 +367,15 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
     }
     body.name = name;
   }
-  if ("phone" in body && body.phone !== null && overLength(String(body.phone), MAX_PHONE)) {
-    return res.status(400).json({ error: `전화번호는 ${MAX_PHONE}자 이하여야 합니다` });
+  // 전화번호는 형식까지 본다(src/phone.ts). 예전에는 길이 상한(MAX_PHONE)뿐이라
+  // 30자 이내면 무엇이든 employees.phone에 앉았다 — 그 값은 비상 연락에 쓰인다.
+  // 규칙은 가입(auth/routes.ts)·사전 등록(아래 POST)과 반드시 같아야 한다.
+  // 이미 저장된 옛 값은 건드리지 않는다: 이 검사는 본문에 phone이 실제로 실려 온
+  // 요청에만 걸리고, 조회는 컬럼을 그대로 내보낸다.
+  if ("phone" in body) {
+    const normalized = normalizePhone(body.phone);
+    if (!normalized.ok) return res.status(400).json({ error: PHONE_ERROR });
+    body.phone = normalized.phone;
   }
   if ("role" in body && !EMP_ROLES.includes(body.role)) {
     return res.status(400).json({ error: `role은 ${EMP_ROLES.join(", ")} 중 하나여야 합니다` });
@@ -620,6 +629,13 @@ orgRouter.post("/employees", requireAdmin, async (req, res) => {
   if (!isAllowedEmailDomain(email)) {
     return res.status(400).json({ error: "회사 이메일만 등록할 수 있습니다" });
   }
+  // 사전 등록도 전화번호를 받는다. 예전에는 본문에 phone이 실려 와도 insert 목록에
+  // 없어 **말없이 버려졌다** — 관리자는 입력했다고 믿고, 그 직원은 비상 연락처가
+  // 없는 채로 명부에 앉는다. 규칙은 가입·직원 수정과 같은 한 곳에서 온다
+  // (src/phone.ts) — 세 경로 중 하나만 느슨하면 그 하나로 들어온 값이 나머지 둘의
+  // 전제를 깬다(emailDomain.ts가 존재하는 이유와 같다).
+  const normalizedPhone = normalizePhone(body.phone);
+  if (!normalizedPhone.ok) return res.status(400).json({ error: PHONE_ERROR });
   const role = body.role ?? "staff";
   if (!EMP_ROLES.includes(role)) {
     return res.status(400).json({ error: `role은 ${EMP_ROLES.join(", ")} 중 하나여야 합니다` });
@@ -635,9 +651,9 @@ orgRouter.post("/employees", requireAdmin, async (req, res) => {
         if (deptRows.length === 0) return null;
       }
       const { rows } = await q.query(
-        `insert into employees (name, email, department_id, role)
-         values ($1, $2, $3, $4) returning ${EMP_COLS}`,
-        [name, email, departmentId, role],
+        `insert into employees (name, email, department_id, role, phone)
+         values ($1, $2, $3, $4, $5) returning ${EMP_COLS}`,
+        [name, email, departmentId, role, normalizedPhone.phone],
       );
       return rows;
     });

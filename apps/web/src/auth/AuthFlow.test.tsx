@@ -93,6 +93,7 @@ describe("F1 — 비밀번호 변경 성공 후 홈에 도착한다", () => {
 
     fireEvent.change(screen.getByLabelText("현재 비밀번호"), { target: { value: "temp-password-1" } });
     fireEvent.change(screen.getByLabelText("새 비밀번호"), { target: { value: "new-password-12345" } });
+    fireEvent.change(screen.getByLabelText("새 비밀번호 확인"), { target: { value: "new-password-12345" } });
     fireEvent.click(screen.getByRole("button", { name: /비밀번호 변경/ }));
 
     // 회귀: 예전에는 여기서 "날씨경영"/로그인 폼이 다시 떴다(F1) — 세션 쿠키는

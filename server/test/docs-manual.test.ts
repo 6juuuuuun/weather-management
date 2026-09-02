@@ -218,3 +218,36 @@ describe("운영 안내서가 없는 화면 이름을 부르지 않는가", () =
     }
   });
 });
+
+// 이번 라운드에 늘어난 두 규칙은 **운영자가 실제로 만나는 화면 동작**이다.
+// 하나는 거절 문구(§7-7 표), 하나는 .env 한 줄이 가입 화면의 모양을 바꾼다는 사실
+// (§8 표)이다. 문서에만 적고 코드와 묶어 두지 않으면, 문구를 손보거나 화면 규칙을
+// 바꾸는 순간 안내서가 조용히 거짓이 된다 — 이 파일이 존재하는 이유 그대로다.
+describe("안내서가 이번에 늘어난 화면 규칙을 코드와 같게 적는가", () => {
+  it("휴대폰 번호 거절 문구가 코드와 문서에서 같다", () => {
+    const phone = read("server/src/phone.ts");
+    const message = /PHONE_ERROR = "([^"]+)"/.exec(phone)?.[1];
+    expect(message).toBeTruthy();
+    // 문구 전체가 아니라 운영자가 표에서 찾을 앞부분을 대조한다(표에는 예시
+    // 괄호를 넣지 않는다).
+    expect(manual).toContain(message!.split(" (")[0]);
+  });
+
+  it("허용 번호대가 코드와 문서에서 같다", () => {
+    const phone = read("server/src/phone.ts");
+    // 010은 11자리, 그 밖의 구 번호대는 10 또는 11자리 — 정규식이 진실이다.
+    expect(phone).toMatch(/\^010\\d\{8\}\$/);
+    expect(phone).toMatch(/\^01\[16789\]\\d\{7,8\}\$/);
+    expect(manual).toMatch(/`010`은 11자리/);
+    expect(manual).toMatch(/`011·016·017·018·019`는 10 또는 11자리/);
+  });
+
+  // 도메인이 딱 하나일 때만 가입 화면이 "아이디 + 고정 도메인"으로 갈린다.
+  // 이 조건이 코드에서 바뀌면(예: 첫 도메인을 무조건 고정하면) 둘 이상을 설정한
+  // 운영자의 화면이 말없이 달라진다.
+  it("가입 화면이 갈리는 조건(도메인 정확히 1개)이 코드와 문서에서 같다", () => {
+    const signup = read("apps/web/src/pages/Signup.tsx");
+    expect(signup).toMatch(/domains\.length === 1/);
+    expect(manual).toMatch(/값이 딱 하나면 가입 화면의 이메일 칸이/);
+  });
+});

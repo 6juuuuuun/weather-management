@@ -77,11 +77,15 @@ export const deleteEmployee = (id: string) => apiSend<null>("DELETE", `/api/empl
 // 계정(로그인) 없이 관리자가 미리 등록하는 직원 행이다 — 가입(/api/auth/signup)과는
 // 별개다. 이메일이 나중에 실제로 가입하면 auth_user_id가 그 계정으로 이어붙는다
 // (auth/routes.ts의 signup upsert).
+// phone도 함께 보낸다. 예전에는 서버의 insert 목록에 phone이 없어 본문에 실어도
+// 말없이 버려졌다 — 관리자는 입력했다고 믿고, 그 직원은 비상 연락처 없이 명부에
+// 앉는다. 형식은 서버가 세 쓰기 경로에서 똑같이 검사한다(server/src/phone.ts).
 export const createEmployee = (body: {
   name: string;
   email: string;
   department_id: string | null;
   role: EmpRole;
+  phone?: string | null;
 }) => apiSend<EmployeeRow>("POST", "/api/employees", body);
 
 // 부서별 지침 수신자 (recipients) — Guidelines.tsx

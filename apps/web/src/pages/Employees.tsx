@@ -22,6 +22,7 @@ import type { DepartmentRow, EmployeeRow } from "../lib/api/org";
 import type { EmpRole } from "../lib/types";
 import { ROLE_LABEL } from "../lib/roles";
 import { flattenDepartments, deptPathLabel } from "../lib/deptTree";
+import { formatPhoneInput, PHONE_MAX_LENGTH } from "../lib/phone";
 import "./Employees.css";
 
 const ROLE_ORDER: EmpRole[] = ["admin", "approver", "staff"];
@@ -41,6 +42,12 @@ type EmployeeFormState = {
   kakaowork_user_id: string;
   // 저장 직후 "연결이 끊어졌는가"를 판정하려면 저장 전 값을 알아야 한다.
   prev_kakaowork_user_id: string | null;
+  // 휴대폰 번호. 서버는 처음부터 이 값을 받는데(PATCH /api/employees/:id) 화면에
+  // 입력란이 없어서, 가입 때 적지 않은 사람의 번호를 관리자가 채울 길이 없었다.
+  phone: string;
+  // **불러온 그대로의 값**이다. 저장할 때 "실제로 손댔는가"를 이 값으로 가른다 —
+  // 아래 submitForm의 주석에 이유가 있다.
+  prev_phone: string | null;
 };
 
 // 서버(server/src/api/org.ts)와 같은 상한이어야 한다 — 화면이 더 관대하면
@@ -51,6 +58,7 @@ const MAX_KAKAOWORK_ID = 64;
 const EMPTY_FORM: EmployeeFormState = {
   id: null, name: "", email: "", department_id: null, role: "staff",
   kakaowork_user_id: "", prev_kakaowork_user_id: null,
+  phone: "", prev_phone: null,
 };
 
 function isToday(iso: string): boolean {
@@ -189,6 +197,10 @@ export default function Employees() {
       id: e.id, name: e.name, email: e.email, department_id: e.department_id, role: e.role,
       kakaowork_user_id: e.kakaowork_user_id ?? "",
       prev_kakaowork_user_id: e.kakaowork_user_id,
+      // 이미 저장된 값은 **그대로** 보여준다. 서식을 다시 입히면 옛 규칙으로
+      // 저장된 번호(유선·내선 등)가 화면에서 말없이 뭉개진다.
+      phone: e.phone ?? "",
+      prev_phone: e.phone,
     });
     setFormOpen(true);
   }
@@ -209,13 +221,22 @@ export default function Employees() {
         // 다시 조회하지 않고 보낸 값을 존중한다(server/src/api/org.ts) — 그래서
         // 관리자가 손으로 넣은 값이 이메일 저장 한 번에 지워지던 충돌도 함께
         // 닫힌다. 빈 문자열은 서버가 "연결 해제"로 받아 null로 저장한다.
-        const saved = await updateEmployee(form.id, {
+        // 전화번호는 **바뀌었을 때만** 보낸다. 서버는 이제 형식을 검사하는데
+        // (server/src/phone.ts) DB에는 그 규칙 이전에 들어온 값이 그대로 남아 있다 —
+        // 늘 함께 보내면, 옛 번호를 가진 직원의 역할만 바꾸려던 관리자가 자기가
+        // 건드리지도 않은 칸 때문에 400을 받고 그 사람의 번호를 "고쳐야" 저장할 수
+        // 있게 된다. 손댄 값만 검사받는다.
+        const patch: Parameters<typeof updateEmployee>[1] = {
           name: form.name.trim(),
           email: form.email.trim(),
           department_id: form.department_id,
           role: form.role,
           kakaowork_user_id: form.kakaowork_user_id.trim() || null,
-        });
+        };
+        if (form.phone.trim() !== (form.prev_phone ?? "")) {
+          patch.phone = form.phone.trim() || null;
+        }
+        const saved = await updateEmployee(form.id, patch);
         // 연결이 있다가 사라졌으면 그 사실을 말해 준다. 예전에는 점만 초록에서
         // 회색으로 바뀌고 아무 경고도 없었다 — 그 직원은 그날부터 특보를 못 받는다.
         if (form.prev_kakaowork_user_id && !saved.kakaowork_user_id) {
@@ -234,6 +255,7 @@ export default function Employees() {
           email: form.email.trim(),
           department_id: form.department_id,
           role: form.role,
+          phone: form.phone.trim() || null,
         });
         setToast({ kind: "ok", message: "직원을 추가했습니다" });
       }
@@ -698,6 +720,19 @@ export default function Employees() {
                 type="email"
                 value={form.email}
                 onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+              />
+            </label>
+            {/* 서식은 가입 화면과 같은 한 곳에서 온다(lib/phone.ts) — 숫자만 남기고
+                하이픈은 화면이 넣는다. 형식 판정은 서버가 한다. */}
+            <label className="employees-form-field">
+              <span>휴대폰 번호</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={PHONE_MAX_LENGTH}
+                value={form.phone}
+                placeholder="010-0000-0000"
+                onChange={(e) => setForm((f) => ({ ...f, phone: formatPhoneInput(e.target.value) }))}
               />
             </label>
             <label className="employees-form-field">

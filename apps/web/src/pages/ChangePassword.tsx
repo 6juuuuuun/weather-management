@@ -16,6 +16,7 @@ export default function ChangePassword() {
   const { changePassword } = useAuth();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -31,6 +32,14 @@ export default function ChangePassword() {
     // 예전에는 그게 통과해 임시 비밀번호가 영구히 유효해졌다.
     if (next === current) {
       setError("지금 쓰는 비밀번호와 다른 값이어야 합니다");
+      return;
+    }
+    // 확인 칸은 서버로 나가지 않는다 — 화면에서만 비교한다. 이 화면이 특히 위험한
+    // 자리다: 관리자에게 임시 비밀번호를 받아 처음 들어온 사람이 새 값을 정하는
+    // 곳이고, 여기서 오타가 나면 **본인도 모르는 값**이 저장되어 그 사람은 자기
+    // 계정에서 잠긴다(복구 경로는 관리자의 임시 비밀번호 재발급뿐이다).
+    if (next !== confirm) {
+      setError("새 비밀번호가 서로 다릅니다. 확인 칸을 다시 입력해 주세요");
       return;
     }
     setBusy(true);
@@ -74,6 +83,16 @@ export default function ChangePassword() {
           autoComplete="new-password"
           value={next}
           onChange={(e) => setNext(e.target.value)}
+          required
+        />
+
+        <label htmlFor="confirm-password">새 비밀번호 확인</label>
+        <input
+          id="confirm-password"
+          type="password"
+          autoComplete="new-password"
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
           required
         />
 

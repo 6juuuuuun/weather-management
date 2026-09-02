@@ -29,6 +29,18 @@ export type SignupBody = {
 
 export const signup = (body: SignupBody) => apiSend<{ ok: boolean }>("POST", "/api/auth/signup", body);
 
+// 가입 화면이 로그인 **전에** 부르는 공개 조회다(server/src/index.ts의
+// /api/public/signup-config). 부서 목록이 /api/public/departments가 된 것과 같은
+// 이유로 공개 경로다 — 인증이 걸린 경로(예: /api/notify-channel)는 가입하려는
+// 사람에게 401만 준다.
+//
+// email_domains는 서버의 ALLOWED_EMAIL_DOMAINS를 그대로 반영한다. 정확히 1개면
+// 가입 화면이 "아이디 + 고정 도메인"으로 나뉘고, 비었거나 2개 이상이면 지금처럼
+// 자유 입력 한 칸이다. 서비스 시작 때 .env 한 줄로 켜기 위한 설계다.
+export type SignupConfig = { email_domains: string[] };
+
+export const signupConfig = () => apiGet<SignupConfig>("/api/public/signup-config");
+
 export const logout = () => apiSend<null>("POST", "/api/auth/logout");
 
 export const me = () => apiGet<{ user: SessionUser }>("/api/auth/me");

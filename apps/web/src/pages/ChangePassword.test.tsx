@@ -27,9 +27,13 @@ function renderPage() {
   );
 }
 
-function fillAndSubmit(current: string, next: string) {
+// confirm을 따로 받는다 — 기본값은 next와 같은 값이다. 확인 칸은 서버로 나가지
+// 않으므로(화면에서만 비교한다) 대부분의 시나리오에서는 "제대로 옮겨 적은" 경우를
+// 재현하면 되고, 오타 시나리오만 다른 값을 넘긴다.
+function fillAndSubmit(current: string, next: string, confirm: string = next) {
   fireEvent.change(screen.getByLabelText("현재 비밀번호"), { target: { value: current } });
   fireEvent.change(screen.getByLabelText("새 비밀번호"), { target: { value: next } });
+  fireEvent.change(screen.getByLabelText("새 비밀번호 확인"), { target: { value: confirm } });
   fireEvent.click(screen.getByRole("button", { name: /비밀번호 변경/ }));
 }
 
@@ -125,5 +129,41 @@ describe("비밀번호 변경", () => {
     await screen.findByLabelText("현재 비밀번호");
     expect(screen.getByText(/다른 값/)).toBeInTheDocument();
     expect(screen.getByText(/다른 기기에 남아 있는/)).toBeInTheDocument();
+  });
+  // 이 화면이 특히 위험한 자리다: 관리자에게 임시 비밀번호를 받아 처음 들어온 사람이
+  // 새 값을 정하는 곳이라, 여기서 오타가 나면 **본인도 모르는 값**이 저장되고 그
+  // 사람은 자기 계정에서 잠긴다(복구 경로는 관리자의 재발급뿐이다).
+  it("새 비밀번호와 확인이 다르면 서버에 변경 요청을 보내지 않는다", async () => {
+    const { fetchMock, push } = makeFetchQueue();
+    vi.stubGlobal("fetch", fetchMock);
+    push("/api/auth/me", meMustChange);
+    renderPage();
+
+    await screen.findByLabelText("현재 비밀번호");
+    fillAndSubmit("old-password-1", "new-password-12345", "new-password-12346");
+
+    await waitFor(() => expect(screen.getByText(/서로 다릅니다/)).toBeInTheDocument());
+    expect(fetchMock.mock.calls.some(([path]) => path === "/api/auth/change-password")).toBe(false);
+  });
+
+  // 확인 칸은 화면에서만 비교한다 — 서버로 나갈 이유가 없다.
+  it("확인 칸의 값은 서버로 나가지 않는다", async () => {
+    const { fetchMock, push } = makeFetchQueue();
+    vi.stubGlobal("fetch", fetchMock);
+    push("/api/auth/me", meMustChange);
+    push("/api/auth/change-password", () => jsonResponse(null, 204));
+    push("/api/auth/me", meOk);
+    push("/api/employees", () => jsonResponse([]));
+    push("/api/alert-recipients", () => jsonResponse([]));
+    renderPage();
+
+    await screen.findByLabelText("현재 비밀번호");
+    fillAndSubmit("old-password-1", "new-password-12345");
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([path]) => path === "/api/auth/change-password")).toBe(true),
+    );
+    const init = fetchMock.mock.calls.find(([path]) => path === "/api/auth/change-password")![1] as RequestInit;
+    expect(Object.keys(JSON.parse(init.body as string)).sort()).toEqual(["current", "next"]);
   });
 });

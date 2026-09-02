@@ -6,6 +6,7 @@ import { dashboardRouter } from "./api/dashboard.ts";
 import { orgRouter } from "./api/org.ts";
 import { contentRouter } from "./api/content.ts";
 import { requireAuth } from "./auth/middleware.ts";
+import { allowedDomains } from "./auth/emailDomain.ts";
 import { withService } from "./db.ts";
 import { runSend } from "./jobs/send.ts";
 import { startScheduler } from "./jobs/scheduler.ts";
@@ -45,6 +46,26 @@ app.get("/api/public/departments", async (_req, res) => {
     return rows;
   });
   res.json(rows);
+});
+
+// 가입 화면이 "회사 이메일 도메인이 하나로 정해져 있는가"를 묻는 자리다.
+//
+// 왜 /api/public/*인가: 이 화면은 **로그인 전**에 그려진다. 같은 값을 이미 내보내는
+// 통로가 하나 있지만(GET /api/notify-channel — dashboardRouter, requireAdmin) 그
+// 경로는 인증을 요구하므로 가입하려는 사람은 401만 받는다. 바로 위 부서 드롭다운이
+// 정확히 같은 이유로 /api/public/departments가 되었고, 이것도 같은 선례를 따른다.
+// 인증 라우터들보다 **앞에** 두어야 하는 이유도 같다.
+//
+// 도메인 목록은 이 서버가 이미 가입 실패 문구로 사실상 공개하고 있고, 화면에
+// 그대로 보여 주는 것이 이 기능의 목적이므로 로그인 전에 나가도 새로 새는 정보가
+// 없다. env만 읽으므로 DB에 닿지 않는다.
+//
+// 화면 규칙(apps/web/src/pages/Signup.tsx):
+//   도메인이 정확히 1개 → 아이디 칸 + 고정 도메인으로 나눠 그린다
+//   비었거나 2개 이상   → 지금과 같은 자유 입력 한 칸
+// 그래서 서비스 시작 때 .env의 ALLOWED_EMAIL_DOMAINS 한 줄과 재시작만으로 켜진다.
+app.get("/api/public/signup-config", (_req, res) => {
+  res.json({ email_domains: allowedDomains() });
 });
 
 app.use("/api/auth", authRouter);

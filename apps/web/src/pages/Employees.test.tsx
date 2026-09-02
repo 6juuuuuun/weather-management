@@ -522,3 +522,64 @@ describe("Employees 역할 안내 문구 (W-08)", () => {
     expect(screen.getByText(/특보 승인 권한은 특보 기준 화면의 Alert 수신자/)).toBeInTheDocument();
   });
 });
+// 서버(PATCH/POST /api/employees)는 전화번호를 받는데 화면에는 입력란이 없었다 —
+// 가입 때 번호를 적지 않은 사람의 연락처를 관리자가 채울 길이 제품 안에 없었다.
+// 서식은 가입 화면과 같은 한 곳에서 온다(lib/phone.ts).
+describe("Employees 휴대폰 번호", () => {
+  const phoneInput = () => screen.getByPlaceholderText("010-0000-0000");
+
+  async function openEditModal() {
+    renderPage();
+    fireEvent.click(await screen.findByLabelText("홍길동 수정"));
+    return await screen.findByText("직원 수정");
+  }
+
+  it("붙여넣은 번호를 정규형으로 보여주고 그대로 보낸다", async () => {
+    await openEditModal();
+    fireEvent.change(phoneInput(), { target: { value: "010 1234 5678" } });
+    expect(phoneInput()).toHaveValue("010-1234-5678");
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() => expect(mocks.updateEmployee).toHaveBeenCalled());
+    expect(mocks.updateEmployee.mock.calls[0]![1]).toMatchObject({ phone: "010-1234-5678" });
+  });
+
+  it("사전 등록에도 입력란이 있고 createEmployee에 실려 나간다", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "직원 추가" }));
+    await screen.findByText("사전 등록용입니다 · 가입 시 이메일이 일치하면 자동으로 병합됩니다");
+    fireEvent.change(screen.getByLabelText("이름"), { target: { value: "새사람" } });
+    fireEvent.change(screen.getByLabelText("이메일"), { target: { value: "new@gonjiam.com" } });
+    fireEvent.change(phoneInput(), { target: { value: "01012345678" } });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() => expect(mocks.createEmployee).toHaveBeenCalled());
+    expect(mocks.createEmployee.mock.calls[0]![0]).toMatchObject({ phone: "010-1234-5678" });
+  });
+
+  // 서버는 이제 형식을 검사하는데 DB에는 그 규칙 이전에 들어온 값이 남아 있다.
+  // 늘 함께 보내면, 옛 번호를 가진 직원의 역할만 바꾸려던 관리자가 자기가 건드리지도
+  // 않은 칸 때문에 400을 받고 그 사람의 번호를 "고쳐야" 저장할 수 있게 된다.
+  it("전화번호를 손대지 않으면 patch에 아예 싣지 않는다 — 옛 값이 걸림돌이 되지 않는다", async () => {
+    mocks.listEmployees.mockResolvedValue([{ ...target, phone: "02) 123-4567 (내선 8)" }]);
+    await openEditModal();
+    expect(screen.getByDisplayValue("02) 123-4567 (내선 8)")).toBeInTheDocument();
+    fireEvent.change(screen.getByDisplayValue("홍길동"), { target: { value: "홍길순" } });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() => expect(mocks.updateEmployee).toHaveBeenCalled());
+    const patch = mocks.updateEmployee.mock.calls[0]![1] as Record<string, unknown>;
+    expect(patch.name).toBe("홍길순");
+    expect("phone" in patch).toBe(false);
+  });
+
+  it("비우면 지운다는 뜻으로 null을 보낸다", async () => {
+    mocks.listEmployees.mockResolvedValue([{ ...target, phone: "010-9999-9999" }]);
+    await openEditModal();
+    fireEvent.change(screen.getByDisplayValue("010-9999-9999"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() => expect(mocks.updateEmployee).toHaveBeenCalled());
+    expect(mocks.updateEmployee.mock.calls[0]![1]).toMatchObject({ phone: null });
+  });
+});

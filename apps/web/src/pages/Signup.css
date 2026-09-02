@@ -123,3 +123,25 @@
 .signup > a:hover {
   text-decoration: underline;
 }
+
+/* 사내 도메인이 하나로 정해진 배포에서 쓰는 "아이디 + 고정 도메인" 한 줄.
+   도메인은 입력이 아니라 사실이므로 입력란처럼 보이지 않게 둔다. */
+.signup-email-split {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.signup-email-split input {
+  flex: 1;
+  min-width: 0;
+}
+
+.signup-email-domain {
+  flex: none;
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-size: 17px;
+  color: var(--ink-muted-80);
+  white-space: nowrap;
+}

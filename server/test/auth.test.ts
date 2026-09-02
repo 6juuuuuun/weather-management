@@ -514,3 +514,48 @@ describe("가입 본문 검증 (W-24 · W-30)", () => {
     expect(await exists(email)).toBe(0);
   });
 });
+
+// 가입 화면이 "회사 이메일 도메인이 하나로 정해져 있는가"를 묻는 공개 조회다.
+// 화면은 로그인 **전**에 그려지므로 인증이 걸린 경로로는 이 값을 절대 알 수 없다 —
+// 바로 위 공개 부서 목록과 같은 이유로 /api/public/*에 둔다.
+//
+// 이 값이 화면의 두 모드를 가른다: 1개면 "아이디 + 고정 도메인", 그 밖에는 지금까지와
+// 같은 자유 입력 한 칸. 서비스 시작 때 .env 한 줄로 켜는 것이 목적이므로, **설정을
+// 바꾸면 응답도 따라 바뀌는가**가 이 엔드포인트가 지켜야 할 전부다. 응답을 상수로
+// 고정해 버리면(예: 도메인을 코드에 박으면) 그 목적이 통째로 사라진다.
+describe("가입 화면용 공개 설정", () => {
+  const saved = process.env.ALLOWED_EMAIL_DOMAINS;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.ALLOWED_EMAIL_DOMAINS;
+    else process.env.ALLOWED_EMAIL_DOMAINS = saved;
+  });
+
+  it("로그인 없이도 응답한다", async () => {
+    process.env.ALLOWED_EMAIL_DOMAINS = "dnocorp.com";
+    const res = await request(app).get("/api/public/signup-config");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ email_domains: ["dnocorp.com"] });
+  });
+
+  it("설정이 비어 있으면 빈 목록이다 — 화면은 자유 입력으로 남는다", async () => {
+    process.env.ALLOWED_EMAIL_DOMAINS = "";
+    const res = await request(app).get("/api/public/signup-config");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ email_domains: [] });
+  });
+
+  it("여러 개면 그대로 여러 개다 — 화면이 어느 하나를 고르지 않는다", async () => {
+    process.env.ALLOWED_EMAIL_DOMAINS = "dnocorp.com, gonjiam.com";
+    const res = await request(app).get("/api/public/signup-config");
+    expect(res.body.email_domains).toEqual(["dnocorp.com", "gonjiam.com"]);
+  });
+
+  // 서버가 실제로 검사할 때 쓰는 값과 **같은 정규화**를 거친 값이어야 한다
+  // (emailDomain.ts의 allowedDomains). 화면이 대문자 도메인을 그대로 붙이면
+  // 가입 요청은 소문자 정규화를 거친 뒤 목록과 비교되므로 어긋날 자리가 생긴다.
+  it("공백·대소문자는 서버 규칙과 같은 방식으로 정규화된다", async () => {
+    process.env.ALLOWED_EMAIL_DOMAINS = "  DNOcorp.COM  ";
+    const res = await request(app).get("/api/public/signup-config");
+    expect(res.body.email_domains).toEqual(["dnocorp.com"]);
+  });
+});

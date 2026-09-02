@@ -5,6 +5,7 @@ import { hash, verify, temporaryPassword } from "./password.ts";
 import { issue, lookup, revoke, tokenHash } from "./session.ts";
 import { COOKIE, requireAuth, requireAdmin, sessionCookieOptions } from "./middleware.ts";
 import { isAllowedEmailDomain, isValidEmailShape } from "./emailDomain.ts";
+import { normalizePhone, PHONE_ERROR } from "../phone.ts";
 import { linkKakaoworkUserId } from "../kakaoLink.ts";
 import { loginRateLimiter } from "./rateLimit.ts";
 
@@ -87,6 +88,13 @@ authRouter.post("/signup", async (req, res) => {
     return res.status(400).json({ error: "department_id 형식이 올바르지 않습니다" });
   }
 
+  // 전화번호는 지금까지 아무 검사도 없이 들어온 그대로 저장됐다 — 길이 상한조차
+  // 관리자 경로(api/org.ts)에만 있었다. 화면이 서식을 잡아 주지만 화면은 방벽이
+  // 아니다(같은 이유로 비밀번호 최소 길이도 여기서 다시 본다). 규칙은 사전 등록·
+  // 직원 수정과 공유한다(src/phone.ts). 비워 두는 것은 그대로 허용한다.
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone.ok) return res.status(400).json({ error: PHONE_ERROR });
+
   try {
     await withService(async (q) => {
       const { rows } = await q.query(
@@ -120,7 +128,7 @@ authRouter.post("/signup", async (req, res) => {
                department_id = coalesce(excluded.department_id, employees.department_id)
            where employees.auth_user_id is null
          returning id`,
-        [rows[0].id, trimmedName, email, phone ?? null, department_id ?? null],
+        [rows[0].id, trimmedName, email, normalizedPhone.phone, department_id ?? null],
       );
       // where가 걸리면 아무 행도 돌아오지 않는다. 그대로 두면 계정만 만들어지고
       // 직원 행이 없는 반쪽 상태(= 유령 계정)가 커밋된다 — 지금 고치고 있는 바로
