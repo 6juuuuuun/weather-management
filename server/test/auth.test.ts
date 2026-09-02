@@ -219,7 +219,22 @@ describe("로그인", () => {
     expect(res.body.error).not.toMatch(/비밀번호가/);
   });
 
-  it("5회 실패하면 잠긴다", async () => {
+  it("5회 실패하면 잠겨 더 이상 찍어 볼 수 없다", async () => {
+    await request(app).post("/api/auth/signup").send(SIGNUP);
+    for (let i = 0; i < 5; i++) {
+      await request(app).post("/api/auth/login").send({ email: SIGNUP.email, password: "wrong" });
+    }
+    // 잠금이 막는 것은 **틀린 비밀번호**다 — 그것이 잠금의 목적(찍어 맞히기 방지)이다.
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ email: SIGNUP.email, password: "wrong-again" });
+    expect(res.status).toBe(423);
+  });
+
+  // QA W-17(Critical) — 잠금이 **본인**을 막으면 그 잠금 자체가 공격 도구가 된다.
+  // 이메일만 알면 15분마다 요청 5개로 승인권자를 무기한 로그인 불가 상태로 둘 수
+  // 있었고, 관리자가 풀어 줘도 즉시 되돌아왔다. 폭설 새벽에 승인할 사람이 없어진다.
+  it("잠겨 있어도 올바른 비밀번호는 통과하고 잠금이 풀린다", async () => {
     await request(app).post("/api/auth/signup").send(SIGNUP);
     for (let i = 0; i < 5; i++) {
       await request(app).post("/api/auth/login").send({ email: SIGNUP.email, password: "wrong" });
@@ -227,7 +242,18 @@ describe("로그인", () => {
     const res = await request(app)
       .post("/api/auth/login")
       .send({ email: SIGNUP.email, password: SIGNUP.password });
-    expect(res.status).toBe(423);
+    expect(res.status).toBe(200);
+
+    // 잠금 상태가 실제로 지워져야 한다 — 다음 오타 한 번에 다시 잠기면 안 된다.
+    const row = await withService(async (q) => {
+      const { rows } = await q.query(
+        "select failed_attempts, locked_until from auth_accounts where email = $1",
+        [SIGNUP.email],
+      );
+      return rows[0];
+    });
+    expect(row.failed_attempts).toBe(0);
+    expect(row.locked_until).toBeNull();
   });
 
   // 잠금 시간이 지난 뒤 실패 횟수를 이어서 올리면, 풀리자마자 한 번만 틀려도

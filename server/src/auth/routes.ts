@@ -6,6 +6,7 @@ import { issue, lookup, revoke, tokenHash } from "./session.ts";
 import { COOKIE, requireAuth, requireAdmin, sessionCookieOptions } from "./middleware.ts";
 import { isAllowedEmailDomain, isValidEmailShape } from "./emailDomain.ts";
 import { linkKakaoworkUserId } from "../kakaoLink.ts";
+import { loginRateLimiter } from "./rateLimit.ts";
 
 const MAX_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
@@ -147,6 +148,23 @@ authRouter.post("/signup", async (req, res) => {
 authRouter.post("/login", async (req, res) => {
   const { password } = req.body ?? {};
   const email = String(req.body?.email ?? "").trim().toLowerCase();
+
+  // 속도 제한을 **가장 앞에** 둔다(QA W-17). 아래 어떤 분기도(없는 계정·잠긴 계정·
+  // 비밀번호 오류) 이 관문을 지나지 않고는 비용을 만들 수 없다. 특히 잠긴 계정을
+  // 두드리는 것이 지금까지 완전히 공짜였다 — 423만 돌려주고 아무 흔적도 남지 않았다.
+  const ip = req.ip ?? "unknown";
+  const gate = loginRateLimiter.check({ email, ip });
+  if (gate.limited) {
+    // 429는 "네가 잘못 눌렀다"도 "계정이 잠겼다"도 아니다. 문구를 가르지 않으면
+    // 사용자는 또 계속 눌러 창을 계속 채운다.
+    res.setHeader("Retry-After", String(gate.retryAfterSec));
+    return res.status(429).json({
+      error:
+        `로그인 시도가 너무 많습니다. ${gate.retryAfterSec}초 뒤에 다시 시도하거나 관리자에게 문의해 주세요`,
+      retry_after_sec: gate.retryAfterSec,
+    });
+  }
+
   const account = await withService(async (q) => {
     const { rows } = await q.query(
       // 잠금 만료 여부를 Postgres가 직접 계산해 내려준다. locked_until은 Postgres
@@ -177,14 +195,21 @@ authRouter.post("/login", async (req, res) => {
     // 위 주석이 막으려던 "어떤 이메일이 가입돼 있는지 캐내기"가 시간 축에서 그대로
     // 열려 있었다. 더미 해시로 같은 비용을 치른다.
     await verify(await dummyHash(), String(password ?? ""));
+    loginRateLimiter.record({ email, ip });
     return deny();
   }
 
-  if (account.is_locked) {
+  // 비밀번호를 **먼저** 확인한다. 잠긴 계정이라도 마찬가지다.
+  const passwordOk = await verify(account.password_hash, String(password ?? ""));
+
+  if (account.is_locked && !passwordOk) {
     // 로그인 실패와 잠금이 같은 문구("잠시 후 다시 시도해 주세요")로 나가던 것을
     // 가른다(QA W-18). 사용자는 비밀번호를 계속 틀렸다고 믿고 계속 시도해 잠금을
     // 연장했다. 계정 존재 여부는 이 응답(423)이 이미 드러내고 있던 것이라 새로
     // 흘리는 정보는 없다 — 사내망 전용 전제에서 사용성을 택한다.
+    //
+    // 잠긴 동안의 시도도 속도 제한에 기록한다 — 두드리는 것이 공짜여서는 안 된다.
+    loginRateLimiter.record({ email, ip });
     return res.status(423).json({
       error: `비밀번호를 ${MAX_ATTEMPTS}회 잘못 입력해 계정이 잠겼습니다. ` +
         `약 ${account.locked_minutes}분 뒤에 다시 시도하거나 관리자에게 문의해 주세요`,
@@ -192,7 +217,20 @@ authRouter.post("/login", async (req, res) => {
     });
   }
 
-  if (!(await verify(account.password_hash, String(password ?? "")))) {
+  // **잠겨 있어도 올바른 비밀번호는 통과시킨다**(QA W-17, Critical).
+  //
+  // 잠금의 목적은 "찍어 맞히기"를 막는 것이지 비밀번호를 아는 본인을 막는 것이 아니다.
+  // 예전에는 이메일만 알면 5회 오입력으로 승인권자를 15분씩, 그리고 풀리는 즉시 다시
+  // 잠글 수 있었다 — 관리자가 풀어 줘도 곧바로 되돌아왔다. 폭설 새벽에 승인할 사람이
+  // 아무도 없게 만드는 데 필요한 것이 요청 5개였다. 여기서 그 성질이 사라진다:
+  // 공격자는 여전히 남의 계정을 "잠글" 수 있지만, 그 잠금은 **비밀번호를 아는 사람을
+  // 막지 못한다.** 찍어 맞히기 방어는 그대로다(틀린 비밀번호는 여전히 423) —
+  // 그리고 잠긴 계정에도 해시 검증 비용이 드는 만큼을 위의 속도 제한이 묶는다.
+  if (account.is_locked && passwordOk) {
+    console.warn(`[auth] 잠긴 계정에 올바른 비밀번호로 로그인: ${email} — 잠금을 해제합니다`);
+  }
+
+  if (!passwordOk) {
     const locked = await withService(async (q) => {
       const { rows } = await q.query(
         // 잠금이 이미 만료된 상태(locked_until이 과거)라면 실패 횟수를 이어 올리지
@@ -233,6 +271,7 @@ authRouter.post("/login", async (req, res) => {
     if (locked?.is_locked) {
       console.warn(`[auth] 계정 잠금: ${email} (누적 ${locked.lock_count}회, ${LOCK_MINUTES}분)`);
     }
+    loginRateLimiter.record({ email, ip });
     return deny();
   }
 
@@ -254,6 +293,10 @@ authRouter.post("/login", async (req, res) => {
   await withService((q) =>
     q.query("update auth_accounts set failed_attempts = 0, locked_until = null where id = $1", [account.id]),
   );
+
+  // 본인이 들어왔으면 공격이 아니다 — 창을 비워, 정상 사용자가 자기 자신을
+  // 429로 묶어 두는 일이 없게 한다.
+  loginRateLimiter.clear(email);
 
   const token = await issue(account.id);
   res.cookie(COOKIE, token, sessionCookieOptions());

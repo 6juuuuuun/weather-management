@@ -141,7 +141,9 @@ describe("계정 잠금을 알리고 보이게 한다 (W-17, W-18)", () => {
   it("잠기면 잠겼다고 말하고 남은 시간을 함께 준다", async () => {
     await signIn(USER);
     await lockOut(USER.email);
-    const res = await request(app).post("/api/auth/login").send({ email: USER.email, password: USER.password });
+    // 잠금이 막는 것은 틀린 비밀번호다. 본인(=올바른 비밀번호)은 아래 테스트에서
+    // 통과하는 것을 확인한다 — 잠금이 본인을 막으면 그 잠금이 공격 도구가 된다(W-17).
+    const res = await request(app).post("/api/auth/login").send({ email: USER.email, password: "still-wrong" });
     expect(res.status).toBe(423);
     // "잠시 후 다시 시도해 주세요"만으로는 사용자가 비밀번호를 계속 틀렸다고 믿고
     // 계속 시도해 잠금을 연장한다.

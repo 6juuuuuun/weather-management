@@ -90,6 +90,21 @@ describe("Login", () => {
     expect(alert).not.toHaveTextContent("잠시 후 다시 시도해 주세요");
   });
 
+  // 429(속도 제한)도 서버 문구를 그대로 보여준다(QA W-17). "얼마나 기다려야 하는가"는
+  // 서버만 아는 값이고, 화면이 문구를 고정하면 사용자는 그것을 영영 볼 수 없어
+  // 계속 눌러 창을 다시 채운다 — 잠금 문구에서 이미 겪은 실수다.
+  it("429면 서버가 준 속도 제한 문구(대기 시간 포함)를 그대로 보여준다", async () => {
+    mocks.login.mockRejectedValue(
+      new ApiError(429, "로그인 시도가 너무 많습니다. 300초 뒤에 다시 시도하거나 관리자에게 문의해 주세요"),
+    );
+    renderLogin();
+    fillAndSubmit("a@gonjiam.com", "wrong-password");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("시도가 너무 많습니다");
+    expect(alert).toHaveTextContent("300초");
+  });
+
   // 계정 존재 여부를 감추기 위해 서버가 401에 이미 사람이 읽을 수 있는 문구를 준다
   // (server/src/auth/routes.ts: "로그인할 수 없습니다"). 그 문구를 그대로 보여준다.
   it("401이면 서버가 준 문구를 그대로 보여준다", async () => {
