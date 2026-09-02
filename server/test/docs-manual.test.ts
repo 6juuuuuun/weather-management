@@ -173,6 +173,32 @@ describe("안내서로 닫은 항목이 코드와 같은 말을 하는가", () =
   });
 });
 
+// 검증 라운드 E 항목 1 — **안내서가 약속한 복구가 실제로 듣는가.**
+//
+// §6-3은 "비활성화→활성화를 누르면 풀립니다"라고 단언했는데, 그 경로는 DB의
+// failed_attempts·locked_until만 지우고 프로세스 메모리의 속도 제한 버킷은 그대로
+// 두었다 — 관리자가 풀어 줘도 그 사람은 여전히 429였다(검증 실측). 문서가 코드보다
+// 앞서 나간 것이고, 폭설 새벽에 그 문장을 읽는 사람에게는 거짓말이 된다.
+// 동작 검증은 login-rate-limit.test.ts가 HTTP 경로로 하고, 여기서는 **문서와 코드가
+// 같은 말을 하는지**를 묶는다.
+describe("안내서 §6-3의 계정 복구가 코드와 같은 말을 하는가", () => {
+  const routes = read("server/src/auth/routes.ts");
+  const rateLimit = read("server/src/auth/rateLimit.ts");
+
+  it("관리자 복구가 속도 제한 창까지 비운다고 적고, 코드도 그렇게 한다", () => {
+    expect(manual).toContain("429");
+    expect(manual).toMatch(/함께 풀립니다/);
+    // 상태 변경(비활성화→활성화)과 임시 비밀번호 발급 두 경로 모두에서 지운다.
+    expect([...routes.matchAll(/loginRateLimiter\.clear\(/g)].length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("429 횟수가 '이메일 × PC'로 셈해진다고 적고, 코드의 키도 그렇다", () => {
+    expect(manual).toMatch(/이메일 하나가 아니라 .이메일 × 그 PC.로 셉니다/);
+    // 키에 출처(IP)가 들어가야 제3자가 남의 창을 채울 수 없다.
+    expect(rateLimit).toMatch(/emailIpKey\s*=\s*\(email: string, ip: string\)/);
+  });
+});
+
 // 안내서가 "이 화면에서 하세요"라고 지시하는 곳은 실제 메뉴 이름이어야 한다.
 // 없는 메뉴 이름을 적으면(예전 §3-3의 "조직·수신자 화면") 읽는 사람은 그 화면을
 // 찾다가 포기한다.

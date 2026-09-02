@@ -397,7 +397,7 @@ adminUserRouter.patch("/:id/status", requireAuth, requireAdmin, async (req, res)
               failed_attempts = case when $2 = 'active' then 0 else failed_attempts end,
               locked_until = case when $2 = 'active' then null else locked_until end
         where id = $1
-        returning id`,
+        returning id, email`,
       [targetId, status],
     );
     if (rows.length === 0) return false;
@@ -405,11 +405,17 @@ adminUserRouter.patch("/:id/status", requireAuth, requireAdmin, async (req, res)
     if (status === "disabled") {
       await q.query("delete from auth_sessions where account_id = $1", [targetId]);
     }
-    return true;
+    return rows[0].email as string;
   });
   // 없는 id에 200 {"ok":true}를 주면 관리자는 막았다고 믿는다. 같은 라우터의
   // reset-password가 이미 404를 주므로 규약도 그쪽에 맞춘다.
   if (!found) return res.status(404).json({ error: "계정을 찾을 수 없습니다" });
+  // **속도 제한 창까지 비운다**(검증 라운드 E, 항목 1). 안내서 §6-3이 알려 주는 웹
+  // 복구 경로가 이것 하나인데, 예전에는 DB의 failed_attempts·locked_until만 지우고
+  // 프로세스 메모리의 버킷은 그대로 뒀다 — 관리자가 풀어 줘도 그 사람은 **여전히
+  // 429**였고(실측), 문서가 약속한 복구가 실제로는 듣지 않았다. 관리자가 "이 계정을
+  // 되살린다"고 말한 것이므로 그 계정에 쌓인 실패 기록도 함께 없던 일로 한다.
+  if (status === "active") loginRateLimiter.clear(String(found).toLowerCase());
   res.json({ ok: true });
 });
 
@@ -454,16 +460,19 @@ adminUserRouter.post("/:id/reset-password", requireAuth, requireAdmin, async (re
           set password_hash = $2, must_change_password = true, failed_attempts = 0, locked_until = null,
               temp_password_expires_at = now() + ($3 || ' hours')::interval
         where id = $1
-        returning id`,
+        returning id, email`,
       [targetId, await hash(temp), String(TEMP_PASSWORD_HOURS)],
     );
     if (rows.length === 0) return false;
     // 비밀번호를 잃어버렸다는 전제의 발급이다. 남아 있는 세션도 함께 끊는다.
     await q.query("delete from auth_sessions where account_id = $1", [targetId]);
-    return true;
+    return rows[0].email as string;
   });
   // 영향 행이 0이면 잘못된 id를 잘못 성공으로 오인하게 둘 수 없다.
   if (!found) return res.status(404).json({ error: "계정을 찾을 수 없습니다" });
+  // 상태 변경과 같은 이유로 속도 제한 창도 비운다 — 새 비밀번호를 손에 쥔 사람이
+  // 그것을 넣지도 못하고 429를 만나면 발급 자체가 헛일이 된다.
+  loginRateLimiter.clear(String(found).toLowerCase());
   // 만료가 있다는 사실 자체가 관리자에게 보여야 한다 — 안 보이면 "왜 로그인이
   // 안 되죠"라는 문의로만 만료를 알게 된다. 화면이 이 시간을 그대로 안내한다.
   res.json({ temporary_password: temp, expires_in_hours: TEMP_PASSWORD_HOURS });
