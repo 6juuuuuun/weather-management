@@ -435,3 +435,90 @@ describe("Employees 부서 계층 (QA W-15)", () => {
     expect(cells).not.toContain("미지정");
   });
 });
+
+// QA W-16 · 운영 안내서 §1-6은 "카카오워크 연결이 안 되면 직접 입력하라"고 지시하는데
+// 그 입력란이 제품에 없었다. 서버(PATCH /api/employees)는 처음부터 이 값을 받는다.
+describe("Employees 카카오워크 ID 직접 입력 (W-16)", () => {
+  async function openEditModal() {
+    renderPage();
+    fireEvent.click(await screen.findByLabelText("홍길동 수정"));
+    return await screen.findByText("직원 수정");
+  }
+
+  it("수정 모달에 카카오워크 ID 입력란이 있다", async () => {
+    await openEditModal();
+    expect(screen.getByText("카카오워크 ID")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("자동 연결 실패 시에만 직접 입력")).toBeInTheDocument();
+  });
+
+  it("입력한 값을 updateEmployee에 함께 실어 보낸다", async () => {
+    await openEditModal();
+    fireEvent.change(screen.getByPlaceholderText("자동 연결 실패 시에만 직접 입력"), {
+      target: { value: "kw-manual-1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() => expect(mocks.updateEmployee).toHaveBeenCalled());
+    expect(mocks.updateEmployee.mock.calls[0]![1]).toMatchObject({ kakaowork_user_id: "kw-manual-1" });
+  });
+
+  // 이메일과 **함께** 보내야 한다. 서버는 이 키가 있으면 이메일로 다시 조회하지
+  // 않고 보낸 값을 존중한다 — 그래서 손으로 넣은 값이 이메일 저장 한 번에
+  // 지워지던 충돌(QA I-2)도 함께 닫힌다.
+  it("이미 연결된 값은 그대로 다시 보내 이메일 수정에 지워지지 않게 한다", async () => {
+    mocks.listEmployees.mockResolvedValue([{ ...target, kakaowork_user_id: "kw-existing" }]);
+    await openEditModal();
+    fireEvent.change(screen.getByDisplayValue("hong-typo@gonjiam.com"), {
+      target: { value: "hong@gonjiam.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() => expect(mocks.updateEmployee).toHaveBeenCalled());
+    expect(mocks.updateEmployee.mock.calls[0]![1]).toMatchObject({
+      email: "hong@gonjiam.com",
+      kakaowork_user_id: "kw-existing",
+    });
+  });
+
+  it("비우면 연결 해제(null)로 보낸다", async () => {
+    mocks.listEmployees.mockResolvedValue([{ ...target, kakaowork_user_id: "kw-existing" }]);
+    await openEditModal();
+    fireEvent.change(screen.getByDisplayValue("kw-existing"), { target: { value: "  " } });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() => expect(mocks.updateEmployee).toHaveBeenCalled());
+    expect(mocks.updateEmployee.mock.calls[0]![1]).toMatchObject({ kakaowork_user_id: null });
+  });
+
+  // 연결이 끊기면 그 직원은 그날부터 특보 DM을 받지 못한다. 예전에는 점만
+  // 초록에서 회색으로 바뀌고 아무 경고도 없었다.
+  it("저장 결과 연결이 끊겼으면 성공 토스트 대신 경고를 보여준다", async () => {
+    mocks.listEmployees.mockResolvedValue([{ ...target, kakaowork_user_id: "kw-existing" }]);
+    mocks.updateEmployee.mockResolvedValue({ ...target, kakaowork_user_id: null });
+    await openEditModal();
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    expect(await screen.findByText(/카카오워크 연결이 끊어졌습니다/)).toBeInTheDocument();
+    expect(screen.queryByText("직원 정보를 수정했습니다")).not.toBeInTheDocument();
+  });
+
+  // 사전 등록(추가)에는 이 칸을 두지 않는다 — 서버가 이메일로 조회해 채우는 것이
+  // 정상 경로이고, 실패했을 때 고치는 자리가 수정 모달이다.
+  it("직원 추가 모달에는 이 입력란이 없다", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "직원 추가" }));
+    await screen.findByText("사전 등록용입니다 · 가입 시 이메일이 일치하면 자동으로 병합됩니다");
+    expect(screen.queryByText("카카오워크 ID")).not.toBeInTheDocument();
+  });
+});
+
+// QA W-08 · 관리자가 "승인권자를 늘리려면 역할을 올린다"고 학습하는 자리가 이 폼이다.
+// 실제 규칙은 그렇지 않다 — 역할은 화면 접근 범위만 정한다.
+describe("Employees 역할 안내 문구 (W-08)", () => {
+  it("역할이 승인 권한을 정하지 않는다고 적는다", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByLabelText("홍길동 수정"));
+    await screen.findByText("직원 수정");
+    expect(screen.getByText(/특보 승인 권한은 특보 기준 화면의 Alert 수신자/)).toBeInTheDocument();
+  });
+});

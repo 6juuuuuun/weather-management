@@ -243,6 +243,14 @@
   color: var(--ink);
 }
 
+/* 입력란 아래 보조 설명. 라벨(600)보다 약하게 두어 값 자체를 가리지 않게 한다. */
+.employees-form-field .employees-form-hint {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--ink-muted-48);
+}
+
 /* ---------- Toast ---------- */
 .employees-toast {
   position: fixed;

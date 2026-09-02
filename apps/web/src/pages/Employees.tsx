@@ -34,9 +34,24 @@ type EmployeeFormState = {
   email: string;
   department_id: string | null;
   role: EmpRole;
+  // 카카오워크 ID는 보통 서버가 이메일로 조회해 채운다. 조회가 실패하는 경우가
+  // 실제로 있어서(카카오워크 계정 이메일이 회사 이메일과 다른 임원, 봇이 못 찾는
+  // 경우, 조직 이관 중) 운영 안내서 §1-6은 "직접 입력하라"고 지시하는데 **그
+  // 입력란이 제품에 없었다**(QA W-16). 서버는 처음부터 이 값을 받는다.
+  kakaowork_user_id: string;
+  // 저장 직후 "연결이 끊어졌는가"를 판정하려면 저장 전 값을 알아야 한다.
+  prev_kakaowork_user_id: string | null;
 };
 
-const EMPTY_FORM: EmployeeFormState = { id: null, name: "", email: "", department_id: null, role: "staff" };
+// 서버(server/src/api/org.ts)와 같은 상한이어야 한다 — 화면이 더 관대하면
+// 사용자는 다 입력한 뒤에야 400을 본다(QA W-30).
+const MAX_NAME = 40;
+const MAX_KAKAOWORK_ID = 64;
+
+const EMPTY_FORM: EmployeeFormState = {
+  id: null, name: "", email: "", department_id: null, role: "staff",
+  kakaowork_user_id: "", prev_kakaowork_user_id: null,
+};
 
 function isToday(iso: string): boolean {
   const d = new Date(iso);
@@ -170,7 +185,11 @@ export default function Employees() {
   }
 
   function openEdit(e: EmployeeRow) {
-    setForm({ id: e.id, name: e.name, email: e.email, department_id: e.department_id, role: e.role });
+    setForm({
+      id: e.id, name: e.name, email: e.email, department_id: e.department_id, role: e.role,
+      kakaowork_user_id: e.kakaowork_user_id ?? "",
+      prev_kakaowork_user_id: e.kakaowork_user_id,
+    });
     setFormOpen(true);
   }
 
@@ -186,13 +205,27 @@ export default function Employees() {
         // 병합 키다 — 보내지 않으면 관리자가 오타를 고쳤다고 믿는데 값은 버려지고,
         // 그 직원은 가입해도 부서·역할이 유실된 별도 계정이 된다. 서버가 중복 이메일에
         // 409를 주므로 아래 catch가 그 문구를 그대로 보여준다.
-        await updateEmployee(form.id, {
+        // kakaowork_user_id를 **함께** 보낸다. 서버는 이 키가 있으면 이메일로
+        // 다시 조회하지 않고 보낸 값을 존중한다(server/src/api/org.ts) — 그래서
+        // 관리자가 손으로 넣은 값이 이메일 저장 한 번에 지워지던 충돌도 함께
+        // 닫힌다. 빈 문자열은 서버가 "연결 해제"로 받아 null로 저장한다.
+        const saved = await updateEmployee(form.id, {
           name: form.name.trim(),
           email: form.email.trim(),
           department_id: form.department_id,
           role: form.role,
+          kakaowork_user_id: form.kakaowork_user_id.trim() || null,
         });
-        setToast({ kind: "ok", message: "직원 정보를 수정했습니다" });
+        // 연결이 있다가 사라졌으면 그 사실을 말해 준다. 예전에는 점만 초록에서
+        // 회색으로 바뀌고 아무 경고도 없었다 — 그 직원은 그날부터 특보를 못 받는다.
+        if (form.prev_kakaowork_user_id && !saved.kakaowork_user_id) {
+          setToast({
+            kind: "error",
+            message: "저장했지만 카카오워크 연결이 끊어졌습니다 — 이 직원은 특보 DM을 받지 못합니다",
+          });
+        } else {
+          setToast({ kind: "ok", message: "직원 정보를 수정했습니다" });
+        }
       } else {
         // 계정 없이 사전 등록만 한다 — 실제 로그인 계정은 본인이 나중에
         // /api/auth/signup으로 만들면 이메일이 일치해 자동으로 이어붙는다.
@@ -248,8 +281,15 @@ export default function Employees() {
     }
   }
 
-  // 가입은 열려 있고 권한만 관리자가 준다 — 이 역할 변경이 실제 승인 권한을 여닫는
-  // 관문이다. 화면이 없으면 아무도 특보를 승인할 수 없다.
+  // 가입은 열려 있고 권한만 관리자가 준다.
+  //
+  // **역할은 특보 승인 권한과 무관하다**(스펙 2026-08-13,
+  // db/migrations/0007_approver_from_alert_recipients.sql). 승인 권한은 오직
+  // Alert 수신자 등록 여부에서 나온다 — 여기서 approver로 올려도 승인권자가 되지
+  // 않고, staff로 내려도 승인 권한은 그대로 남는다. 이 주석은 2026-08-13 이전의
+  // 옛 규칙("이 역할 변경이 승인 권한을 여닫는 관문이다")을 그대로 말하고 있었고,
+  // QA 엔지니어 한 명이 그 문장을 근거로 정상 동작을 결함으로 신고했다(QA W-08).
+  // 역할이 정하는 것은 화면 접근 범위다(알림 설정·직원 관리 메뉴).
   //
   // 여기에 확인 절차가 하나도 없었다(QA W-19): 관리자가 자기 행의 셀렉트에서 한 칸
   // 잘못 고르면 그대로 저장됐고, 관리자가 한 명뿐인 배포에서는 그 순간 설정·직원
@@ -647,6 +687,7 @@ export default function Employees() {
               <span>이름</span>
               <input
                 type="text"
+                maxLength={MAX_NAME}
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               />
@@ -685,7 +726,31 @@ export default function Employees() {
                   </option>
                 ))}
               </select>
+              {/* 관리자가 "승인권자를 늘리려면 역할을 올린다"고 학습하는 자리가
+                  바로 여기다. 실제 규칙은 그렇지 않다(QA W-08). */}
+              <small className="employees-form-hint">
+                역할은 화면 접근 범위만 정합니다 · 특보 승인 권한은 특보 기준 화면의 Alert 수신자
+                목록에서만 나옵니다
+              </small>
             </label>
+            {/* 수정할 때만 보여준다 — 사전 등록(추가)은 서버가 이메일로 조회해
+                채우는 것이 정상 경로이고, 실패했을 때 고치는 자리가 여기다. */}
+            {form.id && (
+              <label className="employees-form-field">
+                <span>카카오워크 ID</span>
+                <input
+                  type="text"
+                  maxLength={MAX_KAKAOWORK_ID}
+                  value={form.kakaowork_user_id}
+                  placeholder="자동 연결 실패 시에만 직접 입력"
+                  onChange={(e) => setForm((f) => ({ ...f, kakaowork_user_id: e.target.value }))}
+                />
+                <small className="employees-form-hint">
+                  보통은 이메일로 자동 연결됩니다. 카카오워크 계정 이메일이 회사 이메일과 다르면
+                  여기에 직접 넣으세요 · 비우면 연결이 해제되고 그 직원은 특보 DM을 받지 못합니다
+                </small>
+              </label>
+            )}
           </div>
         </Modal>
       )}
