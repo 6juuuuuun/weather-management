@@ -778,7 +778,11 @@ orgRouter.get("/alert-recipients", async (req, res) => {
       // kakaowork_user_id를 함께 내려준다 — 화면(대시보드 셋업 체크리스트·알림 설정)이
       // "특보를 받을 수 있는 사람이 실제로 있는가"를 이 값으로 센다. 없으면 화면은
       // 수신자가 지정돼 있다는 것만 보고 "준비 완료"라고 말한다(그게 F-0의 절반이었다).
-      `select ar.employee_id, e.name, e.role, e.kakaowork_user_id
+      //
+      // department_id도 함께 내려준다(QA W-31). 이 목록은 승인 권한을 지정하는
+      // 화면인데 그 사람이 어느 부서인지 보이지 않아, 동명이인이 있으면 누구를
+      // 지우는지 알 수 없었다.
+      `select ar.employee_id, e.name, e.role, e.kakaowork_user_id, e.department_id
          from alert_recipients ar join employees e on e.id = ar.employee_id
         order by e.name`,
     );

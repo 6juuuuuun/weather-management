@@ -1420,3 +1420,40 @@ describe("알림 설정의 잘못된 값 (W-24)", () => {
     expect((await settingsOf(admin)).enabled).toBe(before.enabled);
   });
 });
+
+// 승인 권한을 지정하는 화면(Criteria.tsx)이 "이 사람이 누구인가 · DM을 받을 수
+// 있는가"를 그리려면 서버가 그 값을 함께 줘야 한다(QA W-31).
+describe("특보 승인 수신자 목록의 내용 (W-31)", () => {
+  it("부서와 카카오워크 연결 상태를 함께 내려준다", async () => {
+    const admin = await agentAs("admin", "w31@gonjiam.com");
+    const { deptId, empId } = await withService(async (q) => {
+      const { rows: d } = await q.query("insert into departments (name) values ($1) returning id", [
+        `${DEPT_PREFIX}w31`,
+      ]);
+      const { rows: e } = await q.query(
+        `insert into employees (name, email, department_id, kakaowork_user_id)
+         values ('승인자', 'w31-target@gonjiam.com', $1, 'kw-w31') returning id`,
+        [d[0].id],
+      );
+      await q.query("insert into alert_recipients (employee_id) values ($1)", [e[0].id]);
+      return { deptId: d[0].id as string, empId: e[0].id as string };
+    });
+    const res = await admin.get("/api/alert-recipients");
+    expect(res.status).toBe(200);
+    const row = res.body.find((r: any) => r.employee_id === empId);
+    expect(row).toMatchObject({ name: "승인자", department_id: deptId, kakaowork_user_id: "kw-w31" });
+  });
+
+  it("부서가 없거나 연결이 없으면 null로 내려준다", async () => {
+    const admin = await agentAs("admin", "w31b@gonjiam.com");
+    const empId = await withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into employees (name, email) values ('미지정', 'w31b-target@gonjiam.com') returning id");
+      await q.query("insert into alert_recipients (employee_id) values ($1)", [rows[0].id]);
+      return rows[0].id as string;
+    });
+    const row = (await admin.get("/api/alert-recipients")).body.find((r: any) => r.employee_id === empId);
+    expect(row.department_id).toBe(null);
+    expect(row.kakaowork_user_id).toBe(null);
+  });
+});
