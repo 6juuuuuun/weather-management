@@ -18,7 +18,7 @@ import {
 } from "../shared/template.ts";
 import type { NotificationChannel } from "../shared/channel.ts";
 import type { Kind, Grade, Obs, Criterion, AlertSetting, OpenEvent, Action } from "../shared/types.ts";
-import { env, envChannel, alertRecipientKakaoIds } from "./common.ts";
+import { env, envChannel, channelName, alertRecipientKakaoIds } from "./common.ts";
 
 export type SiteSettings = {
   site_name: string; nx: number; ny: number; remind_interval_min: number; resolve_notice: boolean;
@@ -332,9 +332,12 @@ export async function runWeatherTick(
             // content에는 **이번 회차에 실제로 쓴 블록**(갱신된 수신자 포함)을 남긴다 —
             // 승인 스냅샷을 그대로 남기면 "누가 받았나"를 사후에 알 수 없다.
             await q.query(
-              `insert into dispatches (message_id, event_id, repeat_no, results, content)
-               values ($1, $2, $3, $4::jsonb, $5::jsonb)`,
-              [msg.id, a.eventId, repeatNo, JSON.stringify(results), JSON.stringify(blocks)],
+              // channel은 실제로 나간 채널을 적는다 — 컬럼 기본값('kakaowork')에
+              // 맡기면 콘솔로만 흘린 회차도 이력에는 카카오워크로 남는다(QA W-29).
+              `insert into dispatches (message_id, event_id, repeat_no, results, content, channel)
+               values ($1, $2, $3, $4::jsonb, $5::jsonb, $6)`,
+              [msg.id, a.eventId, repeatNo, JSON.stringify(results), JSON.stringify(blocks),
+               channelName(channel)],
             );
             await q.query("update weather_events set repeat_count = $2 where id = $1", [a.eventId, repeatNo]);
           });

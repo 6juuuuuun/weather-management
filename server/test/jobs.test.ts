@@ -1523,3 +1523,110 @@ describe("POST /api/send — 모드별 동작", () => {
     expect((await agent.post("/api/send").send({ mode: "nope" })).status).toBe(400);
   });
 });
+
+// ---------------------------------------------------------------------------
+// QA 수정 라운드 D
+// ---------------------------------------------------------------------------
+
+// 발송 이력의 "채널"은 컬럼 기본값 'kakaowork'가 그대로 박혀 있었다(QA W-29).
+// 설치 직후 점검 단계는 NOTIFY_CHANNEL=console로 도는데, 그때 카카오워크로는
+// 아무것도 나가지 않았는데도 이력은 카카오워크로 보냈다고 말했다.
+describe("발송 이력의 채널은 실제로 나간 채널이다 (W-29)", () => {
+  async function recipientAgent(email: string) {
+    const { agent, employeeId } = await agentAs({ email, role: "staff" });
+    await makeAlertRecipient(employeeId);
+    return agent;
+  }
+
+  it("콘솔 채널로 나간 승인 발송은 이력에도 console로 남는다", async () => {
+    // 이 스위트 전체가 NOTIFY_CHANNEL=console로 돈다(setup.ts) — 즉 QA가 지적한
+    // 바로 그 상태다: 카카오워크로는 한 글자도 나가지 않았다.
+    expect(process.env.NOTIFY_CHANNEL).toBe("console");
+    const staff = await makeEmployee({ name: "객실직원", email: "ch-staff@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", staff);
+    const { eventId, content } = await pendingEventWithDraft(deptId, staff);
+    const agent = await recipientAgent("ch-recip@gonjiam.com");
+
+    const res = await agent.post("/api/send").send({ mode: "approve", event_id: eventId, content });
+    expect(res.status).toBe(200);
+    const channels = await withService(async (q) => {
+      const { rows } = await q.query("select channel from dispatches");
+      return rows.map((r: any) => r.channel);
+    });
+    expect(channels).toEqual(["console"]);
+  });
+
+  it("자동 반복 발송의 이력에도 실제 채널이 남는다", async () => {
+    const staff = await makeEmployee({ name: "객실직원", email: "ch-tick-staff@gonjiam.com", kw: "kw-staff" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", staff);
+    const { eventId, messageId } = await pendingEventWithDraft(deptId, staff);
+    await withService(async (q) => {
+      await q.query("update weather_events set status='ACTIVE', repeat_count=1 where id=$1", [eventId]);
+      await q.query("update messages set status='approved' where id=$1", [messageId]);
+    });
+    stubKma(RAIN_32MM);
+    const { channel } = recorder();
+    await runWeatherTick({ channel });
+    const channels = await withService(async (q) => {
+      const { rows } = await q.query("select channel from dispatches");
+      return rows.map((r: any) => r.channel);
+    });
+    // 주입된 대역 채널은 카카오워크가 아니다 — 그렇게 기록돼야 나중에 이력을
+    // 되짚는 사람이 "카카오워크로 나갔다"고 잘못 읽지 않는다.
+    expect(channels).toEqual(["custom"]);
+  });
+});
+
+// 본문 검증이 하나도 없어서 uuid가 아닌 event_id 하나에 22P02가 그대로 새어
+// 500 "서버 오류가 발생했습니다"가 나갔다(QA W-24).
+describe("POST /api/send의 잘못된 본문 (W-24)", () => {
+  async function recipientAgent(email: string) {
+    const { agent, employeeId } = await agentAs({ email, role: "staff" });
+    await makeAlertRecipient(employeeId);
+    return agent;
+  }
+
+  it("event_id가 uuid 형식이 아니면 400이다", async () => {
+    const agent = await recipientAgent("bad-body1@gonjiam.com");
+    const res = await agent.post("/api/send").send({ mode: "approve", event_id: "garbage", content: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/event_id/);
+  });
+
+  it("무시(dismiss)의 event_id도 같은 규칙이다", async () => {
+    const agent = await recipientAgent("bad-body2@gonjiam.com");
+    const res = await agent.post("/api/send").send({ mode: "dismiss", event_id: "garbage" });
+    expect(res.status).toBe(400);
+  });
+
+  it("재발송의 message_id가 uuid 형식이 아니면 400이다", async () => {
+    const agent = await recipientAgent("bad-body3@gonjiam.com");
+    const res = await agent.post("/api/send").send({ mode: "resend", message_id: "garbage", content: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/message_id/);
+  });
+
+  it("mode가 없거나 모르는 값이면 400이다", async () => {
+    const agent = await recipientAgent("bad-body4@gonjiam.com");
+    expect((await agent.post("/api/send").send({})).status).toBe(400);
+    expect((await agent.post("/api/send").send({ mode: "delete-everything" })).status).toBe(400);
+  });
+
+  it("content가 배열이 아니면 400이다", async () => {
+    const agent = await recipientAgent("bad-body5@gonjiam.com");
+    const res = await agent
+      .post("/api/send")
+      .send({ mode: "approve", event_id: "00000000-0000-0000-0000-000000000000", content: "전부" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/content/);
+  });
+
+  // 응답이 스택트레이스나 서버 내부 경로를 담으면 안 된다 — 500으로 새던 시절의
+  // 실제 증상이다.
+  it("거부 응답에 서버 내부 경로가 새지 않는다", async () => {
+    const agent = await recipientAgent("bad-body6@gonjiam.com");
+    const res = await agent.post("/api/send").send({ mode: "approve", event_id: "garbage", content: [] });
+    expect(res.headers["content-type"]).toMatch(/json/);
+    expect(res.text).not.toMatch(/\/Users\/|\bat \/|node_modules/);
+  });
+});

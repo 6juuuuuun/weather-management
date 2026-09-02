@@ -4,12 +4,12 @@
 //   (1) 승인·재발송·무시는 alert_recipients에 등록된 사람만 (역할과 무관, 스펙 2026-08-13)
 //   (2) mode === "test"는 role='admin'만
 // 둘 중 하나라도 빠지면 로그인한 아무나 전 직원에게 발송할 수 있게 된다.
-import { withService, type Querier } from "../db.ts";
+import { UUID, withService, type Querier } from "../db.ts";
 import {
   renderMessage, formatObsLine, OBS_LINE_FALLBACK, KIND_LABEL, GRADE_LABEL, type DeptBlock,
 } from "../shared/template.ts";
 import type { NotificationChannel } from "../shared/channel.ts";
-import { envChannel } from "./common.ts";
+import { channelName, envChannel } from "./common.ts";
 // 폭설 메시지의 "오늘 누적"은 판정 엔진이 쓰는 것과 같은 합산이어야 한다 —
 // 두 벌로 적으면 화면·메시지·판정이 조용히 어긋난다.
 import { todayAccums } from "./weatherTick.ts";
@@ -120,9 +120,12 @@ async function dispatch(
   try {
     const d = await withService(async (q) => {
       const { rows } = await q.query(
-        `insert into dispatches (message_id, event_id, repeat_no, is_test, results, content)
-         values ($1, $2, $3, $4, $5::jsonb, $6::jsonb) returning id`,
-        [msg.id, msg.event_id, repeatNo, isTest, JSON.stringify(results), JSON.stringify(blocks)],
+        // channel은 컬럼 기본값('kakaowork')에 맡기지 않는다 — 실제로 어디로
+        // 나갔는지를 기록하는 것이 이 컬럼의 존재 이유다(QA W-29).
+        `insert into dispatches (message_id, event_id, repeat_no, is_test, results, content, channel)
+         values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7) returning id`,
+        [msg.id, msg.event_id, repeatNo, isTest, JSON.stringify(results), JSON.stringify(blocks),
+         channelName(channel)],
       );
       return rows[0];
     });
@@ -166,11 +169,41 @@ async function unapprove(eventId: string, messageId: string): Promise<void> {
   }
 }
 
+// 본문을 DB에 닿기 전에 검증한다(QA W-24).
+//
+// 예전에는 아무것도 보지 않았다. `{"mode":"approve","event_id":"garbage"}` 하나면
+// weather_events 조회가 uuid 캐스팅에서 22P02로 죽고, 그 예외가 라우트를 지나
+// index.ts의 마지막 에러 핸들러까지 새어 500 "서버 오류가 발생했습니다"가 됐다 —
+// 운영자는 로그에서 클라이언트 실수와 진짜 장애를 구분할 수 없다.
+const SEND_MODES = ["approve", "resend", "dismiss", "test"] as const;
+
+export function validateSendBody(body: unknown): string | null {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const mode = b.mode;
+  if (!SEND_MODES.includes(mode as never)) {
+    return `mode는 ${SEND_MODES.join(", ")} 중 하나여야 합니다`;
+  }
+  if ((mode === "approve" || mode === "dismiss") && !UUID.test(String(b.event_id ?? ""))) {
+    return "event_id 형식이 올바르지 않습니다";
+  }
+  if (mode === "resend" && !UUID.test(String(b.message_id ?? ""))) {
+    return "message_id 형식이 올바르지 않습니다";
+  }
+  // content는 부서 블록 배열이다. 배열이 아니면 countTargets가 곧바로 터진다.
+  if ((mode === "approve" || mode === "resend") && !Array.isArray(b.content)) {
+    return "content는 부서 블록 배열이어야 합니다";
+  }
+  return null;
+}
+
 export async function runSend(
   body: SendBody,
   actorEmployeeId: string,
   deps: { channel?: NotificationChannel } = {},
 ): Promise<SendResult> {
+  const invalid = validateSendBody(body);
+  if (invalid) return { ok: false, status: 400, error: invalid };
+
   const channel = deps.channel ?? envChannel();
 
   const { emp, siteName } = await withService(async (q) => {
