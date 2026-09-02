@@ -10,6 +10,7 @@ import { envChannel, alertRecipientKakaoIds } from "./common.ts";
 import { alertRecipientLinkCounts } from "../kakaoLink.ts";
 import { GRID_NX_MAX, GRID_NY_MAX, isValidGrid } from "../kmaGrid.ts";
 import { effectiveGuidelineSql } from "../guidelineContent.ts";
+import { REMIND_LIMIT } from "./remindTick.ts";
 import type { NotificationChannel } from "../shared/channel.ts";
 
 /** 관측은 매시 1회다. 130분이면 최소 2회를 연속으로 놓친 상태다. */
@@ -211,6 +212,41 @@ export async function checkHealth(deps: { runner?: Runner } = {}): Promise<Healt
       if (effective > 0 && noReachable > 0) {
         reasons.push(
           `지침과 수신자는 있는데 카카오워크에 연결된 수신자가 한 명도 없는 부서가 ${noReachable}곳입니다 — 그 부서 몫은 승인해도 0명에게 발송됩니다`,
+        );
+      }
+
+      // (4) **승인되지 않은 채 방치된 특보**(회귀 §F-1).
+      //
+      // 라운드 B가 재알림에 상한(6회)을 넣었다. 상한 자체는 옳다 — 무한 반복은 그
+      // 봇의 모든 메시지를 읽지 않게 만든다. 그런데 상한에 닿은 뒤가 비어 있었다:
+      // 재알림이 조회에서 빠지고 두 번 다시 나가지 않는데, 10시간째 승인 대기인
+      // 특보를 두고 `/api/health/deep`이 `{"ok":true}`였다. **시끄러운 문제를 조용한
+      // 문제로 바꾼 것이고, 이 시스템에서는 그게 더 나쁜 방향이다** — 수정 전에는
+      // 최소한 승인될 때까지 계속 두드렸다. 관리자 에스컬레이션 DM은 1회뿐이고,
+      // role='admin'이면서 카카오워크가 연결된 사람이 0명이면 서버 로그 한 줄로 끝난다.
+      //
+      // 두 갈래를 함께 본다:
+      //  - remind_count가 상한에 닿았다 = 재알림이 이미 멈췄다.
+      //  - 상한까지 걸릴 시간이 지났는데도 remind_count가 안 찼다 = 재알림 자체가
+      //    돌지 않고 있다(remind-tick 고장). 이쪽은 아무 사유도 없던 상태다.
+      // 6시간마다 도는 워치독이 이 사유를 Alert 수신자에게 DM으로도 보내므로,
+      // "상한 도달 = 침묵"이 아니라 "상한 도달 = 더 느린 두드림"이 된다.
+      const { rows: pendingRows } = await q.query(
+        `select count(*)::int as n,
+                coalesce(max(floor(extract(epoch from (now() - e.detected_at)) / 3600)), 0)::int as hours
+           from weather_events e
+          where e.status = 'PENDING_APPROVAL'
+            and (e.remind_count >= $1
+                 or e.detected_at <= now() - (($1 * (
+                       select coalesce(remind_interval_min, 30) from site_settings limit 1
+                     )) || ' minutes')::interval)`,
+        [REMIND_LIMIT],
+      );
+      const stalePending = Number(pendingRows[0]?.n);
+      if (stalePending > 0) {
+        reasons.push(
+          `승인 대기 중인 특보 ${stalePending}건이 최대 ${Number(pendingRows[0]?.hours)}시간째 승인되지 않았습니다 ` +
+            `(재알림 ${REMIND_LIMIT}회를 다 보내고 멈춘 상태입니다) — 대시보드에서 승인하거나 무시 처리해 주세요`,
         );
       }
 

@@ -751,6 +751,84 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
     expect(out.reasons.join()).toMatch(/행동지침이 한 건도 없습니다/);
   });
 
+  // 회귀 §F-1 — 라운드 B가 재알림에 상한(6회)을 넣으면서 **시끄러운 문제를 조용한
+  // 문제로 바꿨다.** 상한에 닿으면 재알림이 조회에서 빠지고 두 번 다시 나가지 않는데,
+  // 10시간째 승인 대기인 특보를 두고 health/deep이 `{"ok":true}`였다. 수정 전에는
+  // 최소한 승인될 때까지 계속 두드렸다.
+  describe("승인되지 않고 방치된 특보 (회귀 §F-1)", () => {
+    async function pendingEvent(opts: { agoHours: number; remindCount: number }): Promise<string> {
+      return withService(async (q) => {
+        const { rows } = await q.query(
+          `insert into weather_events (kind, grade, status, detected_at, remind_count)
+           values ('wind', 'watch', 'PENDING_APPROVAL', now() - ($1 || ' hours')::interval, $2)
+           returning id`,
+          [String(opts.agoHours), opts.remindCount],
+        );
+        return rows[0].id as string;
+      });
+    }
+
+    afterEach(async () => {
+      await withService((q) => q.query("delete from weather_events where kind = 'wind'"));
+    });
+
+    it("재알림 상한에 도달한 미승인 특보는 사유가 된다", async () => {
+      await healthyPipes();
+      await ensureGuideline();
+      await pendingEvent({ agoHours: 10, remindCount: 6 });
+      const out = await checkHealth();
+      expect(out.ok).toBe(false);
+      expect(out.reasons.join()).toMatch(/승인 대기 중인 특보 1건이 최대 10시간째 승인되지 않았습니다/);
+    });
+
+    // 재알림이 아예 돌지 않는 경우(remind-tick 고장)도 같은 결과다 — 사람이 아무
+    // 재촉도 받지 못한 채 특보가 열려만 있다. remind_count로만 보면 이쪽은 영원히
+    // 조용하다.
+    it("재알림이 돌지 않아 횟수가 안 찬 경우에도 오래 방치되면 사유가 된다", async () => {
+      await healthyPipes();
+      await ensureGuideline();
+      await pendingEvent({ agoHours: 5, remindCount: 0 }); // 기본 주기 30분 × 6회 = 3시간
+      const out = await checkHealth();
+      expect(out.ok).toBe(false);
+      expect(out.reasons.join()).toMatch(/승인 대기 중인 특보 1건/);
+    });
+
+    // 방금 감지된 특보까지 사유로 울리면 6시간마다 오는 점검 메시지가 노이즈가 되고,
+    // 그 뒤엔 진짜 사고도 함께 묻힌다. 재알림이 아직 제 일을 하는 구간이다.
+    it("막 감지된 미승인 특보는 사유가 아니다", async () => {
+      await healthyPipes();
+      await ensureGuideline();
+      await pendingEvent({ agoHours: 0, remindCount: 0 });
+      const out = await checkHealth();
+      expect(out.ok).toBe(true);
+    });
+
+    // 승인된(ACTIVE) 특보는 사람이 이미 봤다는 뜻이다.
+    it("승인된 특보는 오래돼도 사유가 아니다", async () => {
+      await healthyPipes();
+      await ensureGuideline();
+      const id = await pendingEvent({ agoHours: 10, remindCount: 6 });
+      await withService((q) =>
+        q.query("update weather_events set status = 'ACTIVE' where id = $1", [id]),
+      );
+      const out = await checkHealth();
+      expect(out.ok).toBe(true);
+    });
+
+    // 재알림을 멈추기로 한 이상, 그 상태가 **사람에게 닿아야** 한다. 6시간마다 도는
+    // 워치독이 Alert 수신자에게 DM으로 같은 사유를 보낸다 — 상한 도달이 침묵이 아니라
+    // "더 느린 두드림"이 된다.
+    it("워치독이 그 사유를 Alert 수신자에게 실제로 보낸다", async () => {
+      await healthyPipes();
+      await ensureGuideline();
+      await pendingEvent({ agoHours: 10, remindCount: 6 });
+      const { sent, channel } = recorder();
+      await reportIfUnhealthy({ channel });
+      expect(sent.length).toBeGreaterThan(0);
+      expect(sent.map((m) => m.text).join()).toMatch(/승인 대기 중인 특보 1건/);
+    });
+  });
+
   // 앱이 "이번 수집 실패했다"고 스스로 적어 둔 값을 점검이 안 읽으면, 수집은
   // 매시간 실패하는데 last_run_at은 갱신되므로 영원히 초록이다(QA W-03).
   it("마지막 수집이 실패로 기록돼 있으면 문제로 본다", async () => {
