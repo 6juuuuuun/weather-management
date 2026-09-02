@@ -23,6 +23,10 @@ import "./DeptModal.css";
 type EditingState = { id: string; name: string } | null;
 type AddingChildState = { parentId: string; name: string } | null;
 
+// 서버(server/src/api/org.ts의 MAX_DEPT_NAME)와 같은 값이어야 한다 — 화면이
+// 더 관대하면 사용자는 다 입력한 뒤에야 400을 본다(QA W-30).
+export const MAX_DEPT_NAME = 40;
+
 // 들여쓰기는 6단에서 멈춘다. 그보다 깊어지면 이름 칸이 왼쪽으로 밀려 사라지는데,
 // 편집기에서는 "몇 번째 단인가"보다 "누구 밑인가"가 중요하고 그건 순서로 읽힌다.
 const INDENT_PX = 22;
@@ -184,6 +188,7 @@ export function DeptModal({
             <input
               autoFocus
               className="dept-modal-input"
+              maxLength={MAX_DEPT_NAME}
               placeholder="새 하위 부서 이름"
               value={addingChild.name}
               onChange={(e) => setAddingChild({ parentId: node.dept.id, name: e.target.value })}
@@ -202,17 +207,17 @@ export function DeptModal({
   return (
     <Modal
       title="부서 관리"
-      desc="부서 삭제 시 소속 직원은 '미지정'으로 이동합니다"
+      // 이 모달의 모든 변경(추가·이름 변경·상위 이동·삭제)은 그 자리에서 곧바로
+      // 서버에 저장된다. 그런데도 아래에 `저장`과 `닫기`가 나란히 있었고 **둘 다
+      // onClose만 불렀다**(QA W-25d) — 저장을 누른 사람은 그때 무언가 저장됐다고
+      // 믿었고, 닫기를 누른 사람은 되돌려졌다고 믿었다. 둘 다 틀렸다.
+      // 버튼을 하나로 줄이고, 즉시 저장된다는 사실을 설명에 적는다.
+      desc="변경은 즉시 저장됩니다 · 부서 삭제 시 소속 직원은 '미지정'으로 이동합니다"
       onClose={onClose}
       footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            닫기
-          </Button>
-          <Button variant="primary" onClick={onClose}>
-            저장
-          </Button>
-        </>
+        <Button variant="primary" onClick={onClose}>
+          닫기
+        </Button>
       }
     >
       {error && <p className="dept-modal-error">{error}</p>}
@@ -230,6 +235,7 @@ export function DeptModal({
               <input
                 autoFocus
                 className="dept-modal-input"
+                maxLength={MAX_DEPT_NAME}
                 placeholder="새 최상위 부서 이름"
                 value={newTopName}
                 onChange={(e) => setNewTopName(e.target.value)}
@@ -299,6 +305,7 @@ function DeptRow({
         <input
           autoFocus
           className="dept-modal-input"
+          maxLength={MAX_DEPT_NAME}
           value={editing.name}
           onChange={(e) => onEditChange(e.target.value)}
           onKeyDown={(e) => {

@@ -134,3 +134,40 @@ describe("DeptModal 삭제", () => {
     expect(mocks.deleteDepartment).not.toHaveBeenCalled();
   });
 });
+
+// QA W-25d · `저장`과 `닫기`가 나란히 있었고 둘 다 onClose만 불렀다. 이 모달의
+// 모든 변경은 이미 즉시 저장되므로, 저장을 누른 사람은 그때 무언가 저장됐다고
+// 믿었고 닫기를 누른 사람은 되돌려졌다고 믿었다 — 둘 다 틀렸다.
+describe("DeptModal 저장/닫기 (W-25d)", () => {
+  it("아무 일도 하지 않는 저장 버튼을 두지 않는다", async () => {
+    renderModal();
+    await screen.findAllByText("리조트");
+    expect(screen.queryByRole("button", { name: "저장" })).not.toBeInTheDocument();
+  });
+
+  it("변경이 즉시 저장된다는 사실을 설명에 적는다", async () => {
+    renderModal();
+    await screen.findAllByText("리조트");
+    expect(screen.getByText(/변경은 즉시 저장됩니다/)).toBeInTheDocument();
+  });
+
+  it("닫기는 모달을 닫는다", async () => {
+    const onClose = vi.fn();
+    render(<DeptModal onClose={onClose} onChanged={vi.fn()} />);
+    await screen.findAllByText("리조트");
+    // 모달 우상단의 X도 aria-label이 "닫기"다 — 푸터 버튼(글자가 닫기인 것)을 고른다.
+    const footerClose = screen
+      .getAllByRole("button", { name: "닫기" })
+      .find((b) => b.textContent === "닫기")!;
+    fireEvent.click(footerClose);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  // 서버 상한(40자)을 화면이 넘겨 보내면 사용자는 다 입력한 뒤에야 400을 본다.
+  it("부서 이름 입력칸에 서버와 같은 길이 상한을 건다", async () => {
+    renderModal();
+    fireEvent.click(await screen.findByRole("button", { name: "+ 최상위 부서 추가" }));
+    const input = await screen.findByPlaceholderText("새 최상위 부서 이름");
+    expect(input).toHaveAttribute("maxlength", "40");
+  });
+});
