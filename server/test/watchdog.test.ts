@@ -316,9 +316,13 @@ describe("상태 점검", () => {
       runner: (fn) =>
         fn({
           async query(text: string) {
-            // 질의는 셋이다: 하트비트 정체 여부 / 최근 관측 목록 / 알릴 수 있는 수신자 수.
+            // 하트비트 정체 여부 / 알릴 수 있는 수신자 수 / 관측 지점 좌표는
+            // 이 시나리오의 관심사가 아니므로 "정상"으로 고정하고, 나머지(최근
+            // 관측 목록)만 인자로 받은 행을 돌려준다. 좌표를 고정하지 않으면
+            // 관측 행에 nx/ny가 없어 격자 범위 사유(QA W-10)가 함께 붙는다.
             if (text.includes("heartbeats")) return { rows: [{ stale: false }] };
             if (text.includes("alert_recipients")) return { rows: [{ total: 1, linked: 1 }] };
+            if (text.includes("site_settings")) return { rows: [{ nx: 61, ny: 121 }] };
             return { rows };
           },
         }),
@@ -696,5 +700,59 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
     const out = await checkHealth();
     expect(out.ok).toBe(true);
     expect(out.reasons.join()).not.toMatch(/비어/);
+  });
+});
+
+// 관측 지점 좌표가 격자 범위를 벗어나면 수집이 매시간 실패한다(QA W-10).
+// 저장은 이제 PATCH /api/site-settings가 막지만, 그 검증이 생기기 전에 저장된
+// 값이나 DB를 직접 고친 경우는 그대로 남는다 — 그 상태가 어디에도 보이지
+// 않는 것이 이 결함의 나머지 절반이다.
+describe("관측 지점 좌표가 격자 범위 밖이면 불건강이다 (W-10)", () => {
+  let saved: { nx: number; ny: number };
+
+  beforeEach(async () => {
+    await ensureNotifiable();
+    await ensureGuideline();
+    saved = await withService(async (q) => {
+      await q.query("insert into site_settings (id) values (1) on conflict do nothing");
+      const { rows } = await q.query("select nx, ny from site_settings where id = 1");
+      return { nx: rows[0].nx as number, ny: rows[0].ny as number };
+    });
+    // 수집 자체는 완전히 정상으로 만든다 — 그래야 좌표 사유만 남는다.
+    await withService(async (q) => {
+      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
+    });
+  });
+
+  afterEach(async () => {
+    await withService((q) =>
+      q.query("update site_settings set nx = $1, ny = $2 where id = 1", [saved.nx, saved.ny]));
+    await clearGuideline();
+    await clearNotifiable();
+  });
+
+  it("nx가 음수면 좌표를 사유로 이름 붙여 말한다", async () => {
+    await withService((q) => q.query("update site_settings set nx = -1 where id = 1"));
+    const out = await checkHealth();
+    expect(out.ok).toBe(false);
+    // "수집이 멈췄다"가 아니라 **왜** 멈추는지를 말해야 한다 — 하트비트는
+    // 방금 정상으로 찍었으므로 다른 사유는 나올 수 없다.
+    expect(out.reasons.join()).toMatch(/nx=-1/);
+    expect(out.reasons.join()).toMatch(/기상청 격자/);
+  });
+
+  it("ny가 격자 상한을 넘어도 사유가 된다", async () => {
+    await withService((q) => q.query("update site_settings set ny = 9999 where id = 1"));
+    const out = await checkHealth();
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/ny=9999/);
+  });
+
+  it("범위 안의 좌표에서는 이 사유가 나오지 않는다", async () => {
+    await withService((q) => q.query("update site_settings set nx = 61, ny = 121 where id = 1"));
+    const out = await checkHealth();
+    expect(out.reasons.join()).not.toMatch(/격자/);
+    expect(out.ok).toBe(true);
   });
 });

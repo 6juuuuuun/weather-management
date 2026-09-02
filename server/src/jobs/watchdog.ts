@@ -8,6 +8,7 @@
 import { withService, type Querier } from "../db.ts";
 import { envChannel, alertRecipientKakaoIds } from "./common.ts";
 import { alertRecipientLinkCounts } from "../kakaoLink.ts";
+import { GRID_NX_MAX, GRID_NY_MAX, isValidGrid } from "../kmaGrid.ts";
 import type { NotificationChannel } from "../shared/channel.ts";
 
 /** 관측은 매시 1회다. 130분이면 최소 2회를 연속으로 놓친 상태다. */
@@ -109,6 +110,21 @@ export async function checkHealth(deps: { runner?: Runner } = {}): Promise<Healt
               `(기상청 항목 이름이 바뀌었을 수 있습니다) — 그 항목으로 판정하는 특보가 뜨지 않습니다`,
           );
         }
+      }
+
+      // 관측 지점 좌표가 기상청 격자 범위 밖이면 수집 호출이 매시간 실패한다
+      // (QA W-10). 저장은 이제 api/dashboard.ts가 막지만, **그 검증이 생기기 전에
+      // 이미 저장된 값**과 DB를 직접 고친 경우가 남는다. 그때 지금까지 화면이
+      // 말해 주는 것은 "관측 지점 ✓"뿐이었다 — 셋업 체크리스트는 행이 있는지만
+      // 봤다. 위의 "멈춰 있습니다"·"실패로 끝났습니다" 사유도 원인은 말하지 않는다.
+      // 원인을 그대로 이름 붙여 준다.
+      const { rows: siteRows } = await q.query("select nx, ny from site_settings where id = 1");
+      const site = siteRows[0];
+      if (site && !isValidGrid(Number(site.nx), Number(site.ny))) {
+        reasons.push(
+          `관측 지점 좌표(nx=${site.nx}, ny=${site.ny})가 기상청 격자 범위를 벗어났습니다 ` +
+            `(nx 1~${GRID_NX_MAX}, ny 1~${GRID_NY_MAX}) — 날씨 수집이 계속 실패합니다. 알림 설정에서 좌표를 고쳐 주세요`,
+        );
       }
 
       // "알릴 수 있는 사람이 있는가"를 본다. 수집이 아무리 정상이어도 이 값이 0이면

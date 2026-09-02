@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import request from "supertest";
 import { app } from "../src/index.ts";
 import { withService } from "../src/db.ts";
@@ -449,5 +449,226 @@ describe("관측 단건 조회", () => {
     const since = await agent.get(`/api/observations?since=${encodeURIComponent(new Date(0).toISOString())}`);
     expect(since.status).toBe(200);
     expect(Array.isArray(since.body)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QA 수정 라운드 D — W-10
+// ---------------------------------------------------------------------------
+
+// 이 결함들은 "값이 무엇이든 저장은 된다"는 한 가지 사실에서 나온다. 화면이
+// 보내는 값만 시험하면 절대 드러나지 않는다 — 빈 칸(0), 뒤집힌 임계값, 오타 난
+// 키, 격자 밖 좌표를 아무도 만들지 않았다.
+describe("특보 기준 값 검증 (W-10)", () => {
+  async function adminAgent(email: string) {
+    const who = { email, password: "crit-password-1", name: "관리자" };
+    await request(app).post("/api/auth/signup").send(who);
+    await withService((q) => q.query("update employees set role='admin' where email=$1", [email]));
+    const agent = request.agent(app);
+    await agent.post("/api/auth/login").send({ email: who.email, password: who.password });
+    return agent;
+  }
+  // 이 스위트는 "막혀야 하는 저장"을 시도한다 — 막는 코드가 사라지면(변이 시험)
+  // 그 요청이 실제로 통과해 시드 기준을 망가뜨리고, 그 상태가 뒤이어 도는
+  // 다른 파일(jobs.test.ts의 판정 테스트)까지 조용히 무너뜨린다. 실제로 한 번
+  // 그렇게 됐다. 그래서 매 테스트 뒤에 시드 값(db/seed.sql)으로 되돌린다.
+  afterEach(async () => {
+    await withService((q) =>
+      q.query(`
+        update weather_criteria set threshold = '{"rain_mm_per_hr":20}' where kind='rain' and grade='watch';
+        update weather_criteria set threshold = '{"rain_mm_per_hr":50}' where kind='rain' and grade='warning';
+        update weather_criteria set threshold = '{"snow_cm":5}' where kind='snow' and grade='watch';
+        update weather_criteria set threshold = '{"snow_cm":20}' where kind='snow' and grade='warning';
+        update weather_criteria set threshold = '{"wind_ms":14}' where kind='wind' and grade='watch';
+        update weather_criteria set threshold = '{"wind_ms":21}' where kind='wind' and grade='warning';
+        update weather_criteria set threshold = '{"temp_c":33,"feels_c":31}' where kind='heat' and grade='watch';
+        update weather_criteria set threshold = '{"temp_c":35,"feels_c":33}' where kind='heat' and grade='warning';
+      `),
+    );
+  });
+
+  async function storedThreshold(kind: string, grade: string) {
+    return withService(async (q) => {
+      const { rows } = await q.query(
+        "select threshold from weather_criteria where kind=$1 and grade=$2", [kind, grade]);
+      return rows[0].threshold;
+    });
+  }
+
+  // 화면이 빈 입력칸을 0으로 바꿔 보낸다(Criteria.tsx). 0은 `>= 0`이 언제나
+  // 참이라 **매시간 폭우 주의보**가 뜬다 — QA가 실제로 만든 상태다.
+  it("임계값 0은 400이다 (0이면 매시간 특보가 뜬다)", async () => {
+    const admin = await adminAgent("crit-zero@gonjiam.com");
+    const before = await storedThreshold("rain", "watch");
+    const res = await admin.put("/api/criteria").send({
+      rows: [{ kind: "rain", grade: "watch", threshold: { rain_mm_per_hr: 0 } }],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/0보다 커야/);
+    expect(await storedThreshold("rain", "watch")).toEqual(before);
+  });
+
+  it("음수·문자열·누락된 값은 400이다", async () => {
+    const admin = await adminAgent("crit-bad@gonjiam.com");
+    const before = await storedThreshold("wind", "watch");
+    for (const threshold of [{ wind_ms: -5 }, { wind_ms: "강함" }, {}, { wind_ms: null }]) {
+      const res = await admin.put("/api/criteria").send({
+        rows: [{ kind: "wind", grade: "watch", threshold }],
+      });
+      expect(res.status, JSON.stringify(threshold)).toBe(400);
+    }
+    expect(await storedThreshold("wind", "watch")).toEqual(before);
+  });
+
+  // 오타 난 키가 저장되면 exceeds()가 undefined와 비교해 그 종류의 특보가
+  // **영원히** 뜨지 않는데, 화면에는 빈칸으로만 보인다.
+  it("엔진이 읽지 않는 키가 섞이면 400이다", async () => {
+    const admin = await adminAgent("crit-key@gonjiam.com");
+    const res = await admin.put("/api/criteria").send({
+      rows: [{ kind: "rain", grade: "watch", threshold: { rain_mm_per_hr: 20, rain_mm: 30 } }],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/rain_mm/);
+  });
+
+  // 폭염은 값이 둘이다 — 하나만 보내면 나머지가 사라져 판정이 반쪽이 된다.
+  it("폭염 기준에 temp_c만 있고 feels_c가 없으면 400이다", async () => {
+    const admin = await adminAgent("crit-heat@gonjiam.com");
+    const res = await admin.put("/api/criteria").send({
+      rows: [{ kind: "heat", grade: "watch", threshold: { temp_c: 33 } }],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/feels_c/);
+  });
+
+  it("한 배치 안에서 경보가 주의보보다 낮으면 400이다", async () => {
+    const admin = await adminAgent("crit-inv1@gonjiam.com");
+    const before = await storedThreshold("rain", "warning");
+    const res = await admin.put("/api/criteria").send({
+      rows: [
+        { kind: "rain", grade: "watch", threshold: { rain_mm_per_hr: 50 } },
+        { kind: "rain", grade: "warning", threshold: { rain_mm_per_hr: 20 } },
+      ],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/경보는 주의보보다 높아야/);
+    expect(await storedThreshold("rain", "warning")).toEqual(before);
+  });
+
+  // 한 등급만 보내는 부분 배치도 막아야 한다 — 저장된 짝과 비교하지 않으면
+  // 두 번 나눠 보내는 것만으로 뒤집힌 상태를 만들 수 있다.
+  it("한 등급만 보내도 저장된 짝과 비교해 막는다", async () => {
+    const admin = await adminAgent("crit-inv2@gonjiam.com");
+    // 시드: rain watch 20, warning 50. warning만 10으로 내리면 뒤집힌다.
+    const res = await admin.put("/api/criteria").send({
+      rows: [{ kind: "rain", grade: "warning", threshold: { rain_mm_per_hr: 10 } }],
+    });
+    expect(res.status).toBe(400);
+    expect(await storedThreshold("rain", "warning")).toEqual({ rain_mm_per_hr: 50 });
+  });
+
+  it("경보와 주의보가 같은 값은 허용한다", async () => {
+    const admin = await adminAgent("crit-eq@gonjiam.com");
+    try {
+      const res = await admin.put("/api/criteria").send({
+        rows: [
+          { kind: "wind", grade: "watch", threshold: { wind_ms: 21 } },
+          { kind: "wind", grade: "warning", threshold: { wind_ms: 21 } },
+        ],
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      await withService((q) =>
+        q.query(`
+          update weather_criteria set threshold = '{"wind_ms":14}' where kind='wind' and grade='watch';
+          update weather_criteria set threshold = '{"wind_ms":21}' where kind='wind' and grade='warning';
+        `),
+      );
+    }
+  });
+});
+
+describe("관측 지점 좌표 범위 (W-10)", () => {
+  async function adminAgent(email: string) {
+    const who = { email, password: "site-password-1", name: "관리자" };
+    await request(app).post("/api/auth/signup").send(who);
+    await withService((q) => q.query("update employees set role='admin' where email=$1", [email]));
+    const agent = request.agent(app);
+    await agent.post("/api/auth/login").send({ email: who.email, password: who.password });
+    return agent;
+  }
+  async function storedSite() {
+    return withService(async (q) => {
+      const { rows } = await q.query("select nx, ny, site_name, remind_interval_min from site_settings where id = 1");
+      return rows[0];
+    });
+  }
+
+  // 위와 같은 이유로 시드 값으로 되돌린다 — 잘못된 좌표가 남으면 이 파일이
+  // 아니라 **다른 파일의 수집 테스트**가 깨지고, 원인을 찾기가 매우 어렵다.
+  afterEach(async () => {
+    await withService((q) =>
+      q.query(
+        `update site_settings
+            set nx = 61, ny = 121, site_name = '곤지암', remind_interval_min = 30
+          where id = 1`,
+      ),
+    );
+  });
+
+  // nx=-1은 타입(정수)으로는 통과한다. 저장되는 순간 기상청 호출이 매시간
+  // 실패해 수집이 통째로 멈추는데, 예전에는 화면이 6/6 완료로 남았다.
+  it("격자 범위 밖의 좌표는 400이고 저장되지 않는다", async () => {
+    await withService((q) => q.query("insert into site_settings (id) values (1) on conflict do nothing"));
+    const admin = await adminAgent("site-range@gonjiam.com");
+    const before = await storedSite();
+    for (const body of [{ nx: -1 }, { nx: 0 }, { nx: 150 }, { ny: 0 }, { ny: 254 }]) {
+      const res = await admin.patch("/api/site-settings").send(body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(res.body.error).toMatch(/기상청 격자/);
+    }
+    expect(await storedSite()).toEqual(before);
+  });
+
+  it("범위 안의 좌표는 그대로 저장된다", async () => {
+    await withService((q) => q.query("insert into site_settings (id) values (1) on conflict do nothing"));
+    const admin = await adminAgent("site-range-ok@gonjiam.com");
+    const before = await storedSite();
+    try {
+      const res = await admin.patch("/api/site-settings").send({ nx: 149, ny: 253 });
+      expect(res.status).toBe(200);
+      expect(res.body.nx).toBe(149);
+      expect(res.body.ny).toBe(253);
+    } finally {
+      await withService((q) =>
+        q.query("update site_settings set nx=$1, ny=$2 where id=1", [before.nx, before.ny]));
+    }
+  });
+
+  it("재알림 간격이 범위 밖이면 400이다", async () => {
+    await withService((q) => q.query("insert into site_settings (id) values (1) on conflict do nothing"));
+    const admin = await adminAgent("site-remind@gonjiam.com");
+    const before = await storedSite();
+    for (const v of [0, -30, 1441]) {
+      const res = await admin.patch("/api/site-settings").send({ remind_interval_min: v });
+      expect(res.status, String(v)).toBe(400);
+    }
+    expect((await storedSite()).remind_interval_min).toBe(before.remind_interval_min);
+  });
+
+  it("지점 이름이 비었거나 너무 길면 400이고, 통과한 이름은 공백이 정리된다", async () => {
+    await withService((q) => q.query("insert into site_settings (id) values (1) on conflict do nothing"));
+    const admin = await adminAgent("site-name@gonjiam.com");
+    const before = await storedSite();
+    try {
+      expect((await admin.patch("/api/site-settings").send({ site_name: "   " })).status).toBe(400);
+      expect((await admin.patch("/api/site-settings").send({ site_name: "가".repeat(41) })).status).toBe(400);
+      const ok = await admin.patch("/api/site-settings").send({ site_name: "  곤지암 리조트  " });
+      expect(ok.status).toBe(200);
+      expect(ok.body.site_name).toBe("곤지암 리조트");
+    } finally {
+      await withService((q) =>
+        q.query("update site_settings set site_name=$1 where id=1", [before.site_name]));
+    }
   });
 });
