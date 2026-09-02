@@ -21,6 +21,13 @@ import "./Guidelines.css";
 const KINDS: Kind[] = ["rain", "snow", "wind", "heat"];
 const KIND_LABEL: Record<Kind, string> = { rain: "폭우", snow: "폭설", wind: "강풍", heat: "폭염" };
 const GRADES: Grade[] = ["watch", "warning"];
+
+// 서버(server/src/api/content.ts)와 같은 값이어야 한다. 이 본문은 화면에만 남지
+// 않고 **카카오워크 DM에 그대로 실린다** — 화면이 더 관대하면 관리자는 다 쓰고
+// 저장을 누른 뒤에야 거부당한다(QA W-30).
+const MAX_ACTION_ITEMS = 20;
+const MAX_ACTION_LEN = 200;
+const MAX_GUEST_NOTICE = 1000;
 const GRADE_LABEL: Record<Grade, string> = { watch: "주의보", warning: "경보" };
 
 function DeptIcon() {
@@ -181,7 +188,7 @@ export default function Guidelines() {
   }
 
   function addBullet() {
-    setStaffActions((prev) => [...prev, ""]);
+    setStaffActions((prev) => (prev.length >= MAX_ACTION_ITEMS ? prev : [...prev, ""]));
   }
 
   function updateBullet(index: number, value: string) {
@@ -436,11 +443,22 @@ export default function Guidelines() {
                     <div className="guidelines-section-header">
                       <h3>인력 조정 지침</h3>
                       {isAdmin && (
-                        <button type="button" className="guidelines-add-link" onClick={addBullet}>
+                        <button
+                          type="button"
+                          className="guidelines-add-link"
+                          onClick={addBullet}
+                          disabled={staffActions.length >= MAX_ACTION_ITEMS}
+                        >
                           + 항목 추가
                         </button>
                       )}
                     </div>
+                    {isAdmin && (
+                      <p className="guidelines-section-hint guidelines-limit-hint">
+                        한 항목 {MAX_ACTION_LEN}자 · 최대 {MAX_ACTION_ITEMS}개
+                        {staffActions.length >= MAX_ACTION_ITEMS ? " · 더 넣을 수 없습니다" : ""}
+                      </p>
+                    )}
                     {staffActions.length === 0 ? (
                       <p className="guidelines-section-empty">등록된 지침이 없습니다.</p>
                     ) : (
@@ -452,6 +470,7 @@ export default function Guidelines() {
                             </span>
                             <input
                               className="guidelines-bullet-input"
+                              maxLength={MAX_ACTION_LEN}
                               value={text}
                               disabled={!isAdmin}
                               onChange={(e) => updateBullet(i, e.target.value)}
@@ -475,10 +494,14 @@ export default function Guidelines() {
 
                   <section className="guidelines-section">
                     <h3>
-                      고객 안내 멘트 <span className="guidelines-section-hint">고객에게 그대로 전달할 수 있는 안내문</span>
+                      고객 안내 멘트{" "}
+                      <span className="guidelines-section-hint">
+                        고객에게 그대로 전달할 수 있는 안내문 · {MAX_GUEST_NOTICE}자까지
+                      </span>
                     </h3>
                     <textarea
                       className="guidelines-textarea"
+                      maxLength={MAX_GUEST_NOTICE}
                       value={guestNotice}
                       disabled={!isAdmin}
                       onChange={(e) => setGuestNotice(e.target.value)}

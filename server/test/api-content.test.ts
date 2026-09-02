@@ -560,3 +560,118 @@ describe("발송 이력", () => {
     expect((await request(app).get("/api/dispatches")).status).toBe(401);
   });
 });
+
+// QA W-30 · 지침 본문에 길이 상한이 어디에도 없었다. 이 값은 화면 레이아웃만의
+// 문제가 아니다 — staff_actions와 guest_notice는 **카카오워크 DM 본문에 그대로
+// 실린다.** 5000자짜리 지침 하나가 붙은 특보는 승인 화면과 DM 양쪽을 못 읽는
+// 상태로 만들고, 그 사실은 폭설 새벽에 드러난다.
+//
+// QA W-07 · 그리고 staff_actions가 배열이 아니면 **조용히 빈 배열로 저장**됐다.
+// 화면 오류나 오타 난 요청 하나로 그 부서의 지침이 통째로 지워지고 204가 돌아온다.
+describe("PUT /api/guidelines 본문 검증 (W-30 · W-07)", () => {
+  const base = (deptId: string) => ({
+    department_id: deptId,
+    kind: "rain" as const,
+    grade: "watch" as const,
+    staff_actions: ["배수로 점검"],
+    guest_notice: "우천 안내",
+  });
+
+  async function seeded() {
+    const agent = await agentAs("admin", "guide-limit@gonjiam.com");
+    const deptId = await makeDept("객실");
+    expect((await agent.put("/api/guidelines").send({ rows: [base(deptId)] })).status).toBe(204);
+    return { agent, deptId };
+  }
+
+  const stored = () =>
+    withService(async (q) => {
+      const { rows } = await q.query("select staff_actions, guest_notice from action_guidelines");
+      return rows;
+    });
+
+  it("staff_actions가 없으면 400이고 기존 지침을 지우지 않는다", async () => {
+    const { agent, deptId } = await seeded();
+    const { staff_actions: _omit, ...noActions } = base(deptId);
+    const res = await agent.put("/api/guidelines").send({ rows: [noActions] });
+
+    expect(res.status).toBe(400);
+    expect(await stored()).toEqual([{ staff_actions: ["배수로 점검"], guest_notice: "우천 안내" }]);
+  });
+
+  it("staff_actions가 배열이 아니면 400이다", async () => {
+    const { agent, deptId } = await seeded();
+    const res = await agent.put("/api/guidelines").send({
+      rows: [{ ...base(deptId), staff_actions: "배수로 점검" }],
+    });
+    expect(res.status).toBe(400);
+    expect(await stored()).toEqual([{ staff_actions: ["배수로 점검"], guest_notice: "우천 안내" }]);
+  });
+
+  // 비우겠다는 의도는 명시적인 빈 배열로만 표현된다 — 그건 통과해야 한다.
+  it("명시적인 빈 배열은 통과한다", async () => {
+    const { agent, deptId } = await seeded();
+    const res = await agent.put("/api/guidelines").send({
+      rows: [{ ...base(deptId), staff_actions: [], guest_notice: "" }],
+    });
+    expect(res.status).toBe(204);
+    expect(await stored()).toEqual([{ staff_actions: [], guest_notice: "" }]);
+  });
+
+  it("항목 하나가 200자를 넘으면 400이고 아무것도 저장하지 않는다", async () => {
+    const { agent, deptId } = await seeded();
+    const res = await agent.put("/api/guidelines").send({
+      rows: [{ ...base(deptId), staff_actions: ["가".repeat(201)] }],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("200자");
+    expect(await stored()).toEqual([{ staff_actions: ["배수로 점검"], guest_notice: "우천 안내" }]);
+  });
+
+  it("항목이 20개를 넘으면 400이다", async () => {
+    const { agent, deptId } = await seeded();
+    const res = await agent.put("/api/guidelines").send({
+      rows: [{ ...base(deptId), staff_actions: Array.from({ length: 21 }, (_, i) => `지침 ${i}`) }],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("20개");
+  });
+
+  it("고객 안내 멘트가 1000자를 넘으면 400이다", async () => {
+    const { agent, deptId } = await seeded();
+    const res = await agent.put("/api/guidelines").send({
+      rows: [{ ...base(deptId), guest_notice: "가".repeat(1001) }],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("1000자");
+    expect(await stored()).toEqual([{ staff_actions: ["배수로 점검"], guest_notice: "우천 안내" }]);
+  });
+
+  // 문자열이 아닌 항목은 text[] 캐스팅에서 터져 500 "서버 오류"로 나갔다(W-24와 같은 뿌리).
+  it("문자열이 아닌 항목은 500이 아니라 400이다", async () => {
+    const { agent, deptId } = await seeded();
+    const res = await agent.put("/api/guidelines").send({
+      rows: [{ ...base(deptId), staff_actions: [{ text: "배수로 점검" }] }],
+    });
+    expect(res.status).toBe(400);
+  });
+
+  // 상한 안쪽 값은 그대로 저장돼야 한다 — 검사가 "언제나 거부"로 굳으면 지침을
+  // 아예 못 고친다.
+  it("상한 경계값은 그대로 저장한다", async () => {
+    const { agent, deptId } = await seeded();
+    const res = await agent.put("/api/guidelines").send({
+      rows: [
+        {
+          ...base(deptId),
+          staff_actions: Array.from({ length: 20 }, () => "가".repeat(200)),
+          guest_notice: "나".repeat(1000),
+        },
+      ],
+    });
+    expect(res.status).toBe(204);
+    const rows = await stored();
+    expect(rows[0]!.staff_actions).toHaveLength(20);
+    expect([...(rows[0]!.guest_notice as string)]).toHaveLength(1000);
+  });
+});

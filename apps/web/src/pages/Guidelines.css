@@ -289,6 +289,17 @@
   color: var(--ink-muted-48);
 }
 
+/* 상한 안내는 항목 목록 바로 위에 붙는다 — 다 쓰고 저장을 누른 뒤에 알게 되면
+   늦다(QA W-30). */
+.guidelines-limit-hint {
+  margin: 0 0 8px;
+}
+
+.guidelines-add-link:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .guidelines-add-link {
   background: none;
   border: none;

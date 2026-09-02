@@ -43,6 +43,16 @@ contentRouter.get("/guidelines", async (req, res) => {
 // 행 하나라도 kind/grade/department_id가 잘못되면 그 행까지만 반영되고 나머지가
 // 끊기는 "절반만 저장된 지침"을 피하려고, DB에 닿기 전에 배치 전체를 먼저
 // 검증한다 — 하나라도 나쁘면 전체를 거부한다.
+// 지침 본문의 상한(QA W-30). 이 값들은 화면 레이아웃만의 문제가 아니다 —
+// staff_actions와 guest_notice는 **카카오워크 DM 본문에 그대로 실린다**. 상한이
+// 없던 동안 5000자짜리 값이 그대로 저장됐고, 그런 지침 하나가 붙은 특보는
+// 승인 화면과 DM 양쪽을 못 읽는 상태로 만든다. 글자 수는 코드 포인트로 센다
+// (org.ts·dashboard.ts의 다른 상한들과 같은 기준).
+export const MAX_ACTION_ITEMS = 20;
+export const MAX_ACTION_LEN = 200;
+export const MAX_GUEST_NOTICE = 1000;
+const overLength = (v: string, max: number) => [...v].length > max;
+
 contentRouter.put("/guidelines", requireAdmin, async (req, res) => {
   const inRows: any[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
   const bad = inRows.find(
@@ -57,6 +67,33 @@ contentRouter.put("/guidelines", requireAdmin, async (req, res) => {
         ", ",
       )} 중이어야 하고 department_id는 올바른 uuid여야 합니다`,
     });
+  }
+
+  // 본문 검증. 예전에는 staff_actions가 배열이 아니면 **조용히 빈 배열로 바꿔**
+  // 저장했다 — 화면 오류나 오타 난 요청 하나로 그 부서의 지침이 통째로 지워지고
+  // 204 "성공"이 돌아온다. 수신자 목록에서 고친 것과 똑같은 결함이다(QA W-07).
+  // 비우겠다는 의도는 명시적인 빈 배열로만 표현된다.
+  for (const r of inRows) {
+    if (!Array.isArray(r?.staff_actions)) {
+      return res.status(400).json({ error: "staff_actions는 배열이어야 합니다" });
+    }
+    if (r.staff_actions.length > MAX_ACTION_ITEMS) {
+      return res.status(400).json({ error: `인력 조정 지침은 ${MAX_ACTION_ITEMS}개 이하여야 합니다` });
+    }
+    const badItem = r.staff_actions.find((a: unknown) => typeof a !== "string");
+    if (badItem !== undefined) {
+      return res.status(400).json({ error: "인력 조정 지침 항목은 문자열이어야 합니다" });
+    }
+    const longItem = r.staff_actions.find((a: string) => overLength(a, MAX_ACTION_LEN));
+    if (longItem !== undefined) {
+      return res.status(400).json({ error: `인력 조정 지침 한 항목은 ${MAX_ACTION_LEN}자 이하여야 합니다` });
+    }
+    if (r.guest_notice !== undefined && r.guest_notice !== null && typeof r.guest_notice !== "string") {
+      return res.status(400).json({ error: "guest_notice는 문자열이어야 합니다" });
+    }
+    if (typeof r.guest_notice === "string" && overLength(r.guest_notice, MAX_GUEST_NOTICE)) {
+      return res.status(400).json({ error: `고객 안내 멘트는 ${MAX_GUEST_NOTICE}자 이하여야 합니다` });
+    }
   }
 
   // department_id는 형식(UUID)만 위에서 확인했다 — 형식은 맞지만 실존하지 않는
@@ -91,7 +128,7 @@ contentRouter.put("/guidelines", requireAdmin, async (req, res) => {
                updated_at = excluded.updated_at,
                updated_by = excluded.updated_by,
                updated_by_name = excluded.updated_by_name`,
-        [r.department_id, r.kind, r.grade, Array.isArray(r.staff_actions) ? r.staff_actions : [], r.guest_notice ?? ""],
+        [r.department_id, r.kind, r.grade, r.staff_actions, r.guest_notice ?? ""],
       );
     }
   });

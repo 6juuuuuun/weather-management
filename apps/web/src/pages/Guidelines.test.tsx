@@ -341,3 +341,48 @@ describe("Guidelines", () => {
     expect(screen.getByRole("button", { name: /객실/ })).toBeInTheDocument();
   });
 });
+
+// QA W-30 · 지침 본문은 화면에만 남지 않는다 — 카카오워크 DM 본문에 그대로 실린다.
+// 서버가 이제 한 항목 200자 · 최대 20개 · 고객 안내 1000자로 막는데, 화면이 그
+// 한계를 말하지 않으면 관리자는 다 쓰고 저장을 누른 뒤에야 거부당한다.
+describe("Guidelines 본문 길이 상한 (W-30)", () => {
+  async function openEditor() {
+    mocks.authState.employee = adminEmployee();
+    mocks.listDepartments.mockResolvedValue([
+      { id: "g1", parent_id: null, name: "리조트", sort_order: 0 },
+      { id: "l1", parent_id: "g1", name: "객실", sort_order: 0 },
+    ]);
+    mocks.listEmployees.mockResolvedValue([adminEmployee()]);
+    render(
+      <MemoryRouter>
+        <Guidelines />
+      </MemoryRouter>,
+    );
+    await screen.findByText("폭우 대응 지침");
+  }
+
+  it("항목 수와 글자 수 상한을 화면에 적는다", async () => {
+    await openEditor();
+    expect(screen.getByText(/한 항목 200자 · 최대 20개/)).toBeInTheDocument();
+    expect(screen.getByText(/1000자까지/)).toBeInTheDocument();
+  });
+
+  it("입력칸이 서버와 같은 상한을 스스로 들고 있다", async () => {
+    await openEditor();
+    fireEvent.click(screen.getByRole("button", { name: "+ 항목 추가" }));
+    expect(screen.getByPlaceholderText("지침 내용을 입력하세요")).toHaveAttribute("maxlength", "200");
+    expect(screen.getByPlaceholderText(/안녕하세요/)).toHaveAttribute("maxlength", "1000");
+  });
+
+  // 21번째 항목을 만들 수 있으면 저장 한 번이 통째로 400으로 거부된다 —
+  // 그 부서의 지침 편집이 그 자리에서 막힌다.
+  it("항목이 20개가 되면 더 추가할 수 없다", async () => {
+    await openEditor();
+    const add = screen.getByRole("button", { name: "+ 항목 추가" });
+    for (let i = 0; i < 25; i++) fireEvent.click(add);
+
+    expect(screen.getAllByPlaceholderText("지침 내용을 입력하세요")).toHaveLength(20);
+    expect(add).toBeDisabled();
+    expect(screen.getByText(/더 넣을 수 없습니다/)).toBeInTheDocument();
+  });
+});
