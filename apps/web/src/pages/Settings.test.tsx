@@ -224,3 +224,119 @@ describe("Settings 테스트 발송", () => {
     expect(await screen.findByRole("button", { name: /테스트 메시지 보내기/ })).not.toBeDisabled();
   });
 });
+
+// QA W-10 · 관측 지점에 값 검증이 화면에도 서버에도 없었다. `nx=-1`을 저장하면
+// 기상청 호출이 매시간 실패해 관측 수집이 통째로 멈추는데, 화면은 아무 말도 하지
+// 않았고 셋업 체크리스트는 계속 완료로 보였다. 서버는 이제 400으로 막는다 —
+// 이 테스트가 못 박는 것은 **화면이 그 400을 미리 설명하는가**이다.
+// QA W-30 · 길이 상한도 같은 자리에서 화면이 먼저 알려야 한다.
+describe("Settings 관측 지점·재알림 값 검증 (W-10 · W-30)", () => {
+  const nxInput = () => screen.getByLabelText("격자 X (nx)");
+  const nyInput = () => screen.getByLabelText("격자 Y (ny)");
+  const remindInput = () => screen.getByLabelText("재알림 간격");
+  const save = () => screen.getByRole("button", { name: "변경사항 저장" });
+
+  async function loaded() {
+    renderPage();
+    await screen.findByText("관측 지점");
+  }
+
+  it("격자 범위를 벗어난 nx는 저장하지 않고 이유와 범위를 말한다", async () => {
+    await loaded();
+    fireEvent.change(nxInput(), { target: { value: "200" } });
+    fireEvent.click(save());
+
+    expect(await screen.findByText(/격자 X \(nx\)는 1~149 사이의 정수여야 합니다/)).toBeInTheDocument();
+    expect(mocks.saveSiteSettings).not.toHaveBeenCalled();
+    // 저장 버튼 하나가 두 카드를 함께 저장한다 — 좌표가 잘못됐는데 알림 설정만
+    // 저장되면 "일부만 저장됐다"는 상태가 남는다.
+    expect(mocks.saveAlertSettings).not.toHaveBeenCalled();
+  });
+
+  // 입력칸을 비우면 Number("")가 0이 된다 — 예전에는 그 0이 그대로 저장됐다.
+  it("입력칸을 비워 0이 된 좌표도 막는다", async () => {
+    await loaded();
+    fireEvent.change(nxInput(), { target: { value: "" } });
+    fireEvent.click(save());
+
+    expect(await screen.findByText(/격자 X \(nx\)는 1~149 사이의 정수여야 합니다/)).toBeInTheDocument();
+    expect(mocks.saveSiteSettings).not.toHaveBeenCalled();
+  });
+
+  it("음수 ny를 막는다", async () => {
+    await loaded();
+    fireEvent.change(nyInput(), { target: { value: "-1" } });
+    fireEvent.click(save());
+
+    expect(await screen.findByText(/격자 Y \(ny\)는 1~253 사이의 정수여야 합니다/)).toBeInTheDocument();
+    expect(mocks.saveSiteSettings).not.toHaveBeenCalled();
+  });
+
+  it("ny 상한(253)을 넘는 값을 막는다", async () => {
+    await loaded();
+    fireEvent.change(nyInput(), { target: { value: "254" } });
+    fireEvent.click(save());
+
+    expect(await screen.findByText(/격자 Y \(ny\)는 1~253 사이의 정수여야 합니다/)).toBeInTheDocument();
+    expect(mocks.saveSiteSettings).not.toHaveBeenCalled();
+  });
+
+  // 0이나 음수면 스케줄러가 매 tick 재알림을 보내 승인자에게 DM이 쏟아진다.
+  it("서버 하한(5분)보다 짧은 재알림 간격을 막는다", async () => {
+    await loaded();
+    fireEvent.change(remindInput(), { target: { value: "1" } });
+    fireEvent.click(save());
+
+    expect(await screen.findByText(/재알림 간격은 5~1440분 사이의 정수여야 합니다/)).toBeInTheDocument();
+    expect(mocks.saveSiteSettings).not.toHaveBeenCalled();
+  });
+
+  it("하루(1440분)를 넘는 재알림 간격을 막는다", async () => {
+    await loaded();
+    fireEvent.change(remindInput(), { target: { value: "1441" } });
+    fireEvent.click(save());
+
+    expect(await screen.findByText(/재알림 간격은 5~1440분 사이의 정수여야 합니다/)).toBeInTheDocument();
+    expect(mocks.saveSiteSettings).not.toHaveBeenCalled();
+  });
+
+  it("서버 상한(200자)을 넘는 주소를 막는다", async () => {
+    await loaded();
+    fireEvent.change(screen.getByLabelText("지점 주소"), { target: { value: "가".repeat(201) } });
+    fireEvent.click(save());
+
+    expect(await screen.findByText(/지점 주소는 200자 이하여야 합니다/)).toBeInTheDocument();
+    expect(mocks.saveSiteSettings).not.toHaveBeenCalled();
+  });
+
+  // 검사가 "항상 막는다"로 굳어 버리면 관측 지점을 영영 못 고친다.
+  it("범위 안의 값은 그대로 저장한다", async () => {
+    await loaded();
+    fireEvent.change(nxInput(), { target: { value: "149" } });
+    fireEvent.change(nyInput(), { target: { value: "253" } });
+    fireEvent.change(remindInput(), { target: { value: "1440" } });
+    fireEvent.click(save());
+
+    await screen.findByText("변경사항이 저장되었습니다");
+    expect(mocks.saveSiteSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ nx: 149, ny: 253, remind_interval_min: 1440 }),
+    );
+  });
+
+  // 화면이 서버보다 관대하면 사용자는 다 입력한 뒤에야 400을 본다.
+  it("입력칸이 서버와 같은 한계를 스스로 들고 있다", async () => {
+    await loaded();
+    expect(nxInput()).toHaveAttribute("max", "149");
+    expect(nyInput()).toHaveAttribute("max", "253");
+    expect(remindInput()).toHaveAttribute("min", "5");
+    expect(remindInput()).toHaveAttribute("max", "1440");
+    expect(screen.getByLabelText("지점 주소")).toHaveAttribute("maxlength", "200");
+  });
+
+  // 상한을 화면이 말해 주지 않으면 사용자는 저장에 실패하고 나서야 알게 된다.
+  it("좌표 범위와 재알림 범위를 화면에 적는다", async () => {
+    await loaded();
+    expect(screen.getByText(/nx는 1~149, ny는 1~253/)).toBeInTheDocument();
+    expect(screen.getByText(/간격은 5~1440분/)).toBeInTheDocument();
+  });
+});

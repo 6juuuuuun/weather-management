@@ -18,6 +18,19 @@ import "./Settings.css";
 
 const KIND_ORDER: Kind[] = ["rain", "snow", "wind", "heat"];
 
+// 서버(server/src/kmaGrid.ts · server/src/api/dashboard.ts)와 같은 값이어야 한다.
+// 화면이 더 관대하면 관리자는 다 입력하고 저장을 누른 뒤에야 한 줄짜리 400을 본다.
+//
+// nx = -1이 그대로 저장된 적이 있고, 그때부터 기상청 호출이 매시간 실패해 관측
+// 수집이 통째로 멈췄다(QA W-10). 셋업 체크리스트는 계속 완료로 보였다.
+// 서버가 방벽이고 이 검사는 그 앞의 안내다 — 둘 다 있어야 한다.
+const GRID_NX_MAX = 149;
+const GRID_NY_MAX = 253;
+const REMIND_MIN = 5;
+const REMIND_MAX = 1440;
+// 길이 상한도 서버와 같은 값을 화면에 적는다(QA W-30).
+const MAX_ADDRESS = 200;
+
 const KIND_LABEL: Record<Kind, string> = {
   rain: "폭우",
   snow: "폭설",
@@ -198,8 +211,38 @@ export default function Settings() {
     setSiteSettings((prev) => (prev ? { ...prev, ...patch } : prev));
   }
 
+  // 저장 전에 화면에서 먼저 막는다. 서버가 최종 관문이지만(PATCH /api/site-settings),
+  // 여기서 걸러 주지 않으면 관리자는 무엇이 잘못됐는지 모른 채 저장 실패만 본다.
+  // 특히 격자 좌표는 틀려도 화면 어디에도 티가 나지 않고 수집만 조용히 멈춘다(QA W-10).
+  function siteValidationError(s: SiteSettingsRow): string | null {
+    if ([...s.address].length > MAX_ADDRESS) {
+      return `지점 주소는 ${MAX_ADDRESS}자 이하여야 합니다`;
+    }
+    if (!Number.isInteger(s.nx) || s.nx < 1 || s.nx > GRID_NX_MAX) {
+      return `격자 X (nx)는 1~${GRID_NX_MAX} 사이의 정수여야 합니다 — 벗어나면 날씨 수집이 멈춥니다`;
+    }
+    if (!Number.isInteger(s.ny) || s.ny < 1 || s.ny > GRID_NY_MAX) {
+      return `격자 Y (ny)는 1~${GRID_NY_MAX} 사이의 정수여야 합니다 — 벗어나면 날씨 수집이 멈춥니다`;
+    }
+    if (
+      !Number.isInteger(s.remind_interval_min) ||
+      s.remind_interval_min < REMIND_MIN ||
+      s.remind_interval_min > REMIND_MAX
+    ) {
+      return `재알림 간격은 ${REMIND_MIN}~${REMIND_MAX}분 사이의 정수여야 합니다`;
+    }
+    return null;
+  }
+
   async function handleSave() {
     if (!alertSettings || !siteSettings) return;
+    // 알림 설정과 관측 지점은 저장 버튼 하나를 공유한다 — 좌표가 잘못됐는데
+    // 알림 설정만 먼저 저장되면 "일부만 저장됐다"는 상태가 남는다. 둘 다 멈춘다.
+    const invalid = siteValidationError(siteSettings);
+    if (invalid) {
+      setToast({ kind: "error", message: invalid });
+      return;
+    }
     setSaving(true);
     try {
       // PUT /api/alert-settings는 kind별 update를 서버가 한 번에 처리한다(org.ts) —
@@ -381,6 +424,7 @@ export default function Settings() {
               <span className="settings-input-with-icon">
                 <input
                   type="text"
+                  maxLength={MAX_ADDRESS}
                   value={siteSettings.address}
                   disabled={!isAdmin}
                   onChange={(e) => updateSite({ address: e.target.value })}
@@ -396,6 +440,8 @@ export default function Settings() {
                 <span className="settings-field-label">격자 X (nx)</span>
                 <input
                   type="number"
+                  min={1}
+                  max={GRID_NX_MAX}
                   value={siteSettings.nx}
                   disabled={!isAdmin}
                   onChange={(e) => updateSite({ nx: Number(e.target.value) })}
@@ -405,24 +451,35 @@ export default function Settings() {
                 <span className="settings-field-label">격자 Y (ny)</span>
                 <input
                   type="number"
+                  min={1}
+                  max={GRID_NY_MAX}
                   value={siteSettings.ny}
                   disabled={!isAdmin}
                   onChange={(e) => updateSite({ ny: Number(e.target.value) })}
                 />
               </label>
             </div>
-            <p className="settings-field-hint">격자 좌표는 주소 검색 시 자동 변환됩니다</p>
+            <p className="settings-field-hint">
+              격자 좌표는 주소 검색 시 자동 변환됩니다 · nx는 1~{GRID_NX_MAX}, ny는 1~{GRID_NY_MAX} ·
+              이 범위를 벗어난 좌표를 저장하면 기상청 조회가 매시간 실패해 날씨 수집이 멈춥니다
+            </p>
           </section>
 
           <section className="settings-card">
             <h2 className="settings-card-title">재알림 · 해제 알림</h2>
-            <p className="settings-card-desc">초안이 승인되지 않으면 Alert 수신자에게 다시 알립니다</p>
+            <p className="settings-card-desc">
+              초안이 승인되지 않으면 Alert 수신자에게 다시 알립니다 · 간격은 {REMIND_MIN}~{REMIND_MAX}분
+            </p>
             <div className="settings-inline-row">
               <span className="settings-field-label">재알림 간격</span>
               <span className="settings-accum-input">
                 <input
                   type="number"
-                  min={1}
+                  // 이 칸만 <label>로 감싸여 있지 않다(라벨과 입력이 형제 span이다) —
+                  // 이름이 없으면 스크린리더도 테스트도 이 칸을 집어낼 수 없다.
+                  aria-label="재알림 간격"
+                  min={REMIND_MIN}
+                  max={REMIND_MAX}
                   value={siteSettings.remind_interval_min}
                   disabled={!isAdmin}
                   onChange={(e) => updateSite({ remind_interval_min: Number(e.target.value) })}
