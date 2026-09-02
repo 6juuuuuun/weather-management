@@ -143,10 +143,22 @@ async function clearAlertable(): Promise<void> {
 // 셋이 **파일 실행 순서에 따라** 실패했다(vitest의 기본 시퀀서는 파일 순서를
 // 실행 시간 기준으로 정하므로 순서가 고정이 아니다). jobs.test.ts도 같은 이유로
 // 이 표를 통째로 비운다 — 관측은 시드가 아니라 테스트가 만드는 런타임 데이터다.
+//
+// action_guidelines·recipients도 같은 이유로 통째로 비운다. 라운드 B가 checkHealth에
+// "내용이 있는 지침이 있는가 / 그 부서에 수신자가 있는가"를 넣은 순간, **남의 파일이
+// 남긴 지침 한 줄**이 이 파일의 "정상" 전제를 통째로 깨뜨리게 됐다:
+//   npx vitest run test/api-content.test.ts test/watchdog.test.ts
+//   → watchdog 9건이 한 번에 실패(100% 재현). 회귀 검증 §A-2(나).
+// 순서가 실행마다 달라지므로(vitest 기본 시퀀서는 직전 실행 시간으로 파일 순서를
+// 정한다) 같은 명령이 어떤 날은 통과하고 어떤 날은 9건 실패한다 — 다음 사람이 진짜
+// 회귀와 이 노이즈를 구분할 수 없다. 둘 다 시드가 아니라 테스트가 만드는 데이터다
+// (db/seed.sql은 departments·criteria·alert_settings·site_settings만 심는다).
 beforeEach(async () => {
   await withService(async (q) => {
     await q.query("delete from heartbeats");
     await q.query("delete from weather_observations");
+    await q.query("delete from action_guidelines");
+    await q.query("delete from recipients");
   });
 });
 
@@ -478,6 +490,7 @@ describe("문제가 있으면 알린다", () => {
   }
 
   afterEach(async () => {
+    await clearGuideline();
     await withService(async (q) => {
       await q.query(
         "delete from alert_recipients where employee_id in (select id from employees where email = $1)",
@@ -503,6 +516,10 @@ describe("문제가 있으면 알린다", () => {
   // 그 뒤엔 진짜 사고 메시지도 함께 묻힌다.
   it("정상이면 아무에게도 보내지 않는다", async () => {
     await makeRecipient();
+    // "정상"의 전제를 이 테스트가 직접 만든다. 예전에는 다른 파일이 남긴 지침 행에
+    // 기대고 있었다 — 그 파일이 먼저 돌면 통과하고 나중에 돌면 실패하는, 스스로는
+    // 아무것도 보장하지 않는 테스트였다(회귀 검증 §A-2).
+    await ensureGuideline();
     await withService(async (q) => {
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
       await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
