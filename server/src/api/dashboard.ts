@@ -3,6 +3,7 @@ import { withUser } from "../db.ts";
 import { requireAuth, requireAdmin } from "../auth/middleware.ts";
 import { GRID_NX_MAX, GRID_NY_MAX } from "../kmaGrid.ts";
 import { CRITERIA_FIELDS } from "../criteriaFields.ts";
+import { envChannel, channelName, isLogOnlyChannel } from "../jobs/common.ts";
 
 export const dashboardRouter = Router();
 dashboardRouter.use(requireAuth);
@@ -324,6 +325,22 @@ dashboardRouter.patch("/site-settings", requireAdmin, async (req, res) => {
   // 이때 조용히 200을 돌려주면 "저장됐다"고 착각하게 된다.
   if (rows.length === 0) return res.status(404).json({ error: "사이트 설정을 찾을 수 없습니다" });
   res.json(rows[0]);
+});
+
+/**
+ * **메시지가 실제로 어디로 가는가** (검증 라운드 E — 표에 없던 25번째 경로).
+ *
+ * 셋업 체크리스트는 여태 "그 사람에게 닿을 수 있는가"만 물었다. `NOTIFY_CHANNEL=console`이
+ * 운영에 남아 있으면 그 답이 전부 예스인 채로 모든 DM이 앱 로그로만 나가는데,
+ * 화면에는 그 사실을 말해 주는 자리가 한 곳도 없었다. 화면이 물으려면 서버가
+ * 대답할 통로가 있어야 한다 — 환경변수는 브라우저에서 볼 수 없다.
+ *
+ * 관리자에게만 준다. 값 자체는 비밀이 아니지만(채널 이름 하나) 이 답을 보고 할 일이
+ * 있는 사람은 관리자뿐이고, 체크리스트도 관리자 화면에만 뜬다.
+ */
+dashboardRouter.get("/notify-channel", requireAdmin, async (_req, res) => {
+  const ch = envChannel();
+  res.json({ channel: channelName(ch), log_only: isLogOnlyChannel(ch) });
 });
 
 dashboardRouter.get("/heartbeats/:name", async (req, res) => {

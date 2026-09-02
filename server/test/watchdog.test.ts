@@ -3,11 +3,46 @@ import request from "supertest";
 import { withService, type Querier } from "../src/db.ts";
 import { checkHealth, reportIfUnhealthy, COLLECT_STALE_MIN, MISSING_STREAK } from "../src/jobs/watchdog.ts";
 import type { NotificationChannel } from "../src/shared/channel.ts";
+// 25번째 경로(실효 채널이 로그 전용)를 재현하려면 그 채널 객체가 필요하다.
+import { ConsoleChannel } from "../src/shared/kakaowork.ts";
 
 // 이 파일은 실제 카카오워크로 나가면 안 된다. reportIfUnhealthy는 채널을 주입할 수
 // 있지만, 주입하지 않는 경로를 한 번이라도 밟으면 루트 .env의 봇 키로 실제 발송이
 // 나간다 — jobs.test.ts와 같은 방식으로 콘솔 채널로 못박는다.
 process.env.NOTIFY_CHANNEL = "console";
+
+// 이 스위트 전체가 NOTIFY_CHANNEL=console로 도는데, **그 상태 자체가 이제 사유다**
+// (검증 라운드 E의 25번째 경로: 로그 전용 채널 + 연결된 수신자 = 아무에게도 안 간다).
+// 그 사유를 일부러 보려는 describe 말고는 **운영과 같은 실채널**을 주입해 둔다 —
+// 안 그러면 모든 테스트의 reasons에 같은 문장이 섞여 무엇을 보고 있는지 알 수 없다.
+const REAL_CHANNEL: NotificationChannel = {
+  async send() {
+    return { ok: true };
+  },
+};
+
+/** 기본이 "실채널이 붙은 운영 상태"인 checkHealth. deps로 덮어쓸 수 있다. */
+const health = (deps: Parameters<typeof checkHealth>[0] = {}) =>
+  checkHealth({ channel: REAL_CHANNEL, ...deps });
+
+/**
+ * HTTP 경로(`/api/health/deep`)는 채널을 주입할 수 없다 — 환경변수를 읽는다.
+ * "실채널이 설정된 운영 상태"를 잠깐 흉내 낸다. 이 블록 안에서는 아무것도 발송하지
+ * 않는다(checkHealth는 읽기만 한다). 끝나면 반드시 되돌린다.
+ */
+async function withRealChannelEnv<T>(fn: () => Promise<T>): Promise<T> {
+  const notify = process.env.NOTIFY_CHANNEL;
+  const key = process.env.KAKAOWORK_BOT_KEY;
+  process.env.NOTIFY_CHANNEL = "";
+  process.env.KAKAOWORK_BOT_KEY = "test-only-not-a-real-key";
+  try {
+    return await fn();
+  } finally {
+    process.env.NOTIFY_CHANNEL = notify ?? "console";
+    if (key === undefined) delete process.env.KAKAOWORK_BOT_KEY;
+    else process.env.KAKAOWORK_BOT_KEY = key;
+  }
+}
 
 // 발송된 내용을 그대로 모으는 채널. "알렸다/안 알렸다"를 눈으로 봐야
 // 감시가 실제로 사람을 부르는지 증명할 수 있다.
@@ -186,7 +221,7 @@ describe("상태 점검", () => {
     await withService((q) =>
       q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now() - interval '5 hours')"),
     );
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/수집/);
   });
@@ -196,7 +231,7 @@ describe("상태 점검", () => {
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
       await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
-    expect((await checkHealth()).ok).toBe(true);
+    expect((await health()).ok).toBe(true);
   });
 
   it("수집은 돌지만 결측만 쌓이면 문제로 본다", async () => {
@@ -208,7 +243,7 @@ describe("상태 점검", () => {
         { ago: "0 seconds", missing: true },
       ]);
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/결측/);
   });
@@ -217,7 +252,7 @@ describe("상태 점검", () => {
   // heartbeats가 비어 있을 때 "행이 없으니 비교할 게 없다"로 빠져 ok=true를
   // 돌려주면, 설치 직후 수집이 아예 시작되지 않은 상태를 정상이라고 보고한다.
   it("한 번도 수집한 적이 없으면 문제로 본다", async () => {
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/수집/);
   });
@@ -233,7 +268,7 @@ describe("상태 점검", () => {
       );
       await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
-    expect((await checkHealth()).ok).toBe(true);
+    expect((await health()).ok).toBe(true);
   });
 
   it("수집한 지 140분 지났으면 문제로 본다", async () => {
@@ -243,7 +278,7 @@ describe("상태 점검", () => {
       );
       await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/수집/);
   });
@@ -267,7 +302,7 @@ describe("상태 점검", () => {
         { ago: "0 seconds", missing: false, temp: 20 },
       ]);
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(true);
     expect(out.reasons.join()).not.toMatch(/결측/);
   });
@@ -286,7 +321,7 @@ describe("상태 점검", () => {
         { ago: "0 seconds", missing: false },
       ]);
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/값이 전부 비어/);
     // 결측이 아니라 "값 없음"이다 — 둘을 섞으면 운영자가 엉뚱한 곳을 본다.
@@ -302,7 +337,7 @@ describe("상태 점검", () => {
         { ago: "0 seconds", missing: false, rain: 0 },
       ]);
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.reasons.join()).not.toMatch(/값이 전부 비어/);
   });
 
@@ -317,7 +352,7 @@ describe("상태 점검", () => {
         { ago: "0 seconds", missing: true },
       ]);
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.reasons.join()).toMatch(/모두 결측/);
     expect(out.reasons.join()).not.toMatch(/값이 전부 비어/);
   });
@@ -330,7 +365,7 @@ describe("상태 점검", () => {
   // 비워야 한다. 남의 관측 이력을 지우지 않으려고 여기서는 질의 결과만
   // 갈아 끼운다(checkHealth의 runner 주입 지점).
   function stubbedHealth(rows: Array<{ missing: boolean }>) {
-    return checkHealth({
+    return health({
       runner: (fn) =>
         fn({
           async query(text: string) {
@@ -376,7 +411,7 @@ describe("상태 점검", () => {
         { ago: "0 seconds", missing: true },
       ]);
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.reasons).toHaveLength(2);
     expect(out.reasons.join()).toMatch(/수집/);
     expect(out.reasons.join()).toMatch(/결측/);
@@ -386,7 +421,7 @@ describe("상태 점검", () => {
   // 새면 /api/health/deep이 500 "서버 오류"만 뱉고, 운영자는 무엇이
   // 잘못됐는지 알 수 없다. 사유로 바꿔서 돌려줘야 한다.
   it("데이터베이스에 닿지 못하면 예외 대신 사유로 알린다", async () => {
-    const out = await checkHealth({
+    const out = await health({
       runner: () => Promise.reject(new Error("connect ECONNREFUSED 127.0.0.1:5433")),
     });
     expect(out.ok).toBe(false);
@@ -428,7 +463,7 @@ describe("알릴 수 있는 사람이 없으면 불건강이다", () => {
         "insert into employees (name, email) values ('미연결', $1) returning id", [UNLINKED]);
       await q.query("insert into alert_recipients (employee_id) values ($1)", [rows[0].id]);
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/카카오워크에 연결된 사람이 0명/);
   });
@@ -439,7 +474,7 @@ describe("알릴 수 있는 사람이 없으면 불건강이다", () => {
       await clearRecipients(q);
     });
     await ensureAlertable();
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(true);
     expect(out.reasons.join()).not.toMatch(/카카오워크/);
   });
@@ -449,7 +484,7 @@ describe("알릴 수 있는 사람이 없으면 불건강이다", () => {
       await healthyCollection(q);
       await clearRecipients(q);
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/Alert 수신자가 한 명도/);
   });
@@ -580,7 +615,9 @@ describe("GET /api/health/deep", () => {
       await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
     const { app } = await import("../src/index.ts");
-    const res = await request(app).get("/api/health/deep");
+    // 실채널이 붙은 운영 상태에서만 200이다. 이 스위트의 기본값인
+    // NOTIFY_CHANNEL=console은 그 자체로 사유이므로 아래 describe가 따로 본다.
+    const res = await withRealChannelEnv(() => request(app).get("/api/health/deep"));
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
   });
@@ -639,7 +676,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
     await healthyPipes();
     await ensureGuideline();
     await withService((q) => q.query("update alert_settings set enabled = false"));
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/4종이 모두 꺼져/);
   });
@@ -650,7 +687,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
     await healthyPipes();
     await ensureGuideline();
     await withService((q) => q.query("update alert_settings set enabled = false where kind = 'heat'"));
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(true);
     expect(out.reasons.join()).not.toMatch(/꺼져/);
   });
@@ -659,7 +696,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
   // 승인해도 나갈 곳이 없다 — 그런데 지금까지 어떤 지표도 그것을 말하지 않았다.
   it("내용이 있는 지침이 한 건도 없으면 문제로 본다", async () => {
     await healthyPipes();
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/행동지침이 한 건도 없습니다/);
   });
@@ -672,7 +709,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
     await withService((q) =>
       q.query("update action_guidelines set staff_actions = '{}', guest_notice = ''"),
     );
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/행동지침이 한 건도 없습니다/);
   });
@@ -688,7 +725,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
         [GUIDE.dept],
       ),
     );
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/수신자가 한 명도 없는 부서가 1곳/);
   });
@@ -730,7 +767,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
             where kind = 'rain' and grade = 'watch'`,
         ),
       );
-      const out = await checkHealth();
+      const out = await health();
       expect(out.ok).toBe(false);
       expect(out.reasons.join()).toMatch(/특보 기준 값이 잘못돼 판정할 수 없는 항목이 있습니다: 폭우 주의보/);
     });
@@ -744,7 +781,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
             where kind = 'rain' and grade = 'watch'`,
         ),
       );
-      const out = await checkHealth();
+      const out = await health();
       expect(out.ok).toBe(false);
       expect(out.reasons.join()).toMatch(/특보 기준 값이 잘못돼/);
     });
@@ -753,7 +790,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
     it("시드 기준값 8행은 사유가 아니다", async () => {
       await healthyPipes();
       await ensureGuideline();
-      const out = await checkHealth();
+      const out = await health();
       expect(out.reasons.join()).not.toMatch(/특보 기준 값이/);
     });
   });
@@ -770,7 +807,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
     await withService((q) =>
       q.query("update employees set kakaowork_user_id = null where email = $1", [GUIDE.email]),
     );
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/연결된 수신자가 한 명도 없는 부서가 1곳/);
   });
@@ -786,7 +823,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
         [GUIDE.dept],
       ),
     );
-    const out = await checkHealth();
+    const out = await health();
     expect(out.reasons.join()).toMatch(/수신자가 한 명도 없는 부서가 1곳/);
     expect(out.reasons.join()).not.toMatch(/연결된 수신자가 한 명도 없는 부서/);
   });
@@ -812,7 +849,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
         [GUIDE.dept],
       );
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.reasons.join()).toMatch(/수신자가 한 명도 없는 부서가 1곳/);
     expect(out.reasons.join()).not.toMatch(/부서가 3곳/);
   });
@@ -833,7 +870,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
         [GUIDE.dept],
       );
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.reasons.join()).not.toMatch(/수신자가 한 명도 없는 부서/);
     expect(out.reasons.join()).toMatch(/행동지침이 한 건도 없습니다/);
   });
@@ -863,7 +900,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
       await healthyPipes();
       await ensureGuideline();
       await pendingEvent({ agoHours: 10, remindCount: 6 });
-      const out = await checkHealth();
+      const out = await health();
       expect(out.ok).toBe(false);
       expect(out.reasons.join()).toMatch(/승인 대기 중인 특보 1건이 최대 10시간째 승인되지 않았습니다/);
     });
@@ -875,7 +912,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
       await healthyPipes();
       await ensureGuideline();
       await pendingEvent({ agoHours: 5, remindCount: 0 }); // 기본 주기 30분 × 6회 = 3시간
-      const out = await checkHealth();
+      const out = await health();
       expect(out.ok).toBe(false);
       expect(out.reasons.join()).toMatch(/승인 대기 중인 특보 1건/);
     });
@@ -886,7 +923,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
       await healthyPipes();
       await ensureGuideline();
       await pendingEvent({ agoHours: 0, remindCount: 0 });
-      const out = await checkHealth();
+      const out = await health();
       expect(out.ok).toBe(true);
     });
 
@@ -898,7 +935,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
       await withService((q) =>
         q.query("update weather_events set status = 'ACTIVE' where id = $1", [id]),
       );
-      const out = await checkHealth();
+      const out = await health();
       expect(out.ok).toBe(true);
     });
 
@@ -926,7 +963,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
       );
       await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20, rain: 0 }]);
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/마지막 수집·판정이 실패/);
     expect(out.reasons.join()).toMatch(/missing/);
@@ -945,7 +982,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
         { ago: "0 seconds", missing: false, temp: 22 },
       ]);
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/강수량/);
     // 전부 죽은 것이 아니므로 "값이 전부 비어" 사유로 뭉뚱그리면 안 된다 —
@@ -965,7 +1002,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
           [ago, JSON.stringify(MARK)],
         );
     });
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(true);
     expect(out.reasons.join()).not.toMatch(/비어/);
   });
@@ -1002,7 +1039,7 @@ describe("관측 지점 좌표가 격자 범위 밖이면 불건강이다 (W-10)
 
   it("nx가 음수면 좌표를 사유로 이름 붙여 말한다", async () => {
     await withService((q) => q.query("update site_settings set nx = -1 where id = 1"));
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     // "수집이 멈췄다"가 아니라 **왜** 멈추는지를 말해야 한다 — 하트비트는
     // 방금 정상으로 찍었으므로 다른 사유는 나올 수 없다.
@@ -1012,15 +1049,107 @@ describe("관측 지점 좌표가 격자 범위 밖이면 불건강이다 (W-10)
 
   it("ny가 격자 상한을 넘어도 사유가 된다", async () => {
     await withService((q) => q.query("update site_settings set ny = 9999 where id = 1"));
-    const out = await checkHealth();
+    const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/ny=9999/);
   });
 
   it("범위 안의 좌표에서는 이 사유가 나오지 않는다", async () => {
     await withService((q) => q.query("update site_settings set nx = 61, ny = 121 where id = 1"));
-    const out = await checkHealth();
+    const out = await health();
     expect(out.reasons.join()).not.toMatch(/격자/);
     expect(out.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 25번째 "아무에게도 못 가는데 전부 초록" — 실효 발송 채널이 로그 전용이다
+// ---------------------------------------------------------------------------
+//
+// 열거 표(라운드 E)가 24개 경로를 적고 각 경로마다 지표를 붙였는데, **메시지가
+// 실제로 어디로 가는가**를 묻는 칸이 없었다. `NOTIFY_CHANNEL=console`이 운영에
+// 남으면: 봇 키가 유효하니 kakaoLinkTick이 연결을 채우고 → 수신자·승인자 전부
+// "연결됨" → 셋업 체크리스트·health/deep 전부 초록 → 승인은
+// `{"ok":true,"sent_count":1}`. 그런데 그 DM은 전부 앱 로그로만 갔다.
+// 라운드 E가 넣은 "0명 전달" 방어조차 우회한다 — ConsoleChannel.send가 ok:true를
+// 주므로 코드 입장에서 발송은 성공이다.
+//
+// 리허설 스택의 .env(일부러 console로 둔다)를 실서버에 복사하는 것이 가장 흔한 경로다.
+describe("실효 발송 채널이 로그 전용이면", () => {
+  beforeEach(ensureAlertable);
+  afterEach(clearAlertable);
+
+  it("연결된 수신자가 있는데 채널이 콘솔이면 사유를 낸다", async () => {
+    await withService(async (q) => {
+      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
+    });
+    // 다른 모든 지표는 초록이다 — 실채널이면 ok:true인 바로 그 상태.
+    expect((await health()).ok).toBe(true);
+
+    const out = await checkHealth({ channel: new ConsoleChannel() });
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/로그 전용/);
+    expect(out.reasons.join()).toMatch(/앱 로그로만 나갑니다/);
+    // 무엇을 고쳐야 하는지가 사유 안에 있어야 한다.
+    expect(out.reasons.join()).toMatch(/NOTIFY_CHANNEL/);
+  });
+
+  // 승인자(Alert 수신자)가 아니라 **부서 수신자**만 연결돼 있어도 특보 DM은 그리로
+  // 나간다. 두 명단은 다르고, 한쪽만 보면 그 절반이 로그로 새는 것을 못 본다.
+  it("부서 수신자만 연결돼 있어도 사유를 낸다", async () => {
+    await clearNotifiable(); // 승인자 쪽을 통째로 비운다 — 부서 수신자만 남는다
+    await withService(async (q) => {
+      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
+    });
+    const out = await checkHealth({ channel: new ConsoleChannel() });
+    expect(out.reasons.join()).toMatch(/로그 전용/);
+  });
+
+  // **설치 직후에 울리면 안 된다.** `.env.selfhost.example`이 설치 점검 단계에서
+  // console을 권하고, 그때는 아직 아무도 연결되어 있지 않다. 그 상태는 이미
+  // "수신자가 한 명도 없습니다"로 빨간불이고, 여기까지 겹쳐 울리면 설치 내내
+  // 잡음이 되어 사람이 사유 목록 자체를 안 읽게 된다.
+  it("연결된 수신자가 한 명도 없으면(설치 직후) 이 사유는 나오지 않는다", async () => {
+    await clearAlertable();
+    await withService(async (q) => {
+      await q.query("delete from alert_recipients");
+      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
+    });
+    const out = await checkHealth({ channel: new ConsoleChannel() });
+    // 다른 사유(수신자 0명 등)는 당연히 나온다. 이 사유만 없어야 한다.
+    expect(out.reasons.join()).not.toMatch(/로그 전용/);
+    await ensureAlertable(); // afterEach의 clear와 짝을 맞춘다
+  });
+
+  // 운영자가 실제로 보는 자리. 환경변수만으로 이 상태가 되는지를 HTTP로 확인한다 —
+  // 채널 주입은 테스트만 할 수 있고, 실서버는 .env 한 줄로 이 상태가 된다.
+  it("/api/health/deep이 503으로 내려간다 (NOTIFY_CHANNEL=console 그대로)", async () => {
+    await withService(async (q) => {
+      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
+    });
+    const { app } = await import("../src/index.ts");
+    const res = await request(app).get("/api/health/deep");
+    expect(res.status).toBe(503);
+    expect(res.body.reasons.join()).toMatch(/로그 전용/);
+  });
+
+  // 워치독의 점검과 발송이 **같은 채널**을 봐야 한다. 다르면 "로그 전용입니다"라는
+  // 사유를 실채널로 보내거나 그 반대가 된다. 이 상태에서 그 경고가 실제로 나가는
+  // 곳은 앱 로그뿐이고(그게 사유 그 자체다), 그 한 줄이 유일한 흔적이다.
+  it("워치독이 이 사유를 실제로 내보낸다 (그 통로도 로그뿐이다)", async () => {
+    await withService(async (q) => {
+      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await reportIfUnhealthy({ channel: new ConsoleChannel() });
+    const printed = log.mock.calls.map((c) => String(c[0])).join("\n");
+    log.mockRestore();
+    expect(printed).toMatch(/\[console-channel\]/);
+    expect(printed).toMatch(/로그 전용/);
   });
 });

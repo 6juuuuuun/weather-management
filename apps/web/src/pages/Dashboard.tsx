@@ -5,7 +5,7 @@ import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { useAuth } from "../auth/AuthProvider";
 import { ApiError } from "../lib/api/client";
-import { latestObservation, observationsSince, openEvents, criteria as fetchCriteria, siteSettings, heartbeat as fetchHeartbeat } from "../lib/api/dashboard";
+import { latestObservation, observationsSince, openEvents, criteria as fetchCriteria, siteSettings, heartbeat as fetchHeartbeat, notifyChannel } from "../lib/api/dashboard";
 import type { CriteriaRow, HeartbeatRow, ObservationRow } from "../lib/api/dashboard";
 import { listDepartments, alertRecipients, listRecipients } from "../lib/api/org";
 import { guidelines as fetchGuidelines, dispatches as fetchDispatches } from "../lib/api/content";
@@ -172,13 +172,18 @@ export default function Dashboard() {
       });
 
       if (isAdmin) {
-        const [depts, guidelineRows, alertRecipientRows, deptRecipientRows] = await Promise.all([
+        const [depts, guidelineRows, alertRecipientRows, deptRecipientRows, channelRow] = await Promise.all([
           listDepartments(),
           fetchGuidelines(),
           alertRecipients(),
           // 부서 수신자(발송 대상)는 Alert 수신자(승인자)와 다른 명단이다. 이걸 세지
           // 않으면 지침을 다 등록해도 실제 발송이 0명일 수 있다(QA W-02).
           listRecipients(),
+          // **메시지가 어디로 가는가.** 위의 세 조회는 전부 "닿을 수 있는가"만 센다 —
+          // 실효 채널이 로그 전용이면 그 답이 전부 예스인 채로 아무에게도 도착하지
+          // 않는다(검증 라운드 E의 25번째 경로). 환경변수는 브라우저에서 볼 수 없으므로
+          // 서버에 묻는다.
+          notifyChannel(),
         ]);
         // 지침(action_guidelines)은 리프 부서에만 단다. 모든 부서를 리프로 세면
         // 시드 기준 deptCount가 12가 아니라 16이 되어 guidelineDeptCount >= deptCount가
@@ -226,6 +231,7 @@ export default function Dashboard() {
           notifiableAlertRecipientCount: alertRecipientRows.filter((r) => !!r.kakaowork_user_id).length,
           guidelineDeptWithoutRecipientCount: guidelineDeptWithoutRecipient.length,
           guidelineDeptWithoutNotifiableRecipientCount: guidelineDeptWithoutNotifiable.length,
+          logOnlyChannel: !!channelRow?.log_only,
         });
         setSetup(checklist);
         setSetupDetail({
@@ -368,6 +374,11 @@ export default function Dashboard() {
                         setupDetail.deptWithoutRecipientCount > 0
                           ? `부서 수신자 ${setupDetail.deptWithoutRecipientCount}개 부서 미지정 — 그 부서 몫은 0명에게 발송됩니다`
                           : `부서 수신자 ${setupDetail.deptWithoutNotifiableRecipientCount}개 부서 카카오워크 미연결 — 그 부서 몫은 승인해도 0명에게 발송됩니다`
+                      ) : item.label === "실제 발송" ? (
+                        // "실제 발송 미지정"이라고만 하면 관리자는 화면 어딘가에서
+                        // 켜는 설정을 찾다가 포기한다 — 이건 서버 `.env`의 문제이고,
+                        // 그 파일을 고치기 전까지는 화면에서 할 수 있는 일이 없다.
+                        `발송이 로그로만 나갑니다 — 서버 .env의 NOTIFY_CHANNEL을 비우고 KAKAOWORK_BOT_KEY를 채우세요`
                       ) : item.label === "관측 지점" && setupDetail.siteCoordInvalid ? (
                         // "미지정"이라고만 하면 관리자는 저장 화면을 열어 값이
                         // 들어 있는 것을 보고 정상이라고 판단한다 — 실제로는 그

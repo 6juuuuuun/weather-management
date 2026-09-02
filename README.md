@@ -156,7 +156,7 @@ curl -s localhost:8080/api/health/deep       # {"ok":true,"reasons":[]}
 | `APP_BASE_URL` | 카카오워크 DM 링크의 기준 주소 |
 | `KMA_API_KEY` | 기상청 일반 인증키(Decoding) |
 | `KAKAOWORK_BOT_KEY` | 카카오워크 봇 App Key. 비우면 발송이 로그로만 나갑니다 |
-| `NOTIFY_CHANNEL` | `console`이면 카카오워크 대신 로그로 발송(시연용) |
+| `NOTIFY_CHANNEL` | `console`이면 카카오워크 대신 로그로 발송(시연용). 운영에 남으면 모든 지표가 초록인 채로 아무에게도 도착하지 않는다 — `/api/health/deep`이 503으로 잡는다 |
 | `COOKIE_SECURE` | HTTPS로 서비스할 때만 `true` |
 
 ### 백업

@@ -6,7 +6,7 @@
 // 나가지 않는다는 뜻이다. 그래서 6시간마다 스스로 상태를 보고, 문제가 있으면
 // 알림 수신자에게 사람이 읽는 메시지로 알린다.
 import { withService, type Querier } from "../db.ts";
-import { envChannel, alertRecipientKakaoIds } from "./common.ts";
+import { envChannel, alertRecipientKakaoIds, isLogOnlyChannel } from "./common.ts";
 import { alertRecipientLinkCounts } from "../kakaoLink.ts";
 import { GRID_NX_MAX, GRID_NY_MAX, isValidGrid } from "../kmaGrid.ts";
 import { effectiveGuidelineSql } from "../guidelineContent.ts";
@@ -28,8 +28,13 @@ export type Health = { ok: boolean; reasons: string[] };
  * 만들어 보기 위해서만 갈아 끼운다. */
 type Runner = <T>(fn: (q: Querier) => Promise<T>) => Promise<T>;
 
-export async function checkHealth(deps: { runner?: Runner } = {}): Promise<Health> {
+export async function checkHealth(
+  deps: { runner?: Runner; channel?: NotificationChannel } = {},
+): Promise<Health> {
   const runner = deps.runner ?? withService;
+  // **실효 발송 채널**. 주입은 테스트가 "운영과 같은 실채널" 상태를 만들기 위한
+  // 것이고, 운영에서는 언제나 envChannel()이다.
+  const channel = deps.channel ?? envChannel();
   try {
     return await runner(async (q) => {
       const reasons: string[] = [];
@@ -145,6 +150,39 @@ export async function checkHealth(deps: { runner?: Runner } = {}): Promise<Healt
       } else if (counts.linked === 0) {
         reasons.push(
           `Alert 수신자 ${counts.total}명 중 카카오워크에 연결된 사람이 0명입니다 — 특보가 아무에게도 전달되지 않습니다`,
+        );
+      }
+
+      // **메시지가 실제로 어디로 가는가**(검증 라운드 E — 표에 없던 25번째 경로).
+      //
+      // 위의 사유들은 전부 "그 사람에게 닿을 수 있는가"만 묻는다. 그런데
+      // `NOTIFY_CHANNEL=console`이 운영에 남아 있으면 그 질문의 답은 전부 예스인 채로
+      // (봇 키가 유효하면 kakaoLinkTick이 연결을 채운다) 모든 DM이 앱 로그로만 나간다.
+      // 승인은 `{"ok":true,"sent_count":1}`을 돌려주고 — 라운드 E가 넣은 "0명 전달"
+      // 방어(send.ts)조차 우회한다. ConsoleChannel.send가 `{ok:true}`를 주므로 코드
+      // 입장에서 그 발송은 성공했다. 로그 파일로 성공한 것이다.
+      //
+      // **판정 규칙과 그 이유**: 실효 채널이 로그 전용이고 **카카오워크에 연결된
+      // 수신자(승인자 또는 부서 수신자)가 한 명이라도 있을 때**만 사유로 낸다.
+      //  - 설치 직후·시연용 빈 DB에서는 수신자 자체가 없고 연결된 사람도 0명이라
+      //    울리지 않는다. 그 상태는 위의 "수신자가 한 명도 없습니다" 사유가 이미
+      //    빨간불로 만들고 있고, 여기까지 겹쳐 울리면 설치 점검 내내 잡음이 된다.
+      //  - 연결된 사람이 한 명이라도 생겼다는 것은 이 시스템이 "이제 사람에게
+      //    보낼 수 있다"고 믿기 시작했다는 뜻이다. 그 순간부터 **어디로 보내는가**가
+      //    사고가 된다 — 폭설이 오기 전에 울려야 하는 시점이 정확히 여기다.
+      const { rows: reachRows } = await q.query(
+        `select count(*)::int as n
+           from employees e
+          where e.kakaowork_user_id is not null
+            and (exists (select 1 from alert_recipients ar where ar.employee_id = e.id)
+                 or exists (select 1 from recipients r where r.employee_id = e.id))`,
+      );
+      const notifiablePeople = Number(reachRows[0]?.n);
+      if (isLogOnlyChannel(channel) && notifiablePeople > 0) {
+        reasons.push(
+          `발송 채널이 로그 전용(console)입니다 — 카카오워크에 연결된 수신자 ${notifiablePeople}명이 있는데 ` +
+            `모든 특보 DM이 사람 대신 앱 로그로만 나갑니다. ` +
+            `서버 .env에서 NOTIFY_CHANNEL을 비우고 KAKAOWORK_BOT_KEY를 채운 뒤 다시 올려 주세요`,
         );
       }
 
@@ -285,7 +323,10 @@ export async function checkHealth(deps: { runner?: Runner } = {}): Promise<Healt
 export async function reportIfUnhealthy(
   deps: { channel?: NotificationChannel } = {},
 ): Promise<void> {
-  const health = await checkHealth();
+  // 점검과 발송이 **같은 채널**을 봐야 한다. 다르면 "로그 전용 채널입니다"라는 사유를
+  // 내면서 그 사유를 실채널로 보내거나, 그 반대가 된다.
+  const channel = deps.channel ?? envChannel();
+  const health = await checkHealth({ channel });
   if (health.ok) return;
 
   // 카카오워크 ID가 없는 직원은 애초에 제외된다(alertRecipientKakaoIds).
@@ -305,7 +346,6 @@ export async function reportIfUnhealthy(
     return;
   }
 
-  const channel = deps.channel ?? envChannel();
   // 발송(네트워크)은 트랜잭션 밖에서 한다 — remindTick과 같은 순서다.
   //
   // **결과를 버리지 않는다.** 예전에는 send의 반환값을 무시해서, 봇 키가 틀렸거나

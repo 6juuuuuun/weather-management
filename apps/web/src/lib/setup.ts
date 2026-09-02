@@ -70,13 +70,23 @@ export type SetupInput = {
   // 받는 사람은 부서 수신자이고, 그 명단의 연결 상태는 어느 항목도 보지 않았다.
   // "지정했는가"에서 "닿을 수 있는가"까지 묻는 것이 이 항목의 존재 이유다.
   guidelineDeptWithoutNotifiableRecipientCount: number;
+  // 실효 발송 채널이 **로그 전용**인가(서버 `.env`의 `NOTIFY_CHANNEL=console`이거나
+  // `KAKAOWORK_BOT_KEY`가 비어 있는 상태).
+  //
+  // 앞의 일곱 항목은 전부 "그 사람에게 **닿을 수 있는가**"만 묻는다. 그런데 이 값이
+  // 참이면 그 답이 전부 예스인 채로 **모든 DM이 사람 대신 앱 로그로만 나간다** —
+  // 수신자·승인자는 전부 "연결됨"이고, 승인은 `{"ok":true,"sent_count":1}`을 돌려주고,
+  // 체크리스트는 7/7이었다(검증 라운드 E, 표에 없던 25번째 경로). 리허설용 `.env`를
+  // 실서버에 그대로 복사하면 그 상태가 된다. "닿을 수 있는가" 옆에 **"어디로 가는가"**
+  // 를 묻는 항목이 이것이다.
+  logOnlyChannel: boolean;
 };
 
 export type SetupItem = { label: string; ok: boolean };
 
 export type SetupChecklist = {
   done: number;
-  total: 7;
+  total: 8;
   items: SetupItem[];
 };
 
@@ -100,11 +110,14 @@ export function computeSetupChecklist(input: SetupInput): SetupChecklist {
     },
     { label: "Alert 수신자", ok: input.alertRecipientCount > 0 },
     { label: "카카오워크 연결", ok: input.notifiableAlertRecipientCount > 0 },
+    // 앞의 일곱 항목이 전부 초록이어도 이 항목이 빨간불이면 특보는 아무에게도
+    // 도착하지 않는다 — 로그 파일로 "성공"할 뿐이다.
+    { label: "실제 발송", ok: !input.logOnlyChannel },
   ];
 
   return {
     done: items.filter((i) => i.ok).length,
-    total: 7,
+    total: 8,
     items,
   };
 }

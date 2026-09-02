@@ -672,3 +672,36 @@ describe("관측 지점 좌표 범위 (W-10)", () => {
     }
   });
 });
+
+// 검증 라운드 E — 표에 없던 25번째 "아무에게도 못 가는데 전부 초록".
+//
+// 셋업 체크리스트는 브라우저에서 도는데 `NOTIFY_CHANNEL`은 서버 환경변수다.
+// 화면이 "메시지가 실제로 어디로 가는가"를 물으려면 서버가 대답할 통로가 있어야 한다.
+describe("GET /api/notify-channel — 실효 발송 채널", () => {
+  async function adminAgent() {
+    const who = { email: "chan-admin@gonjiam.com", password: "chan-password-1", name: "관리자" };
+    await request(app).post("/api/auth/signup").send(who);
+    await withService((q) => q.query("update employees set role='admin' where email=$1", [who.email]));
+    const agent = request.agent(app);
+    await agent.post("/api/auth/login").send({ email: who.email, password: who.password });
+    return agent;
+  }
+
+  it("로그인하지 않으면 401이다", async () => {
+    expect((await request(app).get("/api/notify-channel")).status).toBe(401);
+  });
+
+  it("관리자가 아니면 403이다", async () => {
+    const agent = await loggedIn();
+    expect((await agent.get("/api/notify-channel")).status).toBe(403);
+  });
+
+  // 이 스위트는 NOTIFY_CHANNEL=console로 돈다(test/setup.ts) — 실서버에서 이 값이
+  // 남아 있으면 모든 특보 DM이 앱 로그로만 나간다. 그 상태를 그대로 돌려줘야 한다.
+  it("로그 전용 채널이면 log_only=true를 돌려준다", async () => {
+    const admin = await adminAgent();
+    const res = await admin.get("/api/notify-channel");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ channel: "console", log_only: true });
+  });
+});

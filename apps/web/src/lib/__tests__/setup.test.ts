@@ -17,20 +17,21 @@ const READY = {
   notifiableAlertRecipientCount: 1,
   guidelineDeptWithoutRecipientCount: 0,
   guidelineDeptWithoutNotifiableRecipientCount: 0,
+  logOnlyChannel: false,
 };
 
 describe("computeSetupChecklist", () => {
-  test("모두 완료면 done=7", () => {
+  test("모두 완료면 done=8", () => {
     const r = computeSetupChecklist(READY);
-    expect(r.done).toBe(7);
-    expect(r.total).toBe(7);
+    expect(r.done).toBe(8);
+    expect(r.total).toBe(8);
     expect(r.items.every((i) => i.ok)).toBe(true);
   });
 
   test("지침 미등록 부서가 있으면 해당 항목 미완료", () => {
     const r = computeSetupChecklist({ ...READY, deptCount: 4, guidelineDeptCount: 2 });
     expect(r.items.find((i) => i.label === "부서별 지침")!.ok).toBe(false);
-    expect(r.done).toBe(6);
+    expect(r.done).toBe(7);
   });
 
   test("아무것도 안 되어 있으면 done=0", () => {
@@ -43,15 +44,17 @@ describe("computeSetupChecklist", () => {
       notifiableAlertRecipientCount: 0,
       guidelineDeptWithoutRecipientCount: 0,
       guidelineDeptWithoutNotifiableRecipientCount: 0,
+      // 설치 직후의 기본값이 곧 로그 전용이다(봇 키가 아직 없다).
+      logOnlyChannel: true,
     });
     expect(r.done).toBe(0);
-    expect(r.items).toHaveLength(7);
+    expect(r.items).toHaveLength(8);
   });
 
   test("특보 기준 8행 미만이면 특보 기준 항목 미완료", () => {
     const r = computeSetupChecklist({ ...READY, criteria: false });
     expect(r.items.find((i) => i.label.includes("특보 기준"))!.ok).toBe(false);
-    expect(r.done).toBe(6);
+    expect(r.done).toBe(7);
   });
 
   // 이 항목이 없던 동안 이 시스템은 "설치 완료 5/5"를 띄우면서 특보를 한 건도
@@ -64,13 +67,13 @@ describe("computeSetupChecklist", () => {
     expect(item.ok).toBe(false);
     // "Alert 수신자" 항목은 여전히 완료다 — 두 항목이 서로 다른 것을 본다는 뜻이다.
     expect(r.items.find((i) => i.label.includes("Alert 수신자"))!.ok).toBe(true);
-    expect(r.done).toBe(6);
+    expect(r.done).toBe(7);
   });
 
   test("한 명이라도 연결되어 있으면 완료다", () => {
     const r = computeSetupChecklist({ ...READY, alertRecipientCount: 5, notifiableAlertRecipientCount: 1 });
     expect(r.items.find((i) => i.label.includes("카카오워크"))!.ok).toBe(true);
-    expect(r.done).toBe(7);
+    expect(r.done).toBe(8);
   });
 
   // "0명에게 성공"의 뿌리(QA W-02). 지침을 등록한 부서에 부서 수신자가 없으면
@@ -83,7 +86,7 @@ describe("computeSetupChecklist", () => {
     expect(item.ok).toBe(false);
     // 지침 항목은 여전히 완료다 — 두 항목이 서로 다른 것을 본다는 뜻이다.
     expect(r.items.find((i) => i.label === "부서별 지침")!.ok).toBe(true);
-    expect(r.done).toBe(6);
+    expect(r.done).toBe(7);
   });
 
   // 지침이 0건이면 "수신자가 없는 부서도 0곳"이라 이 항목이 조용히 초록이 될 수 있다.
@@ -105,7 +108,27 @@ describe("computeSetupChecklist", () => {
     expect(r.items.find((i) => i.label === "부서 수신자")!.ok).toBe(false);
     // 승인자 쪽은 멀쩡하다 — 이 항목이 **다른 명단**을 본다는 것이 요점이다.
     expect(r.items.find((i) => i.label.includes("카카오워크"))!.ok).toBe(true);
-    expect(r.done).toBe(6);
+    expect(r.done).toBe(7);
+  });
+
+  // 검증 라운드 E — 표에 없던 **25번째** "아무에게도 못 가는데 전부 초록".
+  //
+  // `NOTIFY_CHANNEL=console`이 운영에 남으면 앞의 일곱 항목이 전부 초록인 채로
+  // 모든 DM이 앱 로그로만 나간다. 리허설 스택의 `.env`를 실서버로 복사하는 것이
+  // 가장 흔한 경로다 — 그때 화면은 "설치 완료 7/7"을 띄우고 있었다.
+  test("실효 채널이 로그 전용이면 나머지가 전부 초록이어도 완료가 아니다", () => {
+    const r = computeSetupChecklist({ ...READY, logOnlyChannel: true });
+    const item = r.items.find((i) => i.label === "실제 발송")!;
+    expect(item).toBeDefined();
+    expect(item.ok).toBe(false);
+    // 다른 항목은 하나도 건드리지 않는다 — 이 항목이 **다른 질문**을 한다는 것이 요점이다.
+    expect(r.items.filter((i) => i.label !== "실제 발송").every((i) => i.ok)).toBe(true);
+    expect(r.done).toBe(7);
+  });
+
+  test("실효 채널이 실제 카카오워크면 이 항목은 완료다", () => {
+    const r = computeSetupChecklist({ ...READY, logOnlyChannel: false });
+    expect(r.items.find((i) => i.label === "실제 발송")!.ok).toBe(true);
   });
 });
 
@@ -172,6 +195,6 @@ describe("isValidGridCoord (W-10)", () => {
   test("좌표가 격자 밖이면 관측 지점 항목이 미완료가 된다", () => {
     const r = computeSetupChecklist({ ...READY, site: false });
     expect(r.items.find((i) => i.label === "관측 지점")!.ok).toBe(false);
-    expect(r.done).toBe(6);
+    expect(r.done).toBe(7);
   });
 });

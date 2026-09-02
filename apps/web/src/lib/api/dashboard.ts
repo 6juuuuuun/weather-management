@@ -47,3 +47,7 @@ export const siteSettings = () => apiGet<SiteSettingsRow | null>("/api/site-sett
 export const saveSiteSettings = (patch: Partial<Omit<SiteSettingsRow, "id" | "updated_at">>) =>
   apiSend<SiteSettingsRow>("PATCH", "/api/site-settings", patch);
 export const heartbeat = (name: string) => apiGet<HeartbeatRow | null>(`/api/heartbeats/${encodeURIComponent(name)}`);
+
+/** 실효 발송 채널. `log_only`면 모든 DM이 사람 대신 앱 로그로만 나간다(검증 라운드 E). */
+export type NotifyChannelRow = { channel: string; log_only: boolean };
+export const notifyChannel = () => apiGet<NotifyChannelRow>("/api/notify-channel");

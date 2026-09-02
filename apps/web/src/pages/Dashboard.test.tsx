@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   criteria: vi.fn(),
   siteSettings: vi.fn(),
   heartbeat: vi.fn(),
+  notifyChannel: vi.fn(),
   listDepartments: vi.fn(),
   alertRecipients: vi.fn(),
   listRecipients: vi.fn(),
@@ -36,6 +37,7 @@ vi.mock("../lib/api/dashboard", () => ({
   criteria: (...args: unknown[]) => mocks.criteria(...args),
   siteSettings: (...args: unknown[]) => mocks.siteSettings(...args),
   heartbeat: (...args: unknown[]) => mocks.heartbeat(...args),
+  notifyChannel: (...args: unknown[]) => mocks.notifyChannel(...args),
 }));
 
 vi.mock("../lib/api/org", () => ({
@@ -87,6 +89,9 @@ beforeEach(() => {
   mocks.criteria.mockReset().mockResolvedValue([]);
   mocks.siteSettings.mockReset().mockResolvedValue(null);
   mocks.heartbeat.mockReset().mockResolvedValue(null);
+  // 기본은 **실채널이 붙은 운영 상태**다. 로그 전용 채널은 그 자체로 체크리스트
+  // 미완료 사유이므로(검증 라운드 E의 25번째 경로) 아래 전용 테스트에서만 켠다.
+  mocks.notifyChannel.mockReset().mockResolvedValue({ channel: "kakaowork", log_only: false });
   mocks.listDepartments.mockReset().mockResolvedValue([]);
   mocks.alertRecipients.mockReset().mockResolvedValue([]);
   mocks.listRecipients.mockReset().mockResolvedValue([]);
@@ -470,6 +475,41 @@ describe("Dashboard 셋업 체크리스트", () => {
     expect(container.querySelector(".setup-strip")!.textContent).toMatch(
       /부서 수신자 1개 부서 카카오워크 미연결/,
     );
+  });
+
+  // 검증 라운드 E — 표에 없던 **25번째** "아무에게도 못 가는데 전부 초록".
+  //
+  // 리허설 스택은 실제 직원에게 DM이 가지 않도록 일부러 `NOTIFY_CHANNEL=console`로
+  // 돈다. 그 `.env`를 실서버에 복사하면 수신자·승인자가 전부 "연결됨"이고 승인이
+  // `{"ok":true,"sent_count":1}`을 돌려주는데 모든 DM은 앱 로그로만 나간다.
+  // 체크리스트가 그것을 말하지 않으면 화면에는 아무 이상이 없다.
+  it("실효 발송 채널이 로그 전용이면 체크리스트가 완료되지 않는다", async () => {
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
+    ]);
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
+    ]);
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+    ]);
+    mocks.listRecipients.mockResolvedValue([
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", kakaowork_user_id: "kw-2" },
+    ]);
+    // 나머지 일곱 항목은 전부 초록이다 — 이 한 줄만 다르다.
+    mocks.notifyChannel.mockResolvedValue({ channel: "console", log_only: true });
+
+    const { container } = renderDashboard();
+    await waitFor(() => expect(container.querySelector(".setup-strip")).not.toBeNull());
+    const strip = container.querySelector(".setup-strip")!.textContent!;
+    // 화면 어딘가가 아니라 **서버 .env**를 고쳐야 한다는 것까지 말해야 한다.
+    expect(strip).toMatch(/발송이 로그로만 나갑니다/);
+    expect(strip).toMatch(/NOTIFY_CHANNEL/);
   });
 
   // 위 테스트가 "스트립이 늘 뜬다"로 통과하지 않도록 반대쪽을 함께 고정한다.
