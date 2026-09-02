@@ -30,6 +30,7 @@ const REMIND_MIN = 5;
 const REMIND_MAX = 1440;
 // 길이 상한도 서버와 같은 값을 화면에 적는다(QA W-30).
 const MAX_ADDRESS = 200;
+const MAX_SITE_NAME = 40;
 
 const KIND_LABEL: Record<Kind, string> = {
   rain: "폭우",
@@ -215,6 +216,12 @@ export default function Settings() {
   // 여기서 걸러 주지 않으면 관리자는 무엇이 잘못됐는지 모른 채 저장 실패만 본다.
   // 특히 격자 좌표는 틀려도 화면 어디에도 티가 나지 않고 수집만 조용히 멈춘다(QA W-10).
   function siteValidationError(s: SiteSettingsRow): string | null {
+    if (s.site_name.trim() === "") {
+      return "지점 이름이 비어 있습니다";
+    }
+    if ([...s.site_name.trim()].length > MAX_SITE_NAME) {
+      return `지점 이름은 ${MAX_SITE_NAME}자 이하여야 합니다`;
+    }
     if ([...s.address].length > MAX_ADDRESS) {
       return `지점 주소는 ${MAX_ADDRESS}자 이하여야 합니다`;
     }
@@ -262,6 +269,10 @@ export default function Settings() {
       // PATCH /api/site-settings — update만 가능하다(insert 정책 없음). 화면이
       // 편집하는 5개 필드만 보낸다.
       await saveSiteSettings({
+        // 지점 이름은 네비게이션과 대시보드 제목에 그대로 실린다. 운영 안내서 §1-6은
+        // 설치 직후 이 값을 넣으라고 지시하는데 **화면에 입력란이 없었다**(QA W-23) —
+        // 서버는 처음부터 이 컬럼을 받았고 검증까지 있었지만 보내는 화면이 없었다.
+        site_name: siteSettings.site_name,
         address: siteSettings.address,
         nx: siteSettings.nx,
         ny: siteSettings.ny,
@@ -419,6 +430,16 @@ export default function Settings() {
           <section className="settings-card">
             <h2 className="settings-card-title">관측 지점</h2>
             <p className="settings-card-desc">기상청 초단기실황 조회에 사용할 지점입니다</p>
+            <label className="settings-field">
+              <span className="settings-field-label">지점 이름</span>
+              <input
+                type="text"
+                maxLength={MAX_SITE_NAME}
+                value={siteSettings.site_name}
+                disabled={!isAdmin}
+                onChange={(e) => updateSite({ site_name: e.target.value })}
+              />
+            </label>
             <label className="settings-field">
               <span className="settings-field-label">지점 주소</span>
               <span className="settings-input-with-icon">

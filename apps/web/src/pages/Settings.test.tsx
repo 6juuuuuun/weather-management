@@ -340,3 +340,57 @@ describe("Settings 관측 지점·재알림 값 검증 (W-10 · W-30)", () => {
     expect(screen.getByText(/간격은 5~1440분/)).toBeInTheDocument();
   });
 });
+
+// QA W-23 · 운영 안내서 §1-6의 1번은 "설정 화면에서 격자좌표와 **지점명**을 입력"하라고
+// 지시하는데 그 입력란이 화면에 없었다. 서버는 처음부터 이 컬럼을 받았고 이번 라운드에
+// 검증(비어 있지 않음·40자)까지 넣었는데, 그 값을 보내는 화면이 없었다 — W-16과 같은
+// 모양이다: 문서가 앞서 있고 화면이 없다. 지점 이름은 네비게이션과 대시보드에 실린다.
+describe("Settings 지점 이름 (W-23)", () => {
+  const nameInput = () => screen.getByLabelText("지점 이름");
+  const save = () => screen.getByRole("button", { name: "변경사항 저장" });
+
+  async function loaded() {
+    renderPage();
+    await screen.findByText("관측 지점");
+  }
+
+  it("관측 지점 카드에서 지점 이름을 고쳐 저장한다", async () => {
+    await loaded();
+    fireEvent.change(nameInput(), { target: { value: "곤지암리조트" } });
+    fireEvent.click(save());
+
+    await screen.findByText("변경사항이 저장되었습니다");
+    expect(mocks.saveSiteSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ site_name: "곤지암리조트" }),
+    );
+  });
+
+  // 고치지 않아도 값은 함께 나가야 한다 — 빠뜨리면 서버가 옛 값을 그대로 두는 데
+  // 기대게 되고, 그 기대는 PATCH가 부분 갱신이라는 사실에 묶여 조용히 깨진다.
+  it("고치지 않아도 현재 지점 이름을 함께 보낸다", async () => {
+    await loaded();
+    fireEvent.click(save());
+
+    await screen.findByText("변경사항이 저장되었습니다");
+    expect(mocks.saveSiteSettings).toHaveBeenCalledWith(expect.objectContaining({ site_name: "곤지암" }));
+  });
+
+  it("비어 있는 지점 이름은 서버에 보내지 않는다", async () => {
+    await loaded();
+    fireEvent.change(nameInput(), { target: { value: "   " } });
+    fireEvent.click(save());
+
+    expect(await screen.findByText("지점 이름이 비어 있습니다")).toBeInTheDocument();
+    expect(mocks.saveSiteSettings).not.toHaveBeenCalled();
+  });
+
+  it("서버 상한(40자)을 넘는 지점 이름을 막고 그 한계를 입력칸이 들고 있다", async () => {
+    await loaded();
+    expect(nameInput()).toHaveAttribute("maxlength", "40");
+    fireEvent.change(nameInput(), { target: { value: "가".repeat(41) } });
+    fireEvent.click(save());
+
+    expect(await screen.findByText("지점 이름은 40자 이하여야 합니다")).toBeInTheDocument();
+    expect(mocks.saveSiteSettings).not.toHaveBeenCalled();
+  });
+});
