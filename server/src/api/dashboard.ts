@@ -2,6 +2,7 @@ import { Router } from "express";
 import { withUser } from "../db.ts";
 import { requireAuth, requireAdmin } from "../auth/middleware.ts";
 import { GRID_NX_MAX, GRID_NY_MAX } from "../kmaGrid.ts";
+import { CRITERIA_FIELDS } from "../criteriaFields.ts";
 
 export const dashboardRouter = Router();
 dashboardRouter.use(requireAuth);
@@ -87,15 +88,8 @@ const SITE_SETTINGS_KEYS = Object.keys(SITE_SETTINGS_RULES) as (keyof typeof SIT
 // 그러면 exceeds가 undefined와 비교해 그 종류의 특보가 **영원히 뜨지 않는데**
 // 화면에는 빈칸으로만 보였다(QA W-10). 그래서 모르는 키는 거부한다.
 // 0도 거부한다 — `>= 0`은 언제나 참이라 매시간 특보가 뜬다(QA가 실제로 겪었다).
-const CRITERIA_FIELDS = {
-  rain: [{ key: "rain_mm_per_hr", max: 500, unit: "mm" }],
-  snow: [{ key: "snow_cm", max: 500, unit: "cm" }],
-  wind: [{ key: "wind_ms", max: 100, unit: "m/s" }],
-  heat: [
-    { key: "temp_c", max: 60, unit: "℃" },
-    { key: "feels_c", max: 60, unit: "℃" },
-  ],
-} satisfies Record<(typeof EVENT_KINDS)[number], { key: string; max: number; unit: string }[]>;
+// 목록 자체는 ../criteriaFields.ts 한 곳에 있다 — **저장을 막는 여기**와 **이미
+// 저장된 잘못된 값을 드러내는 jobs/watchdog.ts**가 반드시 같은 것을 봐야 한다.
 
 const GRADE_LABEL = { watch: "주의보", warning: "경보" } as const;
 const KIND_LABEL = { rain: "폭우", snow: "폭설", wind: "강풍", heat: "폭염" } as const;

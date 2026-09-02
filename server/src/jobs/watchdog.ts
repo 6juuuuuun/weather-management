@@ -10,6 +10,7 @@ import { envChannel, alertRecipientKakaoIds } from "./common.ts";
 import { alertRecipientLinkCounts } from "../kakaoLink.ts";
 import { GRID_NX_MAX, GRID_NY_MAX, isValidGrid } from "../kmaGrid.ts";
 import { effectiveGuidelineSql } from "../guidelineContent.ts";
+import { KIND_LABEL_KO, thresholdUsable, type CriteriaKind } from "../criteriaFields.ts";
 import { REMIND_LIMIT } from "./remindTick.ts";
 import type { NotificationChannel } from "../shared/channel.ts";
 
@@ -17,6 +18,9 @@ import type { NotificationChannel } from "../shared/channel.ts";
 export const COLLECT_STALE_MIN = 130;
 /** 연속 3회가 모두 결측이면 일시적 실패가 아니라 고장으로 본다. */
 export const MISSING_STREAK = 3;
+
+/** 사유 문구용. shared/template.ts의 GRADE_LABEL과 같은 말이지만 그 파일은 손댈 수 없다. */
+const GRADE_LABEL_KO: Record<string, string> = { watch: "주의보", warning: "경보" };
 
 export type Health = { ok: boolean; reasons: string[] };
 
@@ -158,6 +162,23 @@ export async function checkHealth(deps: { runner?: Runner } = {}): Promise<Healt
         reasons.push("알림 설정의 특보 4종이 모두 꺼져 있습니다 — 어떤 날씨에도 특보가 뜨지 않습니다");
       }
 
+      // (1-b) **특보 기준 값이 판정에 쓸 수 없는 상태**(QA W-10의 남은 절반).
+      //     저장은 이제 api/dashboard.ts가 막지만, 그 검증이 생기기 전에 저장된 값과
+      //     DB를 직접 고친 경우가 남는다. 키가 오타 나 있으면 shared/engine.ts의
+      //     exceeds가 undefined와 비교하므로 **그 종류의 특보가 영원히 뜨지 않는데**
+      //     화면에는 빈칸으로만 보이고 어떤 지표도 말하지 않았다. 좌표(위)와 똑같은
+      //     구조라 똑같이 닫는다: 저장을 막는 곳과 여기가 criteriaFields.ts 하나를 본다.
+      const { rows: critRows } = await q.query("select kind, grade, threshold from weather_criteria");
+      const brokenCriteria = (critRows as { kind: string; grade: string; threshold: unknown }[])
+        .filter((c) => !thresholdUsable(c.kind, c.threshold))
+        .map((c) => `${KIND_LABEL_KO[c.kind as CriteriaKind] ?? c.kind} ${GRADE_LABEL_KO[c.grade] ?? c.grade}`);
+      if (brokenCriteria.length > 0) {
+        reasons.push(
+          `특보 기준 값이 잘못돼 판정할 수 없는 항목이 있습니다: ${brokenCriteria.join(", ")} ` +
+            `— 그 종류는 어떤 날씨에도 특보가 뜨지 않습니다. 특보 기준 화면에서 값을 다시 저장해 주세요`,
+        );
+      }
+
       // (2)(3) 행동지침과 부서 수신자. 지침이 0건이면 초안 자체가 빈 배열이라
       //     승인해도 나갈 곳이 없고, 지침은 있는데 그 부서에 수신자가 0명이면
       //     "0명에게 발송 성공"이 된다(QA W-02). 내용이 비어 있는 지침(인력 조정
@@ -286,5 +307,20 @@ export async function reportIfUnhealthy(
 
   const channel = deps.channel ?? envChannel();
   // 발송(네트워크)은 트랜잭션 밖에서 한다 — remindTick과 같은 순서다.
-  for (const to of targets) await channel.send(to, text);
+  //
+  // **결과를 버리지 않는다.** 예전에는 send의 반환값을 무시해서, 봇 키가 틀렸거나
+  // 카카오워크가 죽어 한 통도 나가지 않아도 이 함수는 "알렸다"고 여기고 조용히
+  // 끝났다 — 문제를 감지하고도 그 사실이 아무 데도 남지 않는 상태다. 이 시스템에서
+  // 가장 위험한 종류의 침묵이므로 서버 로그에 확실히 남긴다.
+  let delivered = 0;
+  for (const to of targets) {
+    const r = await channel.send(to, text);
+    if (r?.ok) delivered++;
+  }
+  if (delivered === 0) {
+    console.error(
+      `[watchdog] 점검에서 문제를 찾았지만 ${targets.length}명 모두에게 전달하지 못했습니다 ` +
+        `(카카오워크 봇 키·연결 상태를 확인하세요).\n${text}`,
+    );
+  }
 }

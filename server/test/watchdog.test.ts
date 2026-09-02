@@ -341,6 +341,12 @@ describe("상태 점검", () => {
             if (text.includes("heartbeats")) return { rows: [{ stale: false }] };
             if (text.includes("alert_recipients")) return { rows: [{ total: 1, linked: 1 }] };
             if (text.includes("site_settings")) return { rows: [{ nx: 61, ny: 121 }] };
+            // 특보 기준도 관심사가 아니다 — 쓸 수 있는 값 한 벌로 고정한다.
+            // 고정하지 않으면 아래 관측 행이 기준 행으로 읽혀 "기준 값이 잘못됐다"가
+            // 함께 붙는다.
+            if (text.includes("weather_criteria")) {
+              return { rows: [{ kind: "rain", grade: "watch", threshold: { rain_mm_per_hr: 30 } }] };
+            }
             return { rows };
           },
         }),
@@ -535,6 +541,22 @@ describe("문제가 있으면 알린다", () => {
     expect(sent).toHaveLength(0);
   });
 
+  // 감지는 했는데 **알리지 못한** 경우. 예전에는 send의 반환값을 버려서, 봇 키가
+  // 틀렸거나 카카오워크가 죽어 한 통도 못 나가도 이 함수는 "알렸다"고 여기고 조용히
+  // 끝났다 — 문제를 찾고도 그 사실이 아무 데도 남지 않는, 이 시스템에서 가장 위험한
+  // 종류의 침묵이다.
+  it("전원에게 전달하지 못하면 그 사실을 로그에 남긴다", async () => {
+    await makeRecipient();
+    await withService((q) =>
+      q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now() - interval '5 hours')"),
+    );
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failing: NotificationChannel = { async send() { return { ok: false, error: "봇 키 오류" }; } };
+    await reportIfUnhealthy({ channel: failing });
+    expect(err.mock.calls.map((c) => String(c[0])).join("\n")).toMatch(/모두에게 전달하지 못했습니다/);
+    err.mockRestore();
+  });
+
   // 카카오워크 ID가 없는 직원에게 보내려 하면 발송이 통째로 터진다.
   it("카카오워크 ID가 없는 수신자에게는 보내지 않는다", async () => {
     const id = await makeRecipient();
@@ -669,6 +691,71 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
     const out = await checkHealth();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/수신자가 한 명도 없는 부서가 1곳/);
+  });
+
+  // QA W-10의 남은 절반 — **이미 저장된** 잘못된 기준값.
+  //
+  // 저장은 api/dashboard.ts가 막지만 그 검증 이전에 저장된 값과 DB를 직접 고친 경우가
+  // 남는다. 키가 오타 나 있으면 engine의 exceeds가 undefined와 비교하므로 그 종류의
+  // 특보가 **영원히** 뜨지 않는데, 화면에는 빈칸으로만 보이고 어떤 지표도 말하지 않았다.
+  describe("특보 기준 값이 판정에 쓸 수 없는 상태", () => {
+    // weather_criteria는 시드 8행이고 모든 테스트 파일이 공유한다 — 값을 **되돌린다**
+    // (지우는 것도, 임의의 값으로 덮는 것도 아니다). 실제로 한 번 시드 값을 다른
+    // 값으로 덮어써 rls.test.ts를 깨뜨렸다.
+    let original: unknown;
+    beforeEach(async () => {
+      original = await withService(async (q) => {
+        const { rows } = await q.query(
+          "select threshold from weather_criteria where kind = 'rain' and grade = 'watch'",
+        );
+        return rows[0]?.threshold;
+      });
+    });
+
+    afterEach(async () => {
+      await withService((q) =>
+        q.query(
+          `update weather_criteria set threshold = $1::jsonb where kind = 'rain' and grade = 'watch'`,
+          [JSON.stringify(original)],
+        ),
+      );
+    });
+
+    it("키가 오타 난 기준이 있으면 문제로 본다", async () => {
+      await healthyPipes();
+      await ensureGuideline();
+      await withService((q) =>
+        q.query(
+          `update weather_criteria set threshold = '{"rain_mm": 30}'::jsonb
+            where kind = 'rain' and grade = 'watch'`,
+        ),
+      );
+      const out = await checkHealth();
+      expect(out.ok).toBe(false);
+      expect(out.reasons.join()).toMatch(/특보 기준 값이 잘못돼 판정할 수 없는 항목이 있습니다: 폭우 주의보/);
+    });
+
+    it("0이 저장돼 있으면(매시간 특보가 뜬다) 그것도 문제로 본다", async () => {
+      await healthyPipes();
+      await ensureGuideline();
+      await withService((q) =>
+        q.query(
+          `update weather_criteria set threshold = '{"rain_mm_per_hr": 0}'::jsonb
+            where kind = 'rain' and grade = 'watch'`,
+        ),
+      );
+      const out = await checkHealth();
+      expect(out.ok).toBe(false);
+      expect(out.reasons.join()).toMatch(/특보 기준 값이 잘못돼/);
+    });
+
+    // 시드 그대로의 정상 상태에서 이 사유가 울리면 6시간마다 헛경보가 나간다.
+    it("시드 기준값 8행은 사유가 아니다", async () => {
+      await healthyPipes();
+      await ensureGuideline();
+      const out = await checkHealth();
+      expect(out.reasons.join()).not.toMatch(/특보 기준 값이/);
+    });
   });
 
   // 검증 §신규-1 — 이 프로젝트가 네 번째로 만난 "알릴 수 없는데 전부 초록".
