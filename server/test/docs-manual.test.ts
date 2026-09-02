@@ -80,6 +80,19 @@ describe("운영 안내서가 인용하는 화면 문구가 제품의 문구와 
     expect(manual).toContain(`재알림 ${limit}회`);
   });
 
+  // 지침 본문 상한은 카카오워크 DM 길이를 정하는 값이다. 코드에서만 바꾸고 문서를
+  // 두면, 안내서를 보고 쓴 지침이 저장에서 거부된다.
+  it("지침 본문 상한이 코드와 문서에서 같다", () => {
+    const content = read("server/src/api/content.ts");
+    const item = /MAX_ACTION_LEN = (\d+)/.exec(content)?.[1];
+    const count = /MAX_ACTION_ITEMS = (\d+)/.exec(content)?.[1];
+    const notice = /MAX_GUEST_NOTICE = (\d+)/.exec(content)?.[1];
+    expect([item, count, notice].every(Boolean)).toBe(true);
+    expect(manual).toContain(`${item}자까지`);
+    expect(manual).toContain(`${count}개까지`);
+    expect(manual).toContain(`${notice}자까지`);
+  });
+
   it("기상청 격자 범위가 코드와 문서에서 같다", () => {
     const grid = read("server/src/kmaGrid.ts");
     const nx = /GRID_NX_MAX = (\d+)/.exec(grid)?.[1];
