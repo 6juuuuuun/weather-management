@@ -45,7 +45,7 @@ const dispatchRow = {
   message_id: "m1",
   event_id: "ev1",
   sent_at,
-  channel: "kakaowork",
+  channel: "log",
   repeat_no: 3,
   is_test: false,
   results: [{ employee_id: "e1", name: "홍수진", ok: true }],
@@ -86,7 +86,7 @@ const legacyDispatchRow = {
   message_id: "m0",
   event_id: "ev0",
   sent_at: legacySentAt,
-  channel: "kakaowork",
+  channel: "log",
   repeat_no: 1,
   is_test: false,
   // dispatchRow와 statusSummary 텍스트("성공 1")가 겹치지 않도록 실패 1건 포함

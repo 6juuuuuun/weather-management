@@ -77,9 +77,12 @@ Supabase(관리형 Postgres + Edge Functions) + Cloudflare 정적 호스팅으�
 - 부팅할 때마다 `ExperimentalWarning: Transform Types is an experimental feature`가
   로그에 찍힙니다. **정상입니다.** 장애 조사 때 이 줄에 시간을 쓰지 마세요
   ([`docs/운영.md` §7-6](docs/운영.md)).
-- `--experimental-strip-types`(지우기만 하는 모드)로는 뜨지 않습니다.
-  `server/src/shared/kakaowork.ts`의 파라미터 프로퍼티(`constructor(private botKey: ...)`)가
-  코드 생성을 요구하기 때문입니다. 그 파일은 발송 경로를 통해 반드시 로드됩니다.
+- `--experimental-strip-types`(지우기만 하는 모드)로는 파라미터 프로퍼티
+  (`constructor(private apiKey: string)`)를 읽지 못해 서버가 뜨지 않습니다.
+  지금 `src/`에 그 문법을 쓰는 파일은 없지만 플래그는 그대로 둡니다 —
+  `server/src/shared/sms.ts`의 LMS 제공자 뼈대가 그 문법으로 적혀 있어,
+  제공자를 붙이는 사람이 주석을 푸는 순간 다시 필요해집니다
+  (`server/test/run-scripts.test.ts`가 Dockerfile과 npm 스크립트를 대조합니다).
 - Node가 이 플래그의 동작을 바꾸면 컨테이너가 뜨지 않을 수 있습니다. Node 메이저 버전을
   올릴 때는 반드시 컨테이너를 실제로 띄워 확인하세요.
 
