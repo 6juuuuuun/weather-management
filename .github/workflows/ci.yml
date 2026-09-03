@@ -42,8 +42,8 @@ jobs:
       DATABASE_URL_USER: postgres://app_user:ciuserpw@127.0.0.1:5432/weather
       DATABASE_URL_SERVICE: postgres://app_service:ciservicepw@127.0.0.1:5432/weather
       ALLOWED_EMAIL_DOMAINS: gonjiam.com
-      # 비워 두면 카카오워크로 실제 발송하지 않는다. CI가 외부로 나가면 안 된다.
-      KAKAOWORK_BOT_KEY: ""
+      # 비워 두면 실제 문자가 나가지 않는다. CI가 외부로 나가면 안 된다.
+      SMS_PROVIDER: ""
       KMA_API_KEY: ci-placeholder
       COOKIE_SECURE: "false"
 

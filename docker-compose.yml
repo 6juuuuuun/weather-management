@@ -81,9 +81,8 @@ services:
       ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS}
       APP_BASE_URL: ${APP_BASE_URL}
       KMA_API_KEY: ${KMA_API_KEY}
-      KAKAOWORK_BOT_KEY: ${KAKAOWORK_BOT_KEY}
-      # console로 두면 카카오워크 대신 로그로 발송한다(시연·점검용).
-      NOTIFY_CHANNEL: ${NOTIFY_CHANNEL:-}
+      # 문자 발송 제공자 이름. 비어 있으면 앱 로그로만 나간다(지금이 그 상태다).
+      SMS_PROVIDER: ${SMS_PROVIDER:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
     # 8080이 이미 쓰이고 있으면 .env에 APP_HOST_PORT=8090처럼 적는다.
     # 이 파일을 직접 고치면 다음 git pull에서 충돌한다.
