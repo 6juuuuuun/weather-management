@@ -1,4 +1,4 @@
-// supabase/functions/_shared/derive_test.ts 이관. assertAlmostEquals는
+// 이관 전 원본(supabase/functions/_shared/derive_test.ts, git 기록)에서 이관. assertAlmostEquals는
 // toBeCloseTo가 아니라 허용오차를 그대로 쓰는 비교로 옮겼다 — toBeCloseTo의
 // 인자는 자릿수라서 원본의 ±0.5 허용치를 그대로 표현할 수 없다.
 import { describe, expect, it } from "vitest";

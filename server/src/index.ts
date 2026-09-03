@@ -74,7 +74,7 @@ app.use("/api", dashboardRouter);
 app.use("/api", orgRouter);
 app.use("/api", contentRouter);
 
-// 화면이 부르던 supabase functions.invoke("send")를 대신한다.
+// 화면이 부르던 Edge Function invoke("send")를 대신한다(이관 전 구조).
 // 권한 검사(알림 수신자만 승인, 테스트 발송은 관리자만)는 runSend 안에 그대로 있다 —
 // 여기서 다시 판정하지 않는다. 계정은 있지만 직원 행이 아직 없는 세션은 발송 주체가
 // 될 수 없으므로 여기서 막는다.

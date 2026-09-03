@@ -1,4 +1,4 @@
-// supabase/functions/send/index.ts 이식. DB 접근만 SQL로 바꾸고 Deno.serve/CORS 진입점을
+// 이관 전 원본(supabase/functions/send/index.ts, git 기록) 이식. DB 접근만 SQL로 바꾸고 Deno.serve/CORS 진입점을
 // 걷어냈다. 인증(누가 부르는가)은 이제 Express의 requireAuth가 처리하므로 actorEmployeeId를
 // 인자로 받는다 — 하지만 **권한 검사 두 가지는 여기 그대로 남는다**:
 //   (1) 승인·재발송·무시는 alert_recipients에 등록된 사람만 (역할과 무관, 스펙 2026-08-13)

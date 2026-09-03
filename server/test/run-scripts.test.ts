@@ -5,10 +5,11 @@ import { fileURLToPath } from "node:url";
 
 // server/package.json의 dev·start와 server/Dockerfile의 CMD는 같은 코드를 같은
 // node로 띄운다. 그런데 한동안 서로 달랐다: Dockerfile은
-// --experimental-transform-types(파라미터 프로퍼티가 있는 src/shared/kakaowork.ts를
-// 위해 반드시 필요하다)로 고쳐졌는데 package.json 스크립트는
-// --experimental-strip-types로 남아, `npm start`가 ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX로
-// 아예 뜨지 않았다. 배포는 도커만 쓰니 막히지 않았고, 그래서 아무도 몰랐다.
+// --experimental-transform-types(파라미터 프로퍼티가 있는 클래스를 위해 반드시
+// 필요하다 — 당시엔 src/shared/kakaowork.ts였다)로 고쳐졌는데 package.json
+// 스크립트는 --experimental-strip-types로 남아, `npm start`가
+// ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX로 아예 뜨지 않았다. 배포는 도커만 쓰니
+// 막히지 않았고, 그래서 아무도 몰랐다.
 //
 // 두 곳을 실제로 대조해 다시 갈라지면 실패하게 만든다. 로컬 node로 직접 띄워
 // 확인하지 않는 이유: 이 플래그는 node 22(=배포 이미지)의 것이고 개발자 PC의
@@ -39,8 +40,11 @@ describe("npm 스크립트가 실제로 서버를 띄울 수 있다", () => {
     });
   }
 
-  // strip-only 모드로는 src/shared/kakaowork.ts의 파라미터 프로퍼티를 못 읽어
-  // 서버가 뜨지 않는다. 그 플래그가 다시 들어오면 바로 잡는다.
+  // strip-only 모드로는 파라미터 프로퍼티(`constructor(private x: string)`)를 못 읽어
+  // 서버가 뜨지 않는다. **지금 src/에 그 문법을 쓰는 파일은 없지만 플래그는 남긴다** —
+  // src/shared/sms.ts의 LmsChannel 뼈대가 그 문법으로 적혀 있어, 제공자를 붙이는
+  // 사람이 주석을 푸는 순간 필요해진다. 그때 이 두 곳이 갈라져 있으면 그 사람은
+  // 도커에서만 뜨고 npm start로는 안 뜨는 상태를 처음부터 다시 겪는다.
   for (const name of ["start", "dev"]) {
     it(`npm run ${name}이 strip-only 모드를 쓰지 않는다`, () => {
       expect(pkg.scripts[name]).not.toContain("--experimental-strip-types");

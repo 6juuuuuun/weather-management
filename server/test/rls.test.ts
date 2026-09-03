@@ -1,4 +1,4 @@
-// supabase/functions/_shared/rls_test.ts가 검증하던 "정책 자체"를 자체 호스팅으로 옮긴 것.
+// 이관 전 원본(supabase/functions/_shared/rls_test.ts, git 기록)이 검증하던 "정책 자체"를 자체 호스팅으로 옮긴 것.
 //
 // 왜 라우트 테스트로는 대신할 수 없는가:
 //   - `PUT /api/criteria`는 requireAdmin이 **질의에 닿기 전에** 403을 낸다. 그래서

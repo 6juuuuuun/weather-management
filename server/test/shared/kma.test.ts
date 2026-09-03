@@ -1,4 +1,4 @@
-// supabase/functions/_shared/kma_test.ts 이관.
+// 이관 전 원본(supabase/functions/_shared/kma_test.ts, git 기록)에서 이관.
 import { describe, expect, it } from "vitest";
 import { baseDateTime, buildKmaUrl, parseKmaResponse } from "../../src/shared/kma.ts";
 

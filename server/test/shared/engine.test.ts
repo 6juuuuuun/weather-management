@@ -1,4 +1,4 @@
-// supabase/functions/_shared/engine_test.ts를 Vitest로 그대로 옮긴 것이다.
+// 이관 전 원본(supabase/functions/_shared/engine_test.ts, git 기록)을 Vitest로 그대로 옮긴 것이다.
 // 케이스는 하나도 빼지 않았다 — 판정 엔진 테스트가 줄면 이식이 실패한 것이므로,
 // assertEquals → expect(...).toEqual 치환 외에는 본문을 손대지 않았다.
 import { describe, expect, it } from "vitest";

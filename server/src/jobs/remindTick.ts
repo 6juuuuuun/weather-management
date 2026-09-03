@@ -1,4 +1,4 @@
-// supabase/functions/remind-tick/index.ts 이식. DB 접근만 SQL로 바꾸고 Deno.serve를 걷어냈다.
+// 이관 전 원본(supabase/functions/remind-tick/index.ts, git 기록) 이식. DB 접근만 SQL로 바꾸고 Deno.serve를 걷어냈다.
 import { withService } from "../db.ts";
 import { KIND_LABEL, GRADE_LABEL } from "../shared/template.ts";
 import type { NotificationChannel } from "../shared/channel.ts";

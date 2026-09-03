@@ -1,4 +1,4 @@
-// supabase/functions/_shared/template_test.ts 이관.
+// 이관 전 원본(supabase/functions/_shared/template_test.ts, git 기록)에서 이관.
 import { describe, expect, it } from "vitest";
 import { composeDraft, renderMessage, KIND_LABEL, GRADE_LABEL } from "../../src/shared/template.ts";
 

@@ -1,4 +1,4 @@
-// supabase/functions/weather-tick/index.ts 이식.
+// 이관 전 원본(supabase/functions/weather-tick/index.ts, git 기록) 이식.
 // 바뀐 것은 두 가지뿐이다: (1) Supabase 클라이언트 호출을 withService의 SQL로,
 // (2) Deno.serve HTTP 진입점을 걷어내고 순수 함수로. 판정 순서·분기·문구는 그대로다.
 // CRON_SECRET 헤더 검사와 x-mock-kma 헤더는 진입점과 함께 사라진다 — 이제 이 함수를
