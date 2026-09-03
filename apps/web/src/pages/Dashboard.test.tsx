@@ -283,7 +283,7 @@ describe("Dashboard 셋업 체크리스트 — 관측 지점 좌표 (W-10)", () 
     await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
     // "미지정"이라고만 하면 관리자는 저장 화면에서 값이 들어 있는 것을 보고
     // 정상이라고 판단한다 — 실제로는 그 값 때문에 수집이 죽어 있다.
-    expect(container.textContent).toMatch(/관측 지점 좌표가 기상청 격자 범위 밖입니다/);
+    expect(container.textContent).toMatch(/관측 지점\s*좌표가 기상청 격자 범위 밖입니다/);
     expect(container.textContent).toMatch(/날씨 수집이 계속 실패합니다/);
   });
 
@@ -389,7 +389,7 @@ describe("Dashboard 셋업 체크리스트", () => {
 
     const { container } = renderDashboard();
     await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
-    expect(container.querySelector(".setup-strip")!.textContent).toMatch(/부서별 지침 1개 부서 미등록/);
+    expect(container.querySelector(".setup-strip")!.textContent).toMatch(/부서별 지침\s*1개 부서 미등록/);
   });
 
   // 3단 부서의 말단이 리프다. 중간 단계(2단)는 리프가 아니므로 세면 안 된다 —
@@ -473,7 +473,7 @@ describe("Dashboard 셋업 체크리스트", () => {
     // "미지정"이 아니라 "미연결"이라고 말해야 한다 — 이미 지정해 둔 관리자는
     // "수신자를 지정하세요"를 자기 이야기가 아니라고 읽고 지나간다.
     expect(container.querySelector(".setup-strip")!.textContent).toMatch(
-      /부서 수신자 1개 부서 카카오워크 미연결/,
+      /부서 수신자\s*1개 부서 카카오워크 미연결/,
     );
   });
 
@@ -508,7 +508,7 @@ describe("Dashboard 셋업 체크리스트", () => {
     await waitFor(() => expect(container.querySelector(".setup-strip")).not.toBeNull());
     const strip = container.querySelector(".setup-strip")!.textContent!;
     // 화면 어딘가가 아니라 **서버 .env**를 고쳐야 한다는 것까지 말해야 한다.
-    expect(strip).toMatch(/발송이 로그로만 나갑니다/);
+    expect(strip).toMatch(/실제 발송\s*로그로만 나갑니다/);
     expect(strip).toMatch(/NOTIFY_CHANNEL/);
   });
 
@@ -560,7 +560,7 @@ describe("Dashboard 셋업 체크리스트", () => {
 
     const { container } = renderDashboard();
     await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
-    expect(container.querySelector(".setup-strip")!.textContent).toMatch(/부서별 지침 1개 부서 미등록/);
+    expect(container.querySelector(".setup-strip")!.textContent).toMatch(/부서별 지침\s*1개 부서 미등록/);
   });
 
   // 위 테스트가 "항상 스트립이 없다"로 통과하지 않도록, 리프 하나가 비면

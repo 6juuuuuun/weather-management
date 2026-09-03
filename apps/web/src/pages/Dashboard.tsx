@@ -107,6 +107,50 @@ function dispatchScope(row: DispatchRow): { label: string; failCount: number; to
   return { label, failCount, total: results.length };
 }
 
+type SetupDetail = {
+  missingDeptCount: number;
+  deptWithoutRecipientCount: number;
+  deptWithoutNotifiableRecipientCount: number;
+  siteCoordInvalid: boolean;
+};
+
+/**
+ * 아직 안 된 항목 하나가 "왜 안 됐는지"를 한 문장으로 돌려준다.
+ *
+ * 항목 이름만으로는 관리자가 무엇을 해야 할지 모르는 자리가 몇 군데 있고,
+ * 그 자리마다 오해하는 방향이 서로 다르다 — 그래서 문구가 항목마다 다르다.
+ */
+function setupTodoDetail(label: string, d: SetupDetail): string {
+  switch (label) {
+    case "부서별 지침":
+      return `${d.missingDeptCount}개 부서 미등록`;
+
+    // 미지정과 미연결은 관리자가 할 일이 다르다. "수신자를 지정하세요"라고만 말하면,
+    // 이미 지정해 둔 관리자는 그 문구를 자기 상태가 아니라고 읽고 지나간다 —
+    // 그 부서 몫은 승인해도 0명에게 나간다(검증 §신규-1).
+    case "부서 수신자":
+      return d.deptWithoutRecipientCount > 0
+        ? `${d.deptWithoutRecipientCount}개 부서 미지정 — 그 부서 몫은 0명에게 발송됩니다`
+        : `${d.deptWithoutNotifiableRecipientCount}개 부서 카카오워크 미연결 — 승인해도 0명에게 발송됩니다`;
+
+    // "실제 발송 미지정"이라고만 하면 관리자는 화면 어딘가에서 켜는 설정을 찾다가
+    // 포기한다 — 이건 서버 `.env`의 문제이고, 그 파일을 고치기 전까지는 화면에서
+    // 할 수 있는 일이 없다.
+    case "실제 발송":
+      return "로그로만 나갑니다 — 서버 .env의 NOTIFY_CHANNEL을 비우고 KAKAOWORK_BOT_KEY를 채우세요";
+
+    // "미지정"이라고만 하면 관리자는 저장 화면을 열어 값이 들어 있는 것을 보고
+    // 정상이라고 판단한다 — 실제로는 그 값 때문에 수집이 죽어 있다(QA W-10).
+    case "관측 지점":
+      return d.siteCoordInvalid
+        ? "좌표가 기상청 격자 범위 밖입니다 — 날씨 수집이 계속 실패합니다"
+        : "미지정";
+
+    default:
+      return "미지정";
+  }
+}
+
 export default function Dashboard() {
   const { employee, isApprover } = useAuth();
   const [data, setData] = useState<DashboardData | null>(null);
@@ -358,38 +402,29 @@ export default function Dashboard() {
                 <h3 className="setup-strip-title">
                   초기 설정 {setup.done}/{setup.total} 완료 — 시스템이 아직 발송을 시작할 수 없습니다
                 </h3>
-                <p className="setup-strip-detail">
-                  {setup.items.map((item, i) => (
-                    <span key={item.label}>
-                      {i > 0 && " · "}
-                      {item.ok ? (
-                        <span className="setup-strip-detail-ok">{item.label}✓</span>
-                      ) : item.label === "부서별 지침" ? (
-                        `부서별 지침 ${setupDetail.missingDeptCount}개 부서 미등록`
-                      ) : item.label === "부서 수신자" ? (
-                        // 미지정과 미연결은 관리자가 할 일이 다르다. "수신자를
-                        // 지정하세요"라고만 말하면, 이미 지정해 둔 관리자는 그 문구를
-                        // 자기 상태가 아니라고 읽고 지나간다 — 그 부서 몫은 승인해도
-                        // 0명에게 나간다(검증 §신규-1).
-                        setupDetail.deptWithoutRecipientCount > 0
-                          ? `부서 수신자 ${setupDetail.deptWithoutRecipientCount}개 부서 미지정 — 그 부서 몫은 0명에게 발송됩니다`
-                          : `부서 수신자 ${setupDetail.deptWithoutNotifiableRecipientCount}개 부서 카카오워크 미연결 — 그 부서 몫은 승인해도 0명에게 발송됩니다`
-                      ) : item.label === "실제 발송" ? (
-                        // "실제 발송 미지정"이라고만 하면 관리자는 화면 어딘가에서
-                        // 켜는 설정을 찾다가 포기한다 — 이건 서버 `.env`의 문제이고,
-                        // 그 파일을 고치기 전까지는 화면에서 할 수 있는 일이 없다.
-                        `발송이 로그로만 나갑니다 — 서버 .env의 NOTIFY_CHANNEL을 비우고 KAKAOWORK_BOT_KEY를 채우세요`
-                      ) : item.label === "관측 지점" && setupDetail.siteCoordInvalid ? (
-                        // "미지정"이라고만 하면 관리자는 저장 화면을 열어 값이
-                        // 들어 있는 것을 보고 정상이라고 판단한다 — 실제로는 그
-                        // 값 때문에 수집이 죽어 있다(QA W-10).
-                        `관측 지점 좌표가 기상청 격자 범위 밖입니다 — 날씨 수집이 계속 실패합니다`
-                      ) : (
-                        `${item.label} 미지정`
-                      )}
-                    </span>
-                  ))}
-                </p>
+                {/* 남은 항목은 한 줄에 하나씩, 완료된 항목은 아래 한 줄로 접는다.
+                    예전에는 여덟 항목을 " · "로 이어 한 문단에 넣었는데, 각 항목이
+                    "왜 그것이 문제인지"까지 말하므로 세 줄로 감겨 무엇이 남았는지
+                    읽히지 않았다. 관리자가 이 띠에서 얻어야 하는 것은 "다음에 뭘
+                    해야 하나" 하나뿐이다. */}
+                <ul className="setup-strip-todo">
+                  {setup.items
+                    .filter((item) => !item.ok)
+                    .map((item) => {
+                      const detail = setupTodoDetail(item.label, setupDetail);
+                      return (
+                        <li key={item.label}>
+                          <span className="setup-strip-todo-label">{item.label}</span>
+                          <span className="setup-strip-todo-why">{detail}</span>
+                        </li>
+                      );
+                    })}
+                </ul>
+                {setup.done > 0 && (
+                  <p className="setup-strip-done">
+                    완료 {setup.items.filter((i) => i.ok).map((i) => i.label).join(" · ")}
+                  </p>
+                )}
               </div>
             </div>
             <Link to="/settings" className="setup-strip-cta">
