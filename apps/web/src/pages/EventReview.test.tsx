@@ -261,6 +261,24 @@ describe("EventReview", () => {
     expect(screen.getByRole("button", { name: /승인 및 발송/ })).toBeInTheDocument();
   });
 
+  // **승인 버튼 바로 옆에서 사실을 말해야 한다.**
+  //
+  // 이 자리는 한동안 "카카오워크 봇 · 연결됨 ✓"를 조건 없이 초록으로 하드코딩하고
+  // 있었다. 승인자가 폭설 새벽에 승인 버튼을 누르기 직전에 보는 것이 그 체크였고,
+  // 정보 부재가 아니라 **반대 사실의 적극적 주장**이었다. 지금은 발송 제공자 연동이
+  // 없어 승인해도 문자가 나가지 않는다 — 그 사실이 이 화면에 있어야 한다.
+  //
+  // 변이로 확인한 자리다: 이 테스트가 없으면 경고 문구를 "발송 준비가 끝났습니다"로
+  // 바꿔도 웹 스위트가 통째로 통과했다.
+  it("발송 채널 칸이 SMS 미연동을 승인 전에 말한다", async () => {
+    renderPage();
+    await screen.findByText("객실");
+    expect(screen.getByText(/SMS 발송 설정이 아직 없습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/서버 로그에만 기록됩니다/)).toBeInTheDocument();
+    // 없는 채널을 연결됐다고 주장하지 않는다.
+    expect(screen.queryByText("카카오워크 봇")).not.toBeInTheDocument();
+  });
+
   it("rain 트리거 카드에 일 누적 강수량(KST 자정 이후 합산)을 표시한다", async () => {
     renderPage();
     expect(await screen.findByText("일 누적")).toBeInTheDocument();

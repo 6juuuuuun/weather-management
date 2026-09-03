@@ -618,6 +618,65 @@ describe("Dashboard 셋업 체크리스트", () => {
     await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
     expect(container.querySelector(".setup-strip")!.textContent).toMatch(/수신자 전화번호/);
   });
+
+  // **번호가 비어 있는 경우만이 아니다.** 형식 검증(server/src/phone.ts)이 생기기
+  // 전에 저장된 값이 남아 있을 수 있고, 그 번호로는 발송이 되지 않는다. 화면이
+  // `phone !== null`로 스스로 세면 이 사람이 "연락 가능"으로 잡혀 **체크리스트가
+  // 초록인데 실제 발송은 0명**이 된다 — 판정은 서버의 `notifiable` 하나에서만 온다.
+  //
+  // 변이로 확인한 자리다: 이 테스트가 없으면 Dashboard의 판정을 `phone !== null`로
+  // 바꿔도 웹 스위트가 통째로 통과했다.
+  it("번호는 있는데 서버가 못 보낸다고 하면 체크리스트가 완료되지 않는다", async () => {
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
+    ]);
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
+    ]);
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    // 칸에는 번호가 보이지만(유선 번호) 서버는 보낼 수 없다고 판정했다.
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "02-123-4567", notifiable: false },
+    ]);
+    mocks.listRecipients.mockResolvedValue([
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", phone: "010-2000-0002", notifiable: true },
+    ]);
+
+    const { container } = renderDashboard();
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
+    expect(container.querySelector(".setup-strip")!.textContent).toMatch(/수신자 전화번호/);
+  });
+
+  // 부서 수신자 쪽도 같다. 이쪽은 특보가 **실제로 나가는 명단**이라 더 아프다.
+  it("부서 수신자의 번호가 형식만 깨져도 체크리스트가 완료되지 않는다", async () => {
+    mocks.listDepartments.mockResolvedValue([
+      { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
+      { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
+    ]);
+    mocks.guidelines.mockResolvedValue([
+      { department_id: "leaf1", kind: "rain", grade: "watch", staff_actions: ["제설"], guest_notice: "" },
+    ]);
+    mocks.siteSettings.mockResolvedValue({ id: 1, site_name: "곤지암", nx: 61, ny: 121 });
+    mocks.criteria.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
+    );
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-2000-0001", notifiable: true },
+    ]);
+    mocks.listRecipients.mockResolvedValue([
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", phone: "02-123-4567", notifiable: false },
+    ]);
+
+    const { container } = renderDashboard();
+    await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
+    expect(container.querySelector(".setup-strip")!.textContent).toMatch(
+      /부서 수신자\s*1개 부서 수신자 전화번호 없음/,
+    );
+  });
 });
 
 describe("Dashboard 보드 모드", () => {

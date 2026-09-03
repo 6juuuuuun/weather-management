@@ -445,6 +445,45 @@ describe("Employees 부서 계층 (QA W-15)", () => {
 // **다만 그 칸이 지고 있던 경고는 여기 그대로 남는다**: 저장 한 번으로 어떤 직원이
 // 연락 불가가 되면 그 사실을 말해 줘야 한다. 그 직원은 그날부터 특보를 못 받는데,
 // 예전에는 점만 초록에서 회색으로 바뀌고 아무 경고도 없었다.
+describe("Employees 휴대폰 열", () => {
+  function phoneCellText(name: string): string {
+    const row = screen.getByText(name).closest("tr")!;
+    // 이름·부서·역할·이메일 다음이 휴대폰 열이다(테이블 헤더 순서).
+    return row.querySelectorAll("td")[4]!.textContent ?? "";
+  }
+
+  it("보낼 수 있는 번호가 있으면 '있음'이다", async () => {
+    mocks.listEmployees.mockResolvedValue([
+      { ...target, phone: "010-1111-2222", notifiable: true },
+    ]);
+    renderPage();
+    await screen.findByText("홍길동");
+    expect(phoneCellText("홍길동")).toContain("있음");
+  });
+
+  it("번호가 없으면 '없음'이다", async () => {
+    mocks.listEmployees.mockResolvedValue([{ ...target, phone: null, notifiable: false }]);
+    renderPage();
+    await screen.findByText("홍길동");
+    expect(phoneCellText("홍길동")).toContain("없음");
+  });
+
+  // **번호 문자열이 아니라 서버의 판정으로 그린다.** 형식 검증 이전에 저장된 값은
+  // 칸에는 보이지만 발송 대상이 아니다 — "있음"이라고 그려 놓고 실제로는 안 가는
+  // 것이 이 프로젝트가 네 번 고친 상태의 모양이다.
+  //
+  // 변이로 확인한 자리다: 이 테스트가 없으면 `e.notifiable`을 `!!e.phone`으로
+  // 바꿔도 웹 스위트가 통째로 통과했다.
+  it("번호는 있는데 서버가 못 보낸다고 하면 '없음'이다", async () => {
+    mocks.listEmployees.mockResolvedValue([
+      { ...target, phone: "02-123-4567", notifiable: false },
+    ]);
+    renderPage();
+    await screen.findByText("홍길동");
+    expect(phoneCellText("홍길동")).toContain("없음");
+  });
+});
+
 describe("Employees 저장이 연락 가능 여부를 바꿀 때 (W-16 후속)", () => {
   async function openEditModal() {
     renderPage();

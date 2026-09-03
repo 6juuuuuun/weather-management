@@ -214,6 +214,10 @@ describe("Criteria 수신자 목록의 부서·연락 가능 여부 (W-31)", () 
     ]);
     renderPage();
     expect(await screen.findByText(/김승인 · 리조트 · 객실/)).toBeInTheDocument();
+    // **연락 가능한 사람에게는 경고가 붙지 않는다.** 라벨이 늘 붙어 있으면 아무
+    // 정보도 아니고, 관리자는 곧 그 문구를 읽지 않게 된다 — 그러면 정말로 번호가
+    // 없는 사람도 눈에 띄지 않는다.
+    expect(screen.queryByText(/김승인.*휴대폰 번호 없음/)).not.toBeInTheDocument();
   });
 
   it("휴대폰 번호가 없는 사람은 그 사실을 함께 보여준다", async () => {

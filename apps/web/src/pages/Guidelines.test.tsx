@@ -454,6 +454,17 @@ describe("Guidelines 본문 길이 상한 (W-30)", () => {
       expect(await screen.findByText("1명 · 전원 번호 없음")).toBeInTheDocument();
     });
 
+    // 부서 트리의 셈도 서버의 판정을 봐야 한다. `phone !== null`로 세면 형식이 깨진
+    // 값을 가진 사람이 "닿을 수 있음"으로 잡혀 **트리는 그냥 "1명"으로 보이는데 그
+    // 부서 몫은 승인해도 0명에게 나간다.**
+    //
+    // 변이로 확인한 자리다: 이 테스트가 없으면 notifiableCountFor를
+    // `r.phone !== null`로 바꿔도 웹 스위트가 통째로 통과했다.
+    it("번호는 있는데 서버가 못 보낸다고 하면 트리도 '전원 번호 없음'이다", async () => {
+      renderWithRecipients([recipientOf(BAD_PHONE)], [BAD_PHONE]);
+      expect(await screen.findByText("1명 · 전원 번호 없음")).toBeInTheDocument();
+    });
+
     it("한 명이라도 번호가 있으면 인원 수만 보여 준다", async () => {
       renderWithRecipients([recipientOf(NO_PHONE), recipientOf(WITH_PHONE)], [NO_PHONE, WITH_PHONE]);
       expect(await screen.findByText("2명")).toBeInTheDocument();
