@@ -589,6 +589,35 @@ describe("문제가 있으면 알린다", () => {
     await reportIfUnhealthy({ channel });
     expect(sent).toHaveLength(0);
   });
+
+  // **번호가 비어 있는 경우만이 아니다.** 형식 검증 이전에 저장된 값이 남아 있으면
+  // 이 목록에 그 사람이 끼고, 워치독은 "N명에게 알렸다"고 여기고 조용히 끝난다 —
+  // 문제를 감지하고도 그 사실이 아무 데도 남지 않는, 이 시스템에서 가장 위험한
+  // 종류의 침묵이다(그 침묵을 막으려고 만든 것이 바로 아래의 "전원 실패 로그"다).
+  //
+  // 같은 목록을 특보 승인 요청(weatherTick)과 재알림(remindTick)도 쓴다. 여기가
+  // 약해지면 폭설 새벽에 승인 요청이 "발송됨"으로 기록된 채 아무에게도 가지 않는다.
+  //
+  // 변이로 확인한 자리다: 이 테스트가 없으면 alertRecipientPhones의 판정을
+  // `e.phone is not null`로 되돌려도 서버 스위트가 통째로 통과했다.
+  it("번호는 있는데 형식이 깨진 수신자에게도 보내지 않는다", async () => {
+    const id = await makeRecipient();
+    // 유선 번호 — 값은 있지만 LMS로 보낼 수 없다.
+    await withService((q) =>
+      q.query("update employees set phone = '02-123-4567' where id = $1", [id]));
+    await withService((q) =>
+      q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now() - interval '5 hours')"),
+    );
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { sent, channel } = recorder();
+    await reportIfUnhealthy({ channel });
+    const errors = err.mock.calls.map((c) => String(c[0])).join("\n");
+    err.mockRestore();
+
+    expect(sent).toHaveLength(0);
+    // 조용히 지나가면 안 된다 — 알릴 대상이 없다는 사실이 로그에 남아야 한다.
+    expect(errors).toMatch(/알릴 대상이 없습니다/);
+  });
 });
 
 describe("GET /api/health/deep", () => {
@@ -663,6 +692,46 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
     await clearAlertable();
     // 알림 설정은 시드 행이다 — 지우지 않고 기본값(전부 켜짐)으로 되돌린다.
     await withService((q) => q.query("update alert_settings set enabled = true"));
+  });
+
+  // **본문이 문자 한 통(LMS 2,000바이트)에 담기는가** — SMS 전환에서 새로 생긴 경로.
+  //
+  // 카카오워크 DM에는 실질적인 길이 제한이 없어 이 질문 자체가 없었다. LMS는
+  // 2,000바이트이고 한글은 글자당 3바이트라 약 666자가 한계인데, 지침의 상한은
+  // 인력 조정 지침 20개 × 200자 + 고객 안내 1,000자다 — **넘칠 수 있는 정도가
+  // 아니라 넘치도록 허용된 구조**다.
+  //
+  // 발송 시점에도 잘림 표시가 붙지만(shared/sms.ts) **그때는 이미 폭설이 온 뒤다.**
+  // 지침을 고칠 수 있는 시간은 특보가 뜨기 전뿐이므로 여기서 미리 잰다.
+  it("지침이 문자 한 통에 담기지 않으면 미리 사유로 낸다", async () => {
+    await healthyPipes();
+    await ensureGuideline();
+    // 한글 1,000자 = 3,000바이트. 한 통(2,000)을 확실히 넘긴다.
+    await withService((q) =>
+      q.query(
+        `update action_guidelines set staff_actions = array[$2]
+          where department_id in (select id from departments where name = $1)`,
+        [GUIDE.dept, "가".repeat(1000)],
+      ),
+    );
+    const out = await health();
+    expect(out.ok).toBe(false);
+    const joined = out.reasons.join();
+    expect(joined).toMatch(/문자 한 통\(LMS 2000바이트\)에 담기지 않는 항목이 있습니다/);
+    // 어느 부서·어느 종류인지 말해 줘야 고칠 수 있다. "어딘가 길다"는 쓸모가 없다.
+    expect(joined).toContain(GUIDE.dept);
+    expect(joined).toMatch(/폭우 주의보/);
+    // 얼마나 넘쳤는지도 말한다 — 얼마나 줄여야 하는지 알 수 있어야 한다.
+    expect(joined).toMatch(/\d+바이트/);
+  });
+
+  // 반대쪽을 고정하지 않으면 "늘 운다"로도 위 테스트가 통과한다. 평범한 길이의
+  // 지침에 이 사유가 붙으면 운영자는 사유 목록 자체를 안 읽게 된다.
+  it("보통 길이의 지침에는 그 사유가 붙지 않는다", async () => {
+    await healthyPipes();
+    await ensureGuideline(); // 기본 지침은 짧다
+    const out = await health();
+    expect(out.reasons.join()).not.toMatch(/문자 한 통/);
   });
 
   it("알림 설정 4종이 모두 꺼져 있으면 문제로 본다", async () => {
@@ -803,6 +872,34 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
     const out = await health();
     expect(out.ok).toBe(false);
     expect(out.reasons.join()).toMatch(/휴대폰 번호를 가진 수신자가 한 명도 없는 부서가 1곳/);
+  });
+
+  // **번호가 비어 있는 경우만이 아니다.** 형식 검증(phone.ts)이 생기기 전에 저장된
+  // 값이 남아 있을 수 있고, 그런 번호로는 발송이 되지 않는다. 이 판정이 `phone is
+  // not null`로 약해지면 그 사람이 "닿을 수 있음"으로 세어져 **부서 사유가 사라지고
+  // 체크리스트가 초록이 되는데 실제 발송은 0명**이다 — C7 경로이자 이 프로젝트가
+  // 네 번 고친 결함의 모양 그대로다.
+  //
+  // 변이로 확인한 자리다: 이 테스트가 없으면 판정을 `is not null`로 되돌려도
+  // 워치독 스위트가 통째로 통과했다.
+  it("번호는 있는데 형식이 깨진 수신자만 있는 부서도 같은 사유로 잡는다", async () => {
+    await healthyPipes();
+    await ensureGuideline();
+    await withService((q) =>
+      // 유선 번호 — 값은 있지만 LMS로 보낼 수 없다.
+      q.query("update employees set phone = '02-123-4567' where email = $1", [GUIDE.email]),
+    );
+    const out = await health();
+    expect(out.ok).toBe(false);
+    expect(out.reasons.join()).toMatch(/휴대폰 번호를 가진 수신자가 한 명도 없는 부서가 1곳/);
+  });
+
+  // 반대쪽을 고정하지 않으면 "늘 운다"로도 위 두 테스트가 통과한다.
+  it("보낼 수 있는 번호를 가진 수신자가 있으면 그 사유는 없다", async () => {
+    await healthyPipes();
+    await ensureGuideline(); // 기본 지침의 수신자는 정상 번호를 갖는다
+    const out = await health();
+    expect(out.reasons.join()).not.toMatch(/수신자가 한 명도 없는 부서/);
   });
 
   // 수신자가 아예 없는 부서를 두 사유가 각각 세면 운영자는 부서 수를 두 배로 읽고

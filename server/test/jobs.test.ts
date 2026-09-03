@@ -248,6 +248,10 @@ describe("관측 수집", () => {
     await makeEmployee({ name: "관리자", email: "jobs-admin2@gonjiam.com", phone: "010-0000-0002", role: "admin" });
     // 번호가 없는 관리자는 보낼 곳이 없다 — 수신자 목록에 끼면 안 된다.
     await makeEmployee({ name: "번호없는관리자", email: "jobs-admin3@gonjiam.com", phone: null, role: "admin" });
+    // **번호가 비어 있는 경우만이 아니다.** 형식 검증 이전에 저장된 값(유선 번호 등)이
+    // 남아 있으면 이 목록에 끼는데, 그 번호로는 보낼 수 없다 — 그런데도 로그 채널은
+    // ok:true를 주므로 "관리자에게 알렸다"로 끝난다. 세는 기준과 보내는 기준이 같아야 한다.
+    await makeEmployee({ name: "옛번호관리자", email: "jobs-admin4@gonjiam.com", phone: "02-123-4567", role: "admin" });
     await withService((q) =>
       q.query(
         `insert into weather_observations (observed_at, missing) values
@@ -638,6 +642,9 @@ describe("승인 재알림", () => {
     const approver = await makeEmployee({ name: "사업부장", email: "remind-lim-appr@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
     await makeEmployee({ name: "관리자", email: "remind-lim-admin@gonjiam.com", phone: "010-0000-0002", role: "admin" });
+    // 형식이 깨진 옛 값을 가진 관리자는 에스컬레이션 대상이 아니다 — 보낼 수 없는
+    // 번호를 목록에 끼우면 "관리자에게 넘겼다"고 기록되고 그 사람은 아무것도 못 받는다.
+    await makeEmployee({ name: "옛번호관리자", email: "remind-lim-admin2@gonjiam.com", phone: "02-123-4567", role: "admin" });
     const id = await withService(async (q) => {
       const { rows } = await q.query(
         `insert into weather_events (kind, grade, status, detected_at, remind_count)
@@ -654,6 +661,8 @@ describe("승인 재알림", () => {
     const toAdmin = rec.sent.find((x) => x.to === "010-0000-0002");
     expect(toAdmin).toBeTruthy();
     expect(toAdmin!.text).toMatch(/응답하지 않고 있어 재알림을 멈춥니다/);
+    // 보낼 수 없는 번호로는 시도조차 하지 않는다.
+    expect(rec.sent.map((x) => x.to)).not.toContain("02-123-4567");
 
     // 그 다음 주기부터는 아무것도 나가지 않는다 — 무한 반복이 여기서 끝난다.
     await withService((q) =>
@@ -907,6 +916,36 @@ describe("반복 발송 수신자 갱신", () => {
     });
     expect(beat.ok).toBe(false);
     expect(String(beat.note)).toMatch(/action-failed/);
+  });
+
+  // **번호가 비어 있는 경우만이 아니다.** 형식 검증 이전에 저장된 값이 남아 있으면
+  // 반복 발송이 그 번호로 **보내려 시도하고**, 로그 채널은 ok:true를 준다 — 매시간
+  // "성공"으로 기록되는데 그 사람은 아무것도 받지 못한다. 승인 발송 쪽과 같은
+  // 결함이 반복 경로에 난 모양이고, 두 경로가 같은 판정을 써야 한다.
+  //
+  // 변이로 확인한 자리다: 이 테스트가 없으면 weatherTick에서 isSendablePhone을 빼고
+  // `r.phone`만 봐도 jobs 스위트가 통째로 통과했다.
+  it("형식이 깨진 번호만 남아도 그 회차를 실패로 기록한다", async () => {
+    const day = await makeEmployee({ name: "주간담당", email: "shift-badphone@gonjiam.com", phone: "010-0000-0005" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", day);
+    await activeWithSnapshot(deptId, day);
+    // 유선 번호 — 값은 있지만 LMS로 보낼 수 없다.
+    await withService((q) =>
+      q.query("update employees set phone = '02-123-4567' where id = $1", [day]));
+
+    stubKma(RAIN_32MM);
+    const rec = recorder();
+    const out = await runWeatherTick({ channel: rec.channel });
+
+    // 채널을 타지 않아야 한다 — 보내려 시도하면 로그 채널이 ok:true를 준다.
+    expect(rec.sent).toEqual([]);
+    expect(out.actionFailures).toBeGreaterThan(0);
+    const results = await withService(async (q) => {
+      const { rows } = await q.query("select results from dispatches order by id desc limit 1");
+      return (rows[0]?.results ?? []) as { name: string; ok: boolean; error?: string }[];
+    });
+    expect(results.every((r) => r.ok === false)).toBe(true);
+    expect(results[0]).toMatchObject({ error: "휴대폰 번호 없음" });
   });
 
   it("해제 알림도 지금 근무 중인 사람에게 간다", async () => {
@@ -1460,6 +1499,75 @@ describe("POST /api/send — 모드별 동작", () => {
     expect(results.find((r) => r.name === "번호없음")).toMatchObject({ ok: false, error: "휴대폰 번호 없음" });
   });
 
+  // **값이 있는 것과 보낼 수 있는 것은 다르다.** 형식 검증(phone.ts)이 생기기 전에
+  // 저장된 값이 명단에 남아 있을 수 있는데, 발송이 `r.phone`의 참·거짓만 보면 그
+  // 사람에게 **보내려 시도하고** 로그 채널은 `ok:true`를 준다 — 승인은 "N명 발송
+  // 성공"으로 끝나고 그 사람은 아무것도 받지 못한다. 지표 쪽(C7)과 같은 결함이
+  // 발송 경로에 난 모양이고, 세는 기준과 보내는 기준은 반드시 같아야 한다.
+  //
+  // 변이로 확인한 자리다: 이 테스트가 없으면 send.ts에서 isSendablePhone을 빼고
+  // `r.phone`만 봐도 jobs 스위트가 통째로 통과했다.
+  it("번호는 있는데 형식이 깨진 수신자도 발송 실패로 센다", async () => {
+    const ok = await makeEmployee({ name: "정상", email: "send-bad-ok@gonjiam.com", phone: "010-0000-0009" });
+    const bad = await makeEmployee({ name: "옛번호", email: "send-bad-no@gonjiam.com", phone: null });
+    const deptId = await makeDeptWithGuideline("rain", "watch", ok);
+    const { eventId } = await pendingEventWithDraft(deptId, ok);
+    const content = [
+      {
+        department_id: deptId, department_name: "객실",
+        staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
+        recipients: [
+          { employee_id: ok, name: "정상", phone: "010-0000-0009" },
+          // 유선 번호 — 값은 있지만 LMS로 보낼 수 없다.
+          { employee_id: bad, name: "옛번호", phone: "02-123-4567" },
+        ],
+        selected: true,
+      },
+    ];
+    const agent = await recipientAgent("send-bad-recip@gonjiam.com");
+
+    const res = await agent.post("/api/send").send({ mode: "approve", event_id: eventId, content });
+    expect(res.status).toBe(200);
+    expect(res.body.fail_count).toBe(1);
+
+    const results = await withService(async (q) => {
+      const { rows } = await q.query("select results from dispatches");
+      return rows[0].results as { name: string; ok: boolean; error?: string }[];
+    });
+    expect(results.find((r) => r.name === "옛번호")).toMatchObject({
+      ok: false, error: "휴대폰 번호 없음",
+    });
+  });
+
+  // 전원이 그런 상태면 "0명 전달"이므로 승인 자체가 성공이 아니어야 한다(W-09·§신규-1).
+  // 형식이 깨진 값이 섞였을 때도 같은 결론이어야 한다 — 아니면 승인이 200 ok:true로
+  // 끝나고 특보가 ACTIVE로 굳는다.
+  it("전원이 형식 깨진 번호면 승인을 성공으로 보고하지 않는다", async () => {
+    const a = await makeEmployee({ name: "옛번호A", email: "send-allbad-a@gonjiam.com", phone: null });
+    const deptId = await makeDeptWithGuideline("rain", "watch", a);
+    const { eventId } = await pendingEventWithDraft(deptId, a);
+    const content = [
+      {
+        department_id: deptId, department_name: "객실",
+        staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
+        recipients: [{ employee_id: a, name: "옛번호A", phone: "02-123-4567" }],
+        selected: true,
+      },
+    ];
+    const agent = await recipientAgent("send-allbad-recip@gonjiam.com");
+
+    const res = await agent.post("/api/send").send({ mode: "approve", event_id: eventId, content });
+    expect(res.status).toBe(502);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.sent_count).toBe(0);
+    // 승인이 되돌아가야 재승인이 409가 아니라 정상 승인으로 다시 돈다(W-09).
+    const status = await withService(async (q) => {
+      const { rows } = await q.query("select status from weather_events where id = $1", [eventId]);
+      return rows[0].status as string;
+    });
+    expect(status).toBe("PENDING_APPROVAL");
+  });
+
   // -------------------------------------------------------------------------
   // "0명에게 성공" — QA W-02
   // -------------------------------------------------------------------------
@@ -1717,6 +1825,113 @@ describe("POST /api/send — 모드별 동작", () => {
 // 발송 이력의 "채널"은 컬럼 기본값이 그대로 박혀 있었다(QA W-29).
 // 지금 실제로 나가는 곳은 앱 로그뿐인데, 이력이 다른 곳으로 보냈다고 말하면
 // 나중에 이력을 되짚는 사람은 "그때 발송됐다"고 읽는다.
+// LMS 2,000바이트가 **발송 경로에 실제로 걸려 있는가**.
+//
+// shared/sms.ts의 fitToLms는 단위 테스트가 따로 있다(test/shared/sms.test.ts).
+// 여기서 보는 것은 다른 질문이다: **승인 발송과 자동 반복 발송이 그 함수를 실제로
+// 지나는가.** 둘 중 하나만 지나면 한쪽 경로로 나가는 문자만 조용히 한도를 넘고,
+// 제공자가 그 통을 거절하거나 스스로 잘라 잘림 표시마저 사라진다.
+//
+// 두 경로가 jobs/common.ts의 renderLmsBody 하나를 쓰도록 모아 둔 이유가 이것이고,
+// 그 배선이 풀리면 여기서 깨진다.
+describe("발송 본문은 LMS 한 통(2,000바이트) 안이다", () => {
+  const LONG = "가".repeat(1000); // 3,000바이트 — 한 통을 확실히 넘긴다
+
+  async function deptWithLongGuideline(kind: string, grade: string, empId: string) {
+    return withService(async (q) => {
+      const { rows } = await q.query(
+        "insert into departments (name) values ($1) returning id", [`${DEPT_PREFIX}장문`]);
+      const deptId = rows[0].id as string;
+      await q.query(
+        `insert into action_guidelines (department_id, kind, grade, staff_actions, guest_notice)
+         values ($1, $2, $3, $4, $5)`,
+        [deptId, kind, grade, [LONG], LONG],
+      );
+      await q.query("insert into recipients (department_id, employee_id) values ($1, $2)", [deptId, empId]);
+      return deptId;
+    });
+  }
+
+  async function recipientAgent(email: string) {
+    const { agent, employeeId } = await agentAs({ email, role: "staff" });
+    await makeAlertRecipient(employeeId);
+    return agent;
+  }
+
+  it("승인 발송이 한도를 넘지 않고, 잘렸다는 사실을 본문에 적는다", async () => {
+    const staff = await makeEmployee({
+      name: "객실직원", email: "lms-staff@gonjiam.com", phone: "010-0000-0011" });
+    const deptId = await deptWithLongGuideline("rain", "watch", staff);
+    const { eventId, content } = await pendingEventWithDraft(deptId, staff);
+    // 초안 본문을 실제로 긴 지침으로 채운다.
+    content[0]!.staff_actions = [LONG];
+    content[0]!.guest_notice = LONG;
+    const agent = await recipientAgent("lms-recip@gonjiam.com");
+
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const res = await agent.post("/api/send").send({ mode: "approve", event_id: eventId, content });
+    const printed = log.mock.calls.map((c) => String(c[0])).join("\n");
+    const errors = err.mock.calls.map((c) => String(c[0])).join("\n");
+    log.mockRestore();
+    err.mockRestore();
+
+    expect(res.status).toBe(200);
+    // 로그 채널이 본문을 그대로 찍는다 — 실제로 나간 본문이 그것이다.
+    const body = printed.split("[log-channel]").pop() ?? "";
+    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(2000 + 64); // 로그 접두사 여유
+    expect(body).toContain("본문이 길어 여기까지만 전송됐습니다");
+    // **조용히 잘리지 않는다.** 서버 로그에 어느 부서가 얼마나 넘쳤는지 남는다.
+    expect(errors).toMatch(/\[lms\].*바이트로/);
+  });
+
+  it("자동 반복 발송도 같은 한도를 지난다", async () => {
+    const staff = await makeEmployee({
+      name: "객실직원", email: "lms-tick-staff@gonjiam.com", phone: "010-0000-0011" });
+    const deptId = await deptWithLongGuideline("rain", "watch", staff);
+    const { eventId, messageId } = await pendingEventWithDraft(deptId, staff);
+    await withService(async (q) => {
+      await q.query(
+        `update messages set status='approved',
+           content = jsonb_set(jsonb_set(content, '{0,staff_actions}', $2::jsonb), '{0,guest_notice}', $3::jsonb)
+         where id=$1`,
+        [messageId, JSON.stringify([LONG]), JSON.stringify(LONG)],
+      );
+      await q.query("update weather_events set status='ACTIVE', repeat_count=1 where id=$1", [eventId]);
+    });
+    stubKma(RAIN_32MM);
+    const sent: string[] = [];
+    const channel = { name: "test", async send(_to: string, text: string) { sent.push(text); return { ok: true }; } };
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    await runWeatherTick({ channel });
+    err.mockRestore();
+
+    expect(sent.length).toBeGreaterThan(0);
+    for (const text of sent) {
+      expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(2000);
+    }
+    expect(sent.some((t) => t.includes("본문이 길어 여기까지만 전송됐습니다"))).toBe(true);
+  });
+
+  // 반대쪽을 고정하지 않으면 "늘 자른다"로도 위 두 테스트가 통과한다. 평범한 지침에
+  // 잘림 표시가 붙으면 받는 사람은 매번 "뒤에 뭔가 더 있다"고 읽는다.
+  it("보통 길이의 본문에는 잘림 표시가 붙지 않는다", async () => {
+    const staff = await makeEmployee({
+      name: "객실직원", email: "lms-short@gonjiam.com", phone: "010-0000-0011" });
+    const deptId = await makeDeptWithGuideline("rain", "watch", staff);
+    const { eventId, content } = await pendingEventWithDraft(deptId, staff);
+    const agent = await recipientAgent("lms-short-recip@gonjiam.com");
+
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const res = await agent.post("/api/send").send({ mode: "approve", event_id: eventId, content });
+    const printed = log.mock.calls.map((c) => String(c[0])).join("\n");
+    log.mockRestore();
+
+    expect(res.status).toBe(200);
+    expect(printed).not.toContain("본문이 길어 여기까지만");
+  });
+});
+
 describe("발송 이력의 채널은 실제로 나간 채널이다 (W-29)", () => {
   async function recipientAgent(email: string) {
     const { agent, employeeId } = await agentAs({ email, role: "staff" });

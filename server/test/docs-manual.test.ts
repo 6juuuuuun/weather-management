@@ -55,6 +55,24 @@ describe("운영 안내서 §3-3 — /api/health/deep의 사유가 전부 표에
     ...[...watchdog.matchAll(/reasons:\s*\[\s*([\s\S]*?)\s*\]/g)].map(([, body]) => literals(body!)),
   ].filter((t) => t.length > 0);
 
+  // **상수로 뺀 사유는 위 정규식에 잡히지 않는다.** `reasons.push(LOG_ONLY_REASON)`에는
+  // 문자열 리터럴이 없어서, 문구를 "발송 준비 중입니다"로 흐려도 위 대조는 조용히
+  // 통과한다(변이로 확인했다). 이 파일이 한 번 "막겠다고 선언하고 못 막은" 전력이
+  // 바로 이 모양이므로, 상수로 뺀 사유는 이름을 지목해 따로 묶는다.
+  //
+  // 이 사유는 지금 이 시스템의 상태를 대표하는 문장이고 사용자가 문구까지 정했다
+  // (판정 2). 흐려지면 빨간불의 이유가 무엇이었는지 아무도 모르게 된다.
+  it("상수로 뺀 사유(LOG_ONLY_REASON)도 안내서가 그대로 인용한다", () => {
+    const literal = /export const LOG_ONLY_REASON = "([^"]+)";/.exec(watchdog)?.[1];
+    expect(literal, "watchdog.ts에서 LOG_ONLY_REASON을 찾지 못했습니다").toBeTruthy();
+    expect(literal).toBe("SMS 발송 설정이 아직 없습니다 — 인프라 연동 대기 중");
+    expect(manual).toContain(literal!);
+    // 화면(셋업 체크리스트)도 같은 사실을 말한다 — 서버만 알고 화면이 모르면
+    // 운영자는 대시보드에서 그 상태를 볼 수 없다.
+    const dashboard = read("apps/web/src/pages/Dashboard.tsx");
+    expect(dashboard).toContain("SMS 발송 설정이 아직 없습니다");
+  });
+
   it("사유를 한 건도 못 찾았다면 이 테스트 자체가 고장 난 것이다", () => {
     // 정규식이 소스 형태 변화로 빗나가면 아래 검사가 0건을 통과시킨다.
     expect(pushed.length).toBeGreaterThanOrEqual(13);
