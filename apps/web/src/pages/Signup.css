@@ -99,6 +99,17 @@
   color: var(--danger);
 }
 
+/* 입력란 아래의 설명 문구. 오류(.signup-error)와 같은 크기·간격을 쓰되 색만
+   보조 텍스트로 둔다 — 안내와 오류가 같은 자리에 나오므로 색이 둘을 가른다. */
+.signup-hint {
+  margin: 6px 0 0;
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary, #6b7280);
+}
+
 .signup-retry {
   border: none;
   background: none;

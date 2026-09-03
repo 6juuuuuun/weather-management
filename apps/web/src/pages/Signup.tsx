@@ -177,8 +177,15 @@ export default function Signup() {
           inputMode="numeric"
           maxLength={PHONE_MAX_LENGTH}
           onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
-          placeholder="010-0000-0000"
+          placeholder="휴대폰 번호를 입력하세요"
+          aria-describedby="phone-hint"
         />
+        {/* 입력란이 숫자만 받고 하이픈을 스스로 넣는다는 사실을 미리 알린다 —
+            모르면 사용자는 자기가 친 하이픈이 사라지는 것을 오작동으로 읽는다.
+            aria-describedby로 묶어 스크린리더도 입력란과 함께 읽는다. */}
+        <p id="phone-hint" className="signup-hint">
+          숫자만 입력하세요 — 하이픈(-)은 자동으로 붙습니다
+        </p>
 
         {error && <p className="signup-error">{error}</p>}
         <button type="submit" disabled={busy}>가입하기</button>
