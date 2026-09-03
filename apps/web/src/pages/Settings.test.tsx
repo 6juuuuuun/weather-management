@@ -37,10 +37,10 @@ const admin: Employee = {
   auth_user_id: "u-admin",
   name: "김운영",
   email: "kim@gonjiam.com",
-  kakaowork_user_id: null,
   department_id: null,
   role: "admin",
   phone: null,
+  notifiable: false,
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -83,10 +83,12 @@ function renderPage() {
 beforeEach(() => {
   mocks.authState = { employee: admin, loading: false, isApprover: false };
   mocks.alertSettings.mockReset().mockResolvedValue(alertRows);
-  // 기본값은 "연결된 수신자 1명" — 각 테스트가 필요하면 이 값만 바꾼다.
+  // 기본값은 "연락 가능한 수신자 1명" — 각 테스트가 필요하면 이 값만 바꾼다.
   mocks.alertRecipients
     .mockReset()
-    .mockResolvedValue([{ employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" }]);
+    .mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-3000-0001", notifiable: true },
+    ]);
   mocks.saveAlertSettings.mockReset().mockResolvedValue(alertRows);
   mocks.openEvents.mockReset().mockResolvedValue([]);
   mocks.siteSettings.mockReset().mockResolvedValue(site);
@@ -142,50 +144,68 @@ describe("Settings 수집 건전성", () => {
 // 예전에는 이 자리에 "카카오워크 봇 · 연결됨 · 봇 이름 날씨경영"이 조건 없이
 // 초록으로 하드코딩돼 있었다. 정보 부재가 아니라 반대 사실의 적극적 주장이라,
 // 특보가 한 명에게도 전달되지 않는 상태에서 화면이 "연결됨"이라고 말했다.
-describe("Settings 카카오워크 연결 표시", () => {
-  function kakaoRow() {
-    const label = screen.getByText("카카오워크 연결");
+//
+// **SMS로 바뀌어도 이 자리는 그대로 남는다** — 세는 근거가 카카오워크 연결에서
+// 휴대폰 번호로 옮겨 왔을 뿐, "이 줄이 초록이면 정말로 닿는가"라는 질문은 같다.
+describe("Settings 수신자 전화번호 표시", () => {
+  function reachRow() {
+    const label = screen.getByText("수신자 전화번호");
     return label.parentElement!;
   }
 
-  it("연결된 Alert 수신자가 0명이면 초록이 아니라 경고로 보여준다", async () => {
+  it("연락 가능한 Alert 수신자가 0명이면 초록이 아니라 경고로 보여준다", async () => {
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: null },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: null, notifiable: false },
     ]);
     renderPage();
-    await screen.findByText("카카오워크 연결");
-    const value = kakaoRow().querySelector(".settings-heartbeat-value")!;
+    await screen.findByText("수신자 전화번호");
+    const value = reachRow().querySelector(".settings-heartbeat-value")!;
     expect(value.classList.contains("ok")).toBe(false);
     expect(value.classList.contains("fail")).toBe(true);
-    expect(kakaoRow().textContent).toMatch(/특보가 전달되지 않습니다/);
+    expect(reachRow().textContent).toMatch(/특보가 전달되지 않습니다/);
   });
 
   it("수신자가 아예 없어도 경고로 보여준다", async () => {
     mocks.alertRecipients.mockResolvedValue([]);
     renderPage();
-    await screen.findByText("카카오워크 연결");
-    expect(kakaoRow().textContent).toMatch(/Alert 수신자가 없습니다/);
-    expect(kakaoRow().querySelector(".settings-heartbeat-value")!.classList.contains("ok")).toBe(false);
+    await screen.findByText("수신자 전화번호");
+    expect(reachRow().textContent).toMatch(/Alert 수신자가 없습니다/);
+    expect(reachRow().querySelector(".settings-heartbeat-value")!.classList.contains("ok")).toBe(false);
   });
 
-  it("연결된 사람이 있으면 몇 명인지 보여준다", async () => {
+  it("연락 가능한 사람이 있으면 몇 명인지 보여준다", async () => {
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
-      { employee_id: "e2", name: "박승인", role: "approver", kakaowork_user_id: null },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-3000-0001", notifiable: true },
+      { employee_id: "e2", name: "박승인", role: "approver", phone: null, notifiable: false },
     ]);
     renderPage();
-    await screen.findByText("카카오워크 연결");
-    expect(kakaoRow().textContent).toMatch(/2명 중 1명 연결됨/);
-    expect(kakaoRow().querySelector(".settings-heartbeat-value")!.classList.contains("ok")).toBe(true);
+    await screen.findByText("수신자 전화번호");
+    expect(reachRow().textContent).toMatch(/2명 중 1명 연락 가능/);
+    expect(reachRow().querySelector(".settings-heartbeat-value")!.classList.contains("ok")).toBe(true);
+  });
+
+  // **형식이 깨진 옛 값을 "있음"으로 세면 안 된다.** 화면이 `phone !== null`로
+  // 스스로 세던 시절이 있었다면 이 사람은 "1명 연락 가능"으로 잡히는데, 서버는
+  // 같은 사람을 발송 대상에서 뺀다 — 화면은 초록이고 실제 발송은 0명이다.
+  // 판정은 서버의 notifiable 하나에서만 온다.
+  it("번호 문자열이 있어도 서버가 못 보낸다고 하면 경고다", async () => {
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "02-123-4567", notifiable: false },
+    ]);
+    renderPage();
+    await screen.findByText("수신자 전화번호");
+    const value = reachRow().querySelector(".settings-heartbeat-value")!;
+    expect(value.classList.contains("ok")).toBe(false);
+    expect(value.classList.contains("fail")).toBe(true);
   });
 
   // 조회가 실패했을 때 초록으로 칠하면 예전의 거짓 초록으로 되돌아간다.
   it("수신자 조회가 실패하면 '확인 안 됨'이고, 화면 자체는 뜬다", async () => {
     mocks.alertRecipients.mockRejectedValue(new ApiError(500, "서버 오류"));
     renderPage();
-    await screen.findByText("카카오워크 연결");
-    const value = kakaoRow().querySelector(".settings-heartbeat-value")!;
-    expect(kakaoRow().textContent).toMatch(/확인 안 됨/);
+    await screen.findByText("수신자 전화번호");
+    const value = reachRow().querySelector(".settings-heartbeat-value")!;
+    expect(reachRow().textContent).toMatch(/확인 안 됨/);
     expect(value.classList.contains("ok")).toBe(false);
     expect(value.classList.contains("unknown")).toBe(true);
   });
@@ -194,7 +214,7 @@ describe("Settings 카카오워크 연결 표시", () => {
   it("봇이 연결됐다는 단정을 화면에 쓰지 않는다", async () => {
     mocks.alertRecipients.mockResolvedValue([]);
     const { container } = renderPage();
-    await screen.findByText("카카오워크 연결");
+    await screen.findByText("수신자 전화번호");
     expect(container.textContent).not.toMatch(/봇 이름 날씨경영/);
   });
 });
@@ -254,10 +274,10 @@ describe("Settings 테스트 발송", () => {
 
   // 채널이 실패하면 서버는 200에 { ok:false, error }를 싣는다 — throw가 아니다.
   it("ok:false로 오면 서버가 준 사유를 그대로 보여준다", async () => {
-    send.push("/api/send", () => jsonResponse({ ok: false, error: "카카오워크 미연결" }));
+    send.push("/api/send", () => jsonResponse({ ok: false, error: "휴대폰 번호 없음" }));
     renderPage();
     fireEvent.click(await screen.findByRole("button", { name: /테스트 메시지 보내기/ }));
-    expect(await screen.findByText("카카오워크 미연결")).toBeInTheDocument();
+    expect(await screen.findByText("휴대폰 번호 없음")).toBeInTheDocument();
   });
 
   // 권한 거부(403)는 예외로 온다. catch가 없으면 버튼이 "발송 중…"에 영구히 묶인다.

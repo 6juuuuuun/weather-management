@@ -40,10 +40,18 @@ export type Employee = {
   auth_user_id: string | null;
   name: string;
   email: string;
-  kakaowork_user_id: string | null;
   department_id: string | null;
   role: EmpRole;
   phone: string | null;
+  /**
+   * 이 사람에게 지금 특보를 보낼 수 있는가. **컬럼이 아니라 서버의 판정이다**
+   * (server/src/api/org.ts의 EMP_COLS).
+   *
+   * 화면이 `phone !== null`로 스스로 세면 형식 검증 이전에 저장된 값을
+   * "연락 가능"으로 세는데, 발송 경로는 같은 사람을 대상에서 뺀다 — 화면은
+   * 초록이고 실제 발송은 0명인 상태다. 전화번호 형식 규칙은 서버에만 있다.
+   */
+  notifiable: boolean;
   created_at: string;
   // GET /employees에서만 채워진다(server/src/api/org.ts의 withAccountStatus) — 계정이
   // 아예 없는(사전 등록만 된) 직원은 null, PATCH/POST /employees 응답에는 이 필드
@@ -77,13 +85,15 @@ export type WeatherEvent = {
 };
 
 // action_guidelines/recipients를 조합해 만들어지는, 부서 단위 발송 블록
-// (supabase/functions/_shared/template.ts 의 DeptBlock과 동일)
+// (server/src/shared/template.ts 의 DeptBlock과 동일)
 export type DeptBlock = {
   department_id: string;
   department_name: string;
   staff_actions: string[];
   guest_notice: string;
-  recipients: { employee_id: string; name: string; kakaowork_user_id: string | null }[];
+  // 발송 주소는 휴대폰 번호다. null이거나 형식이 어긋나면 그 사람에게는 가지 않는다 —
+  // 그 판정은 서버(server/src/phone.ts)가 내리고 화면은 되풀이하지 않는다.
+  recipients: { employee_id: string; name: string; phone: string | null }[];
   selected: boolean;
 };
 

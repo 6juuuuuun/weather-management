@@ -17,7 +17,12 @@ import { callSend } from "../lib/api/send";
 import type { AlertSetting, DeptBlock, EventStatus, Grade, Kind, WeatherEvent } from "../lib/types";
 import "./EventReview.css";
 
-type CandidateRecipient = { employee_id: string; name: string; kakaowork_user_id: string | null };
+// 수신자 가감 목록의 한 사람. `phone`은 발송 주소 그 자체이고 승인 본문
+// (DeptBlock.recipients)에 그대로 실려 서버로 돌아간다. `notifiable`은 서버가
+// 내린 "지금 이 번호로 보낼 수 있는가" 판정이다 — 화면은 형식 규칙을 갖지 않는다.
+type CandidateRecipient = {
+  employee_id: string; name: string; phone: string | null; notifiable: boolean;
+};
 
 type Banner = { type: "danger" | "info"; text: string };
 
@@ -362,7 +367,8 @@ export default function EventReview() {
         for (const row of recipientRows) {
           if (!deptIds.has(row.department_id)) continue;
           const list = map[row.department_id] ?? [];
-          list.push({ employee_id: row.employee_id, name: row.name, kakaowork_user_id: row.kakaowork_user_id });
+          list.push({ employee_id: row.employee_id, name: row.name,
+                      phone: row.phone, notifiable: row.notifiable });
           map[row.department_id] = list;
         }
         setCandidatesByDept(map);
@@ -667,20 +673,24 @@ export default function EventReview() {
               <div className="rail-card">
                 <h2 className="rail-title">발송 설정</h2>
 
+                {/* 이 자리는 한동안 "카카오워크 봇 ✓"를 **하드코딩**하고 있었다.
+                    설정을 읽지 않고 초록 체크를 그리는 것은 정보가 없는 것보다 나쁘다 —
+                    승인자는 이 화면에서 승인 버튼을 누르기 직전에 그 체크를 본다.
+                    그래서 지금은 **사실을 그대로** 적는다: 발송 채널은 문자(LMS)이고,
+                    제공자 연동이 아직 없어 이 승인은 사람이 아니라 앱 로그로 나간다.
+                    같은 사실을 /api/health/deep(503)과 셋업 체크리스트도 말한다. */}
                 <p className="rail-label">발송 채널</p>
-                <div className="rail-channel rail-channel-active">
+                <div className="rail-channel rail-channel-disabled">
                   <span className="rail-channel-icon" aria-hidden="true">
                     💬
                   </span>
-                  카카오워크 봇
-                  <span className="rail-channel-check" aria-hidden="true">
-                    ✓
-                  </span>
+                  문자 (SMS · LMS)
+                  <span className="rail-channel-disabled-note">발송 설정 대기 중</span>
                 </div>
-                <div className="rail-channel rail-channel-disabled">
-                  <span>SMS · 알림톡</span>
-                  <span className="rail-channel-disabled-note">채널 미연동</span>
-                </div>
+                <p className="rail-channel-warning">
+                  SMS 발송 설정이 아직 없습니다 — 인프라 연동 대기 중입니다.
+                  지금 승인하면 문자는 나가지 않고 서버 로그에만 기록됩니다.
+                </p>
 
                 <div className="rail-label rail-recipients-row">
                   <span className="rail-recipients-count">수신자 · {recipientCount}명</span>

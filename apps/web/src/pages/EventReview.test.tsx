@@ -47,10 +47,10 @@ const approver: Employee = {
   auth_user_id: "u1",
   name: "김운영",
   email: "approver@example.com",
-  kakaowork_user_id: "kw-approver",
   department_id: null,
   role: "approver",
-  phone: null,
+  phone: "010-6000-0001",
+  notifiable: true,
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -59,10 +59,10 @@ const staff: Employee = {
   auth_user_id: "u2",
   name: "박세준",
   email: "staff@example.com",
-  kakaowork_user_id: null,
   department_id: "dept-b",
   role: "staff",
   phone: null,
+  notifiable: false,
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -71,10 +71,10 @@ const admin: Employee = {
   auth_user_id: "u3",
   name: "관리자",
   email: "admin@example.com",
-  kakaowork_user_id: null,
   department_id: null,
   role: "admin",
   phone: null,
+  notifiable: false,
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -85,8 +85,8 @@ const content: DeptBlock[] = [
     staff_actions: ["수건 추가 배포"],
     guest_notice: "야외 시설 운영이 제한됩니다.",
     recipients: [
-      { employee_id: "emp-1", name: "홍수진", kakaowork_user_id: "kw-1" },
-      { employee_id: "emp-2", name: "이도현", kakaowork_user_id: "kw-2" },
+      { employee_id: "emp-1", name: "홍수진", phone: "010-6000-0001" },
+      { employee_id: "emp-2", name: "이도현", phone: "010-6000-0001" },
     ],
     selected: true,
   },
@@ -95,7 +95,7 @@ const content: DeptBlock[] = [
     department_name: "조리",
     staff_actions: ["식자재 점검"],
     guest_notice: "",
-    recipients: [{ employee_id: "emp-3", name: "박세준", kakaowork_user_id: "kw-3" }],
+    recipients: [{ employee_id: "emp-3", name: "박세준", phone: "010-6000-0001" }],
     selected: true,
   },
 ];

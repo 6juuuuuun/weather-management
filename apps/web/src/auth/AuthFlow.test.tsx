@@ -66,7 +66,7 @@ const employeeRow = {
   auth_user_id: "acc-1",
   name: "홍길동",
   email: "a@gonjiam.com",
-  kakaowork_user_id: null,
+  notifiable: false,
   department_id: null,
   role: "staff",
   created_at: "2026-01-01T00:00:00Z",

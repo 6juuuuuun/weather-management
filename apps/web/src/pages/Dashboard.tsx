@@ -125,19 +125,21 @@ function setupTodoDetail(label: string, d: SetupDetail): string {
     case "부서별 지침":
       return `${d.missingDeptCount}개 부서 미등록`;
 
-    // 미지정과 미연결은 관리자가 할 일이 다르다. "수신자를 지정하세요"라고만 말하면,
+    // 미지정과 "번호 없음"은 관리자가 할 일이 다르다. "수신자를 지정하세요"라고만 말하면,
     // 이미 지정해 둔 관리자는 그 문구를 자기 상태가 아니라고 읽고 지나간다 —
     // 그 부서 몫은 승인해도 0명에게 나간다(검증 §신규-1).
     case "부서 수신자":
       return d.deptWithoutRecipientCount > 0
         ? `${d.deptWithoutRecipientCount}개 부서 미지정 — 그 부서 몫은 0명에게 발송됩니다`
-        : `${d.deptWithoutNotifiableRecipientCount}개 부서 카카오워크 미연결 — 승인해도 0명에게 발송됩니다`;
+        : `${d.deptWithoutNotifiableRecipientCount}개 부서 수신자 전화번호 없음 — 승인해도 0명에게 발송됩니다`;
 
     // "실제 발송 미지정"이라고만 하면 관리자는 화면 어딘가에서 켜는 설정을 찾다가
-    // 포기한다 — 이건 서버 `.env`의 문제이고, 그 파일을 고치기 전까지는 화면에서
-    // 할 수 있는 일이 없다.
+    // 포기한다 — **지금은 화면에서도 .env에서도 할 수 있는 일이 없다.** 발송
+    // 서비스 자체가 아직 연결되지 않았고, 그 사실을 그대로 말하는 것이 이 항목이
+    // 할 수 있는 최선이다. 고칠 수 없는 것을 고치라고 하면 관리자는 없는 설정을
+    // 찾아 헤매다가 체크리스트 전체를 신뢰하지 않게 된다.
     case "실제 발송":
-      return "로그로만 나갑니다 — 서버 .env의 NOTIFY_CHANNEL을 비우고 KAKAOWORK_BOT_KEY를 채우세요";
+      return "로그로만 나갑니다 — SMS 발송 설정이 아직 없습니다(인프라 연동 대기 중)";
 
     // "미지정"이라고만 하면 관리자는 저장 화면을 열어 값이 들어 있는 것을 보고
     // 정상이라고 판단한다 — 실제로는 그 값 때문에 수집이 죽어 있다(QA W-10).
@@ -247,16 +249,20 @@ export default function Dashboard() {
             .filter((id) => leafIds.has(id)),
         );
         const deptIdsWithRecipient = new Set(deptRecipientRows.map((r) => r.department_id));
-        // 카카오워크에 연결된 수신자가 한 명이라도 있는 부서. "지정됐는가"와
+        // 보낼 수 있는 번호를 가진 수신자가 한 명이라도 있는 부서. "지정됐는가"와
         // "닿을 수 있는가"는 다른 질문이고, 발송은 뒤쪽으로만 나간다(검증 §신규-1).
+        //
+        // `phone !== null`이 아니라 서버가 판정한 `notifiable`을 쓴다 — 형식이
+        // 깨진 옛 값을 화면이 "연락 가능"으로 세면 화면은 초록인데 서버는 그 사람을
+        // 발송 대상에서 빼 버린다. 규칙은 server/src/phone.ts 하나에만 있다.
         const deptIdsWithNotifiable = new Set(
-          deptRecipientRows.filter((r) => !!r.kakaowork_user_id).map((r) => r.department_id),
+          deptRecipientRows.filter((r) => r.notifiable).map((r) => r.department_id),
         );
         const guidelineDeptWithoutRecipient = [...guidelineDeptIds].filter(
           (id) => !deptIdsWithRecipient.has(id),
         );
         // 수신자가 아예 없는 부서는 위에서 이미 세므로 여기서 빼고, "지정은 했는데
-        // 아무도 연결되지 않은" 부서만 센다 — 두 문구가 같은 부서를 두 번 부르면
+        // 아무도 보낼 수 없는" 부서만 센다 — 두 문구가 같은 부서를 두 번 부르면
         // 관리자는 부서 수를 두 배로 읽는다.
         const guidelineDeptWithoutNotifiable = [...guidelineDeptIds].filter(
           (id) => deptIdsWithRecipient.has(id) && !deptIdsWithNotifiable.has(id),
@@ -270,9 +276,9 @@ export default function Dashboard() {
           deptCount: leafIds.size,
           guidelineDeptCount: guidelineDeptIds.size,
           alertRecipientCount: alertRecipientRows.length,
-          // 수신자로 지정만 되고 카카오워크에 연결되지 않았으면 특보가 그 사람에게
-          // 가지 않는다. "지정했는가"가 아니라 "닿을 수 있는가"를 센다.
-          notifiableAlertRecipientCount: alertRecipientRows.filter((r) => !!r.kakaowork_user_id).length,
+          // 수신자로 지정만 되고 번호가 없으면 특보가 그 사람에게 가지 않는다.
+          // "지정했는가"가 아니라 "닿을 수 있는가"를 센다.
+          notifiableAlertRecipientCount: alertRecipientRows.filter((r) => r.notifiable).length,
           guidelineDeptWithoutRecipientCount: guidelineDeptWithoutRecipient.length,
           guidelineDeptWithoutNotifiableRecipientCount: guidelineDeptWithoutNotifiable.length,
           logOnlyChannel: !!channelRow?.log_only,

@@ -33,7 +33,17 @@ orgRouter.use(
   },
 );
 
-const EMP_COLS = "id, auth_user_id, name, email, department_id, role, phone, created_at";
+// 화면에 나가는 직원 행. `notifiable`은 컬럼이 아니라 **서버의 판정**이다.
+//
+// "이 사람에게 특보를 보낼 수 있는가"를 화면이 `phone !== null`로 스스로 세면,
+// 형식 검증(phone.ts)이 생기기 전에 저장된 값을 "연락 가능"으로 세는데 발송 경로는
+// 같은 사람을 대상에서 빼 버린다 — 화면은 초록이고 실제 발송은 0명인, 이 프로젝트가
+// 네 번 고친 그 상태다. 규칙이 두 벌이 되지 않도록 판정을 여기서 붙여 내려보낸다.
+// 네 곳(목록·수정·사전등록 응답)이 모두 이 상수를 쓰므로 한 화면만 옛 기준으로
+// 남는 일이 없다.
+const EMP_COLS =
+  "id, auth_user_id, name, email, department_id, role, phone, created_at, " +
+  `${sendablePhoneSql("phone")} as notifiable`;
 
 // db/migrations/0001_schema.sql의 enum 정의와 그대로 맞춘다. 잘못된 값을 검증
 // 없이 그대로 바인딩하면 Postgres가 "invalid input value for enum ..."으로

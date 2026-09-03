@@ -32,7 +32,7 @@ function makeEmployee(overrides: Partial<Employee>): Employee {
     auth_user_id: "u1",
     name: "테스터",
     email: "t@example.com",
-    kakaowork_user_id: "kw-1",
+    notifiable: false,
     department_id: null,
     role: "staff",
     phone: null,

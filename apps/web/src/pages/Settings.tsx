@@ -180,7 +180,7 @@ export default function Settings() {
           fetchAlertSettings(),
           fetchSiteSettings(),
           fetchHeartbeat("weather-tick"),
-          // 이 조회만 실패해도 화면 전체가 못 뜨면 안 된다 — 아래 카카오워크 줄이
+          // 이 조회만 실패해도 화면 전체가 못 뜨면 안 된다 — 아래 수신자 줄이
           // "확인 안 됨"으로 내려가는 것으로 충분하다.
           fetchAlertRecipients().catch(() => null),
           fetchOpenEvents().catch(() => []),
@@ -331,9 +331,13 @@ export default function Settings() {
     );
   }
 
-  // 특보를 실제로 받을 수 있는 사람 수. 카카오워크 user id가 없는 수신자에게는
-  // 발송이 "카카오워크 미연결"로 실패한다(server/src/jobs/send.ts).
-  const notifiableCount = (alertRecipientRows ?? []).filter((r) => !!r.kakaowork_user_id).length;
+  // 특보를 실제로 받을 수 있는 사람 수. 보낼 수 있는 번호가 없는 수신자에게는
+  // 발송이 "휴대폰 번호 없음"으로 실패한다(server/src/jobs/send.ts).
+  //
+  // 판정은 서버가 내려준 `notifiable`을 그대로 쓴다 — 화면이 `phone !== null`로
+  // 스스로 세면 형식이 깨진 옛 값을 "연락 가능"으로 세게 되고, 그 순간 이 줄은
+  // "N명 연락 가능"이라고 말하는데 실제 발송은 0명이 된다.
+  const notifiableCount = (alertRecipientRows ?? []).filter((r) => r.notifiable).length;
 
   return (
     <AppLayout
@@ -575,11 +579,11 @@ export default function Settings() {
                 하드코딩**돼 있었다. 정보가 없는 것이 아니라 반대 사실을 적극적으로
                 주장하는 결함이었다 — 실제로 이 시스템은 특보를 한 명에게도 전달하지
                 못하는 상태에서 이 화면이 "연결됨"이라고 말하고 있었다.
-                봇 키가 살아 있는지는 화면에서 확인할 방법이 없다(발송해 봐야 안다).
-                대신 확인할 수 있는 것을 말한다: 특보를 받을 사람이 실제로 몇 명
-                연결돼 있는가. 그 수가 0이면 특보는 아무에게도 가지 않는다. */}
+                발송 제공자가 살아 있는지는 화면에서 확인할 방법이 없다(발송해 봐야
+                안다). 대신 확인할 수 있는 것을 말한다: 특보를 받을 사람이 실제로 몇
+                명 연락 가능한가. 그 수가 0이면 특보는 아무에게도 가지 않는다. */}
             <div className="settings-heartbeat-row">
-              <span>카카오워크 연결</span>
+              <span>수신자 전화번호</span>
               {alertRecipientRows === null ? (
                 <span className="settings-heartbeat-value unknown">
                   <span className="settings-heartbeat-dot" aria-hidden="true" />
@@ -588,14 +592,14 @@ export default function Settings() {
               ) : notifiableCount > 0 ? (
                 <span className="settings-heartbeat-value ok">
                   <span className="settings-heartbeat-dot" aria-hidden="true" />
-                  Alert 수신자 {alertRecipientRows.length}명 중 {notifiableCount}명 연결됨
+                  Alert 수신자 {alertRecipientRows.length}명 중 {notifiableCount}명 연락 가능
                 </span>
               ) : (
                 <span className="settings-heartbeat-value fail">
                   <span className="settings-heartbeat-dot" aria-hidden="true" />
                   {alertRecipientRows.length === 0
                     ? "Alert 수신자가 없습니다 · 특보가 전달되지 않습니다"
-                    : "연결된 수신자 0명 · 특보가 전달되지 않습니다"}
+                    : "연락 가능한 수신자 0명 · 특보가 전달되지 않습니다"}
                 </span>
               )}
             </div>

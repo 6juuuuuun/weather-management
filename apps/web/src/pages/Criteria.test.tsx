@@ -35,10 +35,10 @@ const admin: Employee = {
   auth_user_id: "u-admin",
   name: "김운영",
   email: "kim@gonjiam.com",
-  kakaowork_user_id: null,
   department_id: null,
   role: "admin",
   phone: null,
+  notifiable: false,
   created_at: "2026-01-01T00:00:00Z",
 };
 
@@ -185,7 +185,7 @@ describe("Criteria 승인 권한 안내 (W-08)", () => {
 
   it("수신자 후보를 역할로 거르지 않는다", async () => {
     mocks.listEmployees.mockResolvedValue([
-      { id: "e9", name: "박실무", role: "staff", department_id: "leaf1", kakaowork_user_id: "kw-9" },
+      { id: "e9", name: "박실무", role: "staff", department_id: "leaf1", phone: "010-5000-0009", notifiable: true },
     ]);
     renderPage();
     await waitFor(() => expect(mocks.listEmployees).toHaveBeenCalled());
@@ -202,28 +202,41 @@ describe("Criteria 승인 권한 안내 (W-08)", () => {
   });
 });
 
-// QA W-31 · 승인권자를 지정하는 화면인데 그 사람이 어느 부서인지, 카카오워크에
-// 연결됐는지 보이지 않았다. 연결 안 된 사람은 승인 요청 DM을 받지 못한다.
-describe("Criteria 수신자 목록의 부서·연결 상태 (W-31)", () => {
+// QA W-31 · 승인권자를 지정하는 화면인데 그 사람이 어느 부서인지, 연락이 되는지
+// 보이지 않았다. 번호가 없는 사람은 승인 요청 문자를 받지 못한다.
+//
+// **SMS로 바뀌어도 이 표시는 그대로 남는다** — 근거만 카카오워크 연결에서
+// 휴대폰 번호로 옮겨 왔다.
+describe("Criteria 수신자 목록의 부서·연락 가능 여부 (W-31)", () => {
   it("이름과 함께 부서 경로를 그린다", async () => {
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", department_id: "leaf1", kakaowork_user_id: "kw-1" },
+      { employee_id: "e1", name: "김승인", role: "approver", department_id: "leaf1", phone: "010-5000-0001", notifiable: true },
     ]);
     renderPage();
     expect(await screen.findByText(/김승인 · 리조트 · 객실/)).toBeInTheDocument();
   });
 
-  it("카카오워크에 연결되지 않은 사람은 그 사실을 함께 보여준다", async () => {
+  it("휴대폰 번호가 없는 사람은 그 사실을 함께 보여준다", async () => {
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e2", name: "이미연결", role: "staff", department_id: "leaf1", kakaowork_user_id: null },
+      { employee_id: "e2", name: "이번호", role: "staff", department_id: "leaf1", phone: null, notifiable: false },
     ]);
     renderPage();
-    expect(await screen.findByText(/이미연결 · 리조트 · 객실 · 카카오워크 미연결/)).toBeInTheDocument();
+    expect(await screen.findByText(/이번호 · 리조트 · 객실 · 휴대폰 번호 없음/)).toBeInTheDocument();
+  });
+
+  // 번호 문자열이 아니라 **서버의 판정**을 봐야 한다. 형식 검증 이전에 저장된 값은
+  // 칸에는 보이지만 발송 대상이 아니다 — 화면이 스스로 세면 "지정 끝났다"고 읽는다.
+  it("번호는 있는데 서버가 못 보낸다고 하면 그 사람도 경고로 표시된다", async () => {
+    mocks.alertRecipients.mockResolvedValue([
+      { employee_id: "e4", name: "옛번호", role: "staff", department_id: "leaf1", phone: "02-123-4567", notifiable: false },
+    ]);
+    renderPage();
+    expect(await screen.findByText(/옛번호 · 리조트 · 객실 · 휴대폰 번호 없음/)).toBeInTheDocument();
   });
 
   it("부서가 없는 사람은 미지정으로 표시한다", async () => {
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e3", name: "무소속", role: "staff", department_id: null, kakaowork_user_id: "kw-3" },
+      { employee_id: "e3", name: "무소속", role: "staff", department_id: null, phone: "010-5000-0003", notifiable: true },
     ]);
     renderPage();
     expect(await screen.findByText(/무소속 · 부서 미지정/)).toBeInTheDocument();

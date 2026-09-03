@@ -91,7 +91,10 @@ beforeEach(() => {
   mocks.heartbeat.mockReset().mockResolvedValue(null);
   // 기본은 **실채널이 붙은 운영 상태**다. 로그 전용 채널은 그 자체로 체크리스트
   // 미완료 사유이므로(검증 라운드 E의 25번째 경로) 아래 전용 테스트에서만 켠다.
-  mocks.notifyChannel.mockReset().mockResolvedValue({ channel: "kakaowork", log_only: false });
+  // 기본값은 "실채널이 붙은 상태"다 — 로그 전용은 그 자체로 항목 하나를 빨갛게
+  // 만들므로(사용자 판정 2), 다른 항목을 보는 테스트마다 그 사유가 섞이면 무엇을
+  // 보고 있는지 알 수 없다. 로그 전용을 일부러 보는 테스트는 따로 덮어쓴다.
+  mocks.notifyChannel.mockReset().mockResolvedValue({ channel: "lms", log_only: false });
   mocks.listDepartments.mockReset().mockResolvedValue([]);
   mocks.alertRecipients.mockReset().mockResolvedValue([]);
   mocks.listRecipients.mockReset().mockResolvedValue([]);
@@ -267,10 +270,10 @@ describe("Dashboard 셋업 체크리스트 — 관측 지점 좌표 (W-10)", () 
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-2000-0001", notifiable: true },
     ]);
     mocks.listRecipients.mockResolvedValue([
-      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", kakaowork_user_id: "kw-2" },
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", phone: "010-2000-0002", notifiable: true },
     ]);
     mocks.siteSettings.mockResolvedValue(site);
     const out = renderDashboard();
@@ -314,16 +317,16 @@ describe("Dashboard 셋업 체크리스트", () => {
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
-    // 카카오워크에 연결된 수신자여야 "연결" 항목까지 충족된다 — 지정만 되고
+    // 보낼 수 있는 번호가 있는 수신자여야 "수신자 전화번호" 항목까지 충족된다 — 지정만 되고
     // 연결이 없으면 특보가 아무에게도 안 가므로 체크리스트가 완료되면 안 된다.
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-2000-0001", notifiable: true },
     ]);
     // 지침을 등록한 부서에는 부서 수신자도 있어야 한다 — 없으면 그 부서 몫이
     // 0명에게 나간다(QA W-02). 체크리스트가 그것까지 본다.
     mocks.listRecipients.mockResolvedValue([
-      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", kakaowork_user_id: "kw-2" },
-      { department_id: "leaf2", employee_id: "e3", name: "시설담당", role: "staff", kakaowork_user_id: "kw-3" },
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", phone: "010-2000-0002", notifiable: true },
+      { department_id: "leaf2", employee_id: "e3", name: "시설담당", role: "staff", phone: "010-2000-0003", notifiable: true },
     ]);
 
     const { container } = renderDashboard();
@@ -351,11 +354,11 @@ describe("Dashboard 셋업 체크리스트", () => {
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-2000-0001", notifiable: true },
     ]);
     mocks.listRecipients.mockResolvedValue([
-      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", kakaowork_user_id: "kw-2" },
-      { department_id: "solo", employee_id: "e3", name: "안전담당", role: "staff", kakaowork_user_id: "kw-3" },
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", phone: "010-2000-0002", notifiable: true },
+      { department_id: "solo", employee_id: "e3", name: "안전담당", role: "staff", phone: "010-2000-0003", notifiable: true },
     ]);
 
     const { container } = renderDashboard();
@@ -381,10 +384,10 @@ describe("Dashboard 셋업 체크리스트", () => {
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-2000-0001", notifiable: true },
     ]);
     mocks.listRecipients.mockResolvedValue([
-      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", kakaowork_user_id: "kw-2" },
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", phone: "010-2000-0002", notifiable: true },
     ]);
 
     const { container } = renderDashboard();
@@ -408,10 +411,10 @@ describe("Dashboard 셋업 체크리스트", () => {
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-2000-0001", notifiable: true },
     ]);
     mocks.listRecipients.mockResolvedValue([
-      { department_id: "leaf", employee_id: "e2", name: "프론트담당", role: "staff", kakaowork_user_id: "kw-2" },
+      { department_id: "leaf", employee_id: "e2", name: "프론트담당", role: "staff", phone: "010-2000-0002", notifiable: true },
     ]);
 
     const { container } = renderDashboard();
@@ -434,7 +437,7 @@ describe("Dashboard 셋업 체크리스트", () => {
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-2000-0001", notifiable: true },
     ]);
     mocks.listRecipients.mockResolvedValue([]); // 부서 수신자 0명
 
@@ -444,10 +447,10 @@ describe("Dashboard 셋업 체크리스트", () => {
   });
 
   // 검증 §신규-1 — "알릴 수 없는데 전부 초록"의 **네 번째** 경로.
-  // 부서 수신자를 지정만 하고 그 사람들이 전원 카카오워크 미연결이면 승인 발송도
+  // 부서 수신자를 지정만 하고 그 사람들에게 전원 번호가 없으면 승인 발송도
   // 매시간 반복 발송도 0명에게 나간다. 체크리스트는 7/7 초록이었다 —
-  // `카카오워크 연결` 항목이 Alert 수신자(승인자)만 세기 때문이다.
-  it("부서 수신자가 전원 카카오워크 미연결이면 체크리스트가 완료되지 않는다", async () => {
+  // `수신자 전화번호` 항목이 Alert 수신자(승인자)만 세기 때문이다.
+  it("부서 수신자가 전원 번호 없음이면 체크리스트가 완료되지 않는다", async () => {
     mocks.listDepartments.mockResolvedValue([
       { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
       { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
@@ -461,28 +464,29 @@ describe("Dashboard 셋업 체크리스트", () => {
     );
     // 승인자 쪽은 정상이다 — 그래서 지금까지 전부 초록이었다.
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-2000-0001", notifiable: true },
     ]);
     mocks.listRecipients.mockResolvedValue([
-      { department_id: "leaf1", employee_id: "e2", name: "안전1", role: "staff", kakaowork_user_id: null },
-      { department_id: "leaf1", employee_id: "e3", name: "안전2", role: "staff", kakaowork_user_id: null },
+      { department_id: "leaf1", employee_id: "e2", name: "안전1", role: "staff", phone: null, notifiable: false },
+      { department_id: "leaf1", employee_id: "e3", name: "안전2", role: "staff", phone: null, notifiable: false },
     ]);
 
     const { container } = renderDashboard();
     await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
-    // "미지정"이 아니라 "미연결"이라고 말해야 한다 — 이미 지정해 둔 관리자는
+    // "미지정"이 아니라 "번호 없음"이라고 말해야 한다 — 이미 지정해 둔 관리자는
     // "수신자를 지정하세요"를 자기 이야기가 아니라고 읽고 지나간다.
     expect(container.querySelector(".setup-strip")!.textContent).toMatch(
-      /부서 수신자\s*1개 부서 카카오워크 미연결/,
+      /부서 수신자\s*1개 부서 수신자 전화번호 없음/,
     );
   });
 
   // 검증 라운드 E — 표에 없던 **25번째** "아무에게도 못 가는데 전부 초록".
   //
-  // 리허설 스택은 실제 직원에게 DM이 가지 않도록 일부러 `NOTIFY_CHANNEL=console`로
-  // 돈다. 그 `.env`를 실서버에 복사하면 수신자·승인자가 전부 "연결됨"이고 승인이
-  // `{"ok":true,"sent_count":1}`을 돌려주는데 모든 DM은 앱 로그로만 나간다.
+  // 실효 채널이 로그 전용이면 수신자·승인자가 전부 "연락 가능"이고 승인이
+  // `{"ok":true,"sent_count":1}`을 돌려주는데 모든 메시지는 앱 로그로만 나간다.
   // 체크리스트가 그것을 말하지 않으면 화면에는 아무 이상이 없다.
+  //
+  // **지금은 이것이 실제 상태다** — LMS 제공자 자료를 아직 받지 못했다(판정 2).
   it("실효 발송 채널이 로그 전용이면 체크리스트가 완료되지 않는다", async () => {
     mocks.listDepartments.mockResolvedValue([
       { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
@@ -496,24 +500,26 @@ describe("Dashboard 셋업 체크리스트", () => {
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-2000-0001", notifiable: true },
     ]);
     mocks.listRecipients.mockResolvedValue([
-      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", kakaowork_user_id: "kw-2" },
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", phone: "010-2000-0002", notifiable: true },
     ]);
     // 나머지 일곱 항목은 전부 초록이다 — 이 한 줄만 다르다.
-    mocks.notifyChannel.mockResolvedValue({ channel: "console", log_only: true });
+    mocks.notifyChannel.mockResolvedValue({ channel: "log", log_only: true });
 
     const { container } = renderDashboard();
     await waitFor(() => expect(container.querySelector(".setup-strip")).not.toBeNull());
     const strip = container.querySelector(".setup-strip")!.textContent!;
-    // 화면 어딘가가 아니라 **서버 .env**를 고쳐야 한다는 것까지 말해야 한다.
+    // **왜** 로그로만 나가는지까지 말해야 한다. "실제 발송 미완료"라고만 하면
+    // 관리자는 화면 어딘가에서 켜는 설정을 찾다가 포기한다 — 지금은 화면에서도
+    // .env에서도 할 수 있는 일이 없고, 그 사실을 그대로 말하는 것이 최선이다.
     expect(strip).toMatch(/실제 발송\s*로그로만 나갑니다/);
-    expect(strip).toMatch(/NOTIFY_CHANNEL/);
+    expect(strip).toMatch(/SMS 발송 설정이 아직 없습니다/);
   });
 
   // 위 테스트가 "스트립이 늘 뜬다"로 통과하지 않도록 반대쪽을 함께 고정한다.
-  it("부서 수신자 중 한 명이라도 연결돼 있으면 체크리스트가 완료된다", async () => {
+  it("부서 수신자 중 한 명이라도 번호가 있으면 체크리스트가 완료된다", async () => {
     mocks.listDepartments.mockResolvedValue([
       { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
       { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
@@ -526,11 +532,11 @@ describe("Dashboard 셋업 체크리스트", () => {
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-2000-0001", notifiable: true },
     ]);
     mocks.listRecipients.mockResolvedValue([
-      { department_id: "leaf1", employee_id: "e2", name: "안전1", role: "staff", kakaowork_user_id: null },
-      { department_id: "leaf1", employee_id: "e3", name: "안전2", role: "staff", kakaowork_user_id: "kw-3" },
+      { department_id: "leaf1", employee_id: "e2", name: "안전1", role: "staff", phone: null, notifiable: false },
+      { department_id: "leaf1", employee_id: "e3", name: "안전2", role: "staff", phone: "010-2000-0003", notifiable: true },
     ]);
 
     const { container } = renderDashboard();
@@ -552,10 +558,10 @@ describe("Dashboard 셋업 체크리스트", () => {
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-2000-0001", notifiable: true },
     ]);
     mocks.listRecipients.mockResolvedValue([
-      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", kakaowork_user_id: "kw-2" },
+      { department_id: "leaf1", employee_id: "e2", name: "객실담당", role: "staff", phone: "010-2000-0002", notifiable: true },
     ]);
 
     const { container } = renderDashboard();
@@ -579,18 +585,19 @@ describe("Dashboard 셋업 체크리스트", () => {
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: "kw-1" },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: "010-2000-0001", notifiable: true },
     ]);
 
     const { container } = renderDashboard();
     await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
   });
 
-  // F-0의 절반: 값을 채우는 경로를 만드는 것만으로는 같은 사고가 다른 이유로
-  // 되풀이된다(봇 키 오타, 카카오워크 계정 삭제, 이메일 불일치). 수신자가 지정돼
-  // 있어도 아무도 연결돼 있지 않으면 특보는 한 명에게도 가지 않는다 —
-  // 그때 체크리스트가 "완료"라고 말하면 운영자는 준비가 끝난 줄 안다.
-  it("Alert 수신자가 카카오워크에 연결돼 있지 않으면 체크리스트가 완료되지 않는다", async () => {
+  // F-0의 절반: 수신자가 지정돼 있어도 아무에게도 보낼 수 없으면 특보는 한 명에게도
+  // 가지 않는다 — 그때 체크리스트가 "완료"라고 말하면 운영자는 준비가 끝난 줄 안다.
+  //
+  // **원인만 카카오워크 연결에서 전화번호로 바뀌었고 결과는 같다.** 이 테스트가
+  // 이사하지 않으면, 그 사실을 지켜보는 눈이 화면 쪽에 하나도 남지 않는다.
+  it("Alert 수신자에게 보낼 수 있는 번호가 없으면 체크리스트가 완료되지 않는다", async () => {
     mocks.listDepartments.mockResolvedValue([
       { id: "root1", parent_id: null, name: "리조트", sort_order: 1 },
       { id: "leaf1", parent_id: "root1", name: "객실", sort_order: 1 },
@@ -602,14 +609,14 @@ describe("Dashboard 셋업 체크리스트", () => {
     mocks.criteria.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ kind: "rain", grade: i % 2 ? "watch" : "warning", threshold: {} })),
     );
-    // 지정은 됐지만 연결이 없다 — 이 상태가 정확히 이관 직후의 실제 상태였다.
+    // 지정은 됐지만 번호가 없다 — 이 상태가 정확히 이관 직후의 실제 상태였다.
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "e1", name: "김승인", role: "approver", kakaowork_user_id: null },
+      { employee_id: "e1", name: "김승인", role: "approver", phone: null, notifiable: false },
     ]);
 
     const { container } = renderDashboard();
     await waitFor(() => expect(container.querySelector(".setup-strip")).toBeTruthy());
-    expect(container.querySelector(".setup-strip")!.textContent).toMatch(/카카오워크/);
+    expect(container.querySelector(".setup-strip")!.textContent).toMatch(/수신자 전화번호/);
   });
 });
 

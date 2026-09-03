@@ -22,7 +22,7 @@ const content: DeptBlock[] = [
     department_name: "리조트",
     staff_actions: ["수건 추가 배포"],
     guest_notice: "야외 시설 운영이 제한됩니다",
-    recipients: [{ employee_id: "e1", name: "홍수진", kakaowork_user_id: "k1" }],
+    recipients: [{ employee_id: "e1", name: "홍수진", phone: "010-6000-0001" }],
     selected: true,
   },
   {
@@ -31,7 +31,7 @@ const content: DeptBlock[] = [
     department_name: "조리",
     staff_actions: ["식자재 점검"],
     guest_notice: "",
-    recipients: [{ employee_id: "e2", name: "박세준", kakaowork_user_id: "k2" }],
+    recipients: [{ employee_id: "e2", name: "박세준", phone: "010-6000-0001" }],
     selected: false,
   },
 ];
@@ -67,7 +67,7 @@ const legacyContent: DeptBlock[] = [
     department_name: "프론트오피스",
     staff_actions: ["체크인 안내 문구 게시"],
     guest_notice: "폭설로 도로 상황이 지연될 수 있습니다",
-    recipients: [{ employee_id: "e3", name: "이설아", kakaowork_user_id: "k3" }],
+    recipients: [{ employee_id: "e3", name: "이설아", phone: "010-6000-0001" }],
     selected: true,
   },
 ];

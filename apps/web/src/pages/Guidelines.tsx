@@ -24,8 +24,13 @@ const KIND_LABEL: Record<Kind, string> = { rain: "폭우", snow: "폭설", wind:
 const GRADES: Grade[] = ["watch", "warning"];
 
 // 서버(server/src/api/content.ts)와 같은 값이어야 한다. 이 본문은 화면에만 남지
-// 않고 **카카오워크 DM에 그대로 실린다** — 화면이 더 관대하면 관리자는 다 쓰고
+// 않고 **특보 문자에 그대로 실린다** — 화면이 더 관대하면 관리자는 다 쓰고
 // 저장을 누른 뒤에야 거부당한다(QA W-30).
+//
+// 이 상한이 문자 한 통(LMS 2,000바이트)을 보장하지는 않는다. 20개 × 200자 +
+// 1,000자는 한글로 15,000바이트가 넘는다 — 한 항목이 화면을 깨뜨리는 것을 막는
+// 값이고, "한 통에 담기는가"는 부서별 지침 **전체의 합**이 정하는 다른 질문이다.
+// 그쪽은 /api/health/deep이 특보가 뜨기 전에 미리 재서 알려 준다.
 const MAX_ACTION_ITEMS = 20;
 const MAX_ACTION_LEN = 200;
 const MAX_GUEST_NOTICE = 1000;
@@ -184,10 +189,11 @@ export default function Guidelines() {
     return recipients.filter((r) => r.department_id === deptId).length;
   }
 
-  // 그 부서 수신자 중 실제로 DM이 닿는 사람 수. 지정 인원과 이 값이 다르면 그
+  // 그 부서 수신자 중 실제로 문자가 닿는 사람 수. 지정 인원과 이 값이 다르면 그
   // 차이만큼이 "명단에는 있는데 특보를 못 받는 사람"이다(검증 §신규-1).
+  // 판정(`notifiable`)은 서버가 내려준다 — 화면은 번호 형식 규칙을 갖지 않는다.
   function notifiableCountFor(deptId: string): number {
-    return recipients.filter((r) => r.department_id === deptId && !!r.kakaowork_user_id).length;
+    return recipients.filter((r) => r.department_id === deptId && r.notifiable).length;
   }
 
   function toggleGroup(id: string) {
@@ -325,13 +331,13 @@ export default function Guidelines() {
             />
             {count > 0 ? (
               // 인원 수만 보여 주면 "3명 지정됨"이 곧 "3명에게 간다"로 읽힌다.
-              // 전원이 카카오워크 미연결이면 그 부서 몫은 승인해도 0명에게 나가는데,
-              // 이 화면이 그 명단을 지정하는 **유일한** 화면인데도 연결 상태를 말하는
+              // 전원에게 번호가 없으면 그 부서 몫은 승인해도 0명에게 나가는데,
+              // 이 화면이 그 명단을 지정하는 **유일한** 화면인데도 그 사실을 말하는
               // 자리가 없었다(검증 §신규-1).
               <span
                 className={notifiable === 0 ? "guidelines-unassigned" : "guidelines-count"}
               >
-                {notifiable === 0 ? `${count}명 · 전원 미연결` : `${count}명`}
+                {notifiable === 0 ? `${count}명 · 전원 번호 없음` : `${count}명`}
               </span>
             ) : (
               <span className="guidelines-unassigned">미지정</span>
@@ -539,14 +545,14 @@ export default function Guidelines() {
                             key={id}
                             // 특보 기준 화면의 Alert 수신자 칩에는 이 표시가 있는데
                             // (QA W-31), 정작 **발송 대상 명단**인 이 화면에만 없었다.
-                            // 미연결인 사람을 부서 수신자로 지정해 두면 그 사람 몫은
+                            // 번호가 없는 사람을 부서 수신자로 지정해 두면 그 사람 몫은
                             // 승인해도 나가지 않는데, 지정하는 순간 그 사실을 알 수
                             // 있는 자리가 제품 안에 하나도 없었다(검증 §신규-1).
                             label={
                               `${emp.name} · ${ROLE_LABEL[emp.role]}` +
-                              (emp.kakaowork_user_id ? "" : " · 카카오워크 미연결")
+                              (emp.notifiable ? "" : " · 휴대폰 번호 없음")
                             }
-                            tone={emp.kakaowork_user_id ? "default" : "warn"}
+                            tone={emp.notifiable ? "default" : "warn"}
                             onRemove={isAdmin ? () => removeRecipient(id) : undefined}
                           />
                         );
@@ -646,7 +652,7 @@ export default function Guidelines() {
                       {/* 고르는 순간에 말해 준다. 지정한 뒤에 칩에서 알게 되면
                           관리자는 이미 "지정 끝났다"고 판단한 뒤다. */}
                       {emp.email}
-                      {emp.kakaowork_user_id ? "" : " · 카카오워크 미연결"}
+                      {emp.notifiable ? "" : " · 휴대폰 번호 없음"}
                     </span>
                   </button>
                 </li>

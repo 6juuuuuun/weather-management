@@ -47,10 +47,10 @@ function adminEmployee(): Employee {
     auth_user_id: "u-admin",
     name: "김운영",
     email: "kim@example.com",
-    kakaowork_user_id: null,
     department_id: null,
     role: "admin",
     phone: null,
+    notifiable: false,
     created_at: "2026-01-01T00:00:00Z",
   };
 }
@@ -61,10 +61,10 @@ function staffEmployee(): Employee {
     auth_user_id: "u-staff",
     name: "홍수진",
     email: "hong@example.com",
-    kakaowork_user_id: null,
     department_id: "l1",
     role: "staff",
     phone: null,
+    notifiable: false,
     created_at: "2026-01-01T00:00:00Z",
   };
 }
@@ -120,7 +120,7 @@ describe("Guidelines", () => {
     ]);
     mocks.listEmployees.mockResolvedValue([staffEmployee()]);
     mocks.listRecipients.mockResolvedValue([
-      { department_id: "l1", employee_id: "staff-1", name: "홍수진", role: "staff", kakaowork_user_id: null },
+      { department_id: "l1", employee_id: "staff-1", name: "홍수진", role: "staff", phone: null, notifiable: false },
     ]);
 
     render(
@@ -342,7 +342,7 @@ describe("Guidelines", () => {
   });
 });
 
-// QA W-30 · 지침 본문은 화면에만 남지 않는다 — 카카오워크 DM 본문에 그대로 실린다.
+// QA W-30 · 지침 본문은 화면에만 남지 않는다 — 특보 문자 본문에 그대로 실린다.
 // 서버가 이제 한 항목 200자 · 최대 20개 · 고객 안내 1000자로 막는데, 화면이 그
 // 한계를 말하지 않으면 관리자는 다 쓰고 저장을 누른 뒤에야 거부당한다.
 describe("Guidelines 본문 길이 상한 (W-30)", () => {
@@ -376,9 +376,12 @@ describe("Guidelines 본문 길이 상한 (W-30)", () => {
 
   // 검증 §신규-1 — "알릴 수 없는데 전부 초록"의 네 번째 경로.
   // 부서 수신자는 특보를 **실제로 받는 사람**인데, 그 명단을 지정하는 유일한 화면인
-  // 여기에만 연결 상태 표시가 없었다(특보 기준 화면의 Alert 수신자 칩에는 있다).
-  // 전원이 미연결이면 승인해도 그 부서 몫은 0명에게 나간다.
-  describe("부서 수신자의 카카오워크 연결 상태 (검증 §신규-1)", () => {
+  // 여기에만 연락 가능 표시가 없었다(특보 기준 화면의 Alert 수신자 칩에는 있다).
+  // 전원에게 번호가 없으면 승인해도 그 부서 몫은 0명에게 나간다.
+  //
+  // **SMS로 바뀌어도 이 표시는 그대로 남는다** — 근거만 카카오워크 연결에서
+  // 휴대폰 번호로 옮겨 왔고, 표시가 없을 때 벌어지는 일은 똑같다.
+  describe("부서 수신자의 연락 가능 여부 (검증 §신규-1)", () => {
     function renderWithRecipients(recipients: unknown[], employees: unknown[]) {
       mocks.authState.employee = adminEmployee();
       mocks.listDepartments.mockResolvedValue([
@@ -394,53 +397,74 @@ describe("Guidelines 본문 길이 상한 (W-30)", () => {
       );
     }
 
-    const UNLINKED = {
+    const NO_PHONE = {
       ...staffEmployee(),
-      id: "emp-unlinked",
+      id: "emp-unreachable",
       name: "안전일",
       email: "safe1@example.com",
-      kakaowork_user_id: null,
+      phone: null,
+      notifiable: false,
       department_id: "l1",
     };
-    const LINKED = {
+    const WITH_PHONE = {
       ...staffEmployee(),
-      id: "emp-linked",
+      id: "emp-reachable",
       name: "안전이",
       email: "safe2@example.com",
-      kakaowork_user_id: "kw-2",
+      phone: "010-4000-0002",
+      notifiable: true,
       department_id: "l1",
     };
-    const recipientOf = (e: { id: string; name: string; kakaowork_user_id: string | null }) => ({
+    // **형식이 깨진 옛 값**을 가진 사람. 칸에는 번호가 보이지만 서버는 보낼 수 없다고
+    // 판정한다 — 화면이 `phone !== null`로 스스로 세면 이 사람이 "연락 가능"으로
+    // 잡히고, 그 순간 화면은 초록인데 실제 발송은 0명이 된다.
+    const BAD_PHONE = {
+      ...staffEmployee(),
+      id: "emp-badphone",
+      name: "안전삼",
+      email: "safe3@example.com",
+      phone: "02-123-4567",
+      notifiable: false,
+      department_id: "l1",
+    };
+    const recipientOf = (e: { id: string; name: string; phone: string | null; notifiable: boolean }) => ({
       department_id: "l1",
       employee_id: e.id,
       name: e.name,
       role: "staff",
-      kakaowork_user_id: e.kakaowork_user_id,
+      phone: e.phone,
+      notifiable: e.notifiable,
     });
 
-    it("미연결 수신자 칩에 '카카오워크 미연결'이 붙는다", async () => {
-      renderWithRecipients([recipientOf(UNLINKED), recipientOf(LINKED)], [UNLINKED, LINKED]);
-      expect(await screen.findByText(/안전일 · 실무자 · 카카오워크 미연결/)).toBeInTheDocument();
-      // 연결된 사람에게는 붙지 않는다 — 라벨이 늘 붙어 있으면 아무 정보도 아니다.
+    it("번호가 없는 수신자 칩에 '휴대폰 번호 없음'이 붙는다", async () => {
+      renderWithRecipients([recipientOf(NO_PHONE), recipientOf(WITH_PHONE)], [NO_PHONE, WITH_PHONE]);
+      expect(await screen.findByText(/안전일 · 실무자 · 휴대폰 번호 없음/)).toBeInTheDocument();
+      // 번호가 있는 사람에게는 붙지 않는다 — 라벨이 늘 붙어 있으면 아무 정보도 아니다.
       expect(screen.getByText("안전이 · 실무자")).toBeInTheDocument();
     });
 
-    it("부서 트리가 '전원 미연결'을 말한다 — 인원 수만 보면 초록으로 읽힌다", async () => {
-      renderWithRecipients([recipientOf(UNLINKED)], [UNLINKED]);
-      expect(await screen.findByText("1명 · 전원 미연결")).toBeInTheDocument();
+    // 번호 문자열이 아니라 **서버의 판정**을 봐야 한다는 것을 못박는다.
+    it("번호는 있는데 서버가 못 보낸다고 하면 그 사람도 경고로 표시된다", async () => {
+      renderWithRecipients([recipientOf(BAD_PHONE)], [BAD_PHONE]);
+      expect(await screen.findByText(/안전삼 · 실무자 · 휴대폰 번호 없음/)).toBeInTheDocument();
     });
 
-    it("한 명이라도 연결돼 있으면 인원 수만 보여 준다", async () => {
-      renderWithRecipients([recipientOf(UNLINKED), recipientOf(LINKED)], [UNLINKED, LINKED]);
+    it("부서 트리가 '전원 번호 없음'을 말한다 — 인원 수만 보면 초록으로 읽힌다", async () => {
+      renderWithRecipients([recipientOf(NO_PHONE)], [NO_PHONE]);
+      expect(await screen.findByText("1명 · 전원 번호 없음")).toBeInTheDocument();
+    });
+
+    it("한 명이라도 번호가 있으면 인원 수만 보여 준다", async () => {
+      renderWithRecipients([recipientOf(NO_PHONE), recipientOf(WITH_PHONE)], [NO_PHONE, WITH_PHONE]);
       expect(await screen.findByText("2명")).toBeInTheDocument();
-      expect(screen.queryByText(/전원 미연결/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/전원 번호 없음/)).not.toBeInTheDocument();
     });
 
-    it("수신자를 고르는 검색 목록에서도 미연결이 보인다", async () => {
-      renderWithRecipients([], [UNLINKED, LINKED]);
+    it("수신자를 고르는 검색 목록에서도 번호 없음이 보인다", async () => {
+      renderWithRecipients([], [NO_PHONE, WITH_PHONE]);
       await screen.findByText("폭우 대응 지침");
       fireEvent.click(screen.getByRole("button", { name: "+ 수신자 추가" }));
-      expect(await screen.findByText(/safe1@example.com · 카카오워크 미연결/)).toBeInTheDocument();
+      expect(await screen.findByText(/safe1@example.com · 휴대폰 번호 없음/)).toBeInTheDocument();
       expect(screen.getByText("safe2@example.com")).toBeInTheDocument();
     });
   });

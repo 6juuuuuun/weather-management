@@ -125,7 +125,8 @@ type RecipientEmployee = {
   name: string;
   role: EmpRole;
   department_id: string | null;
-  kakaowork_user_id: string | null;
+  /** 이 사람에게 특보를 보낼 수 있는가. 서버가 판정해 내려준다(형식 규칙은 서버에만 있다). */
+  notifiable: boolean;
 };
 
 export default function Criteria() {
@@ -181,9 +182,9 @@ export default function Criteria() {
 
         const toRecipient = (r: {
           id: string; name: string; role: EmpRole;
-          department_id: string | null; kakaowork_user_id: string | null;
+          department_id: string | null; notifiable: boolean;
         }) => ({ id: r.id, name: r.name, role: r.role,
-                 department_id: r.department_id, kakaowork_user_id: r.kakaowork_user_id });
+                 department_id: r.department_id, notifiable: r.notifiable });
         setRecipients(recipientRows.map((r) => toRecipient({ ...r, id: r.employee_id })));
         setCandidates(candidateRows.map((c) => toRecipient(c)));
         setDepartments(deptRows);
@@ -409,14 +410,14 @@ export default function Criteria() {
           {recipients.map((r) => (
             <Chip
               key={r.id}
-              // 이름만으로는 동명이인을 구분할 수 없고, 연결 상태가 없으면
-              // 미연결인 사람을 승인권자로 지정해 두고도 그 사실을 알 방법이
-              // 없다 — 그 사람은 승인 요청 DM을 받지 못한다(QA W-31).
+              // 이름만으로는 동명이인을 구분할 수 없고, 연락 가능 여부가 없으면
+              // 번호가 없는 사람을 승인권자로 지정해 두고도 그 사실을 알 방법이
+              // 없다 — 그 사람은 승인 요청 문자를 받지 못한다(QA W-31).
               label={
                 `${r.name} · ${deptLabel(r.department_id)}` +
-                (r.kakaowork_user_id ? "" : " · 카카오워크 미연결")
+                (r.notifiable ? "" : " · 휴대폰 번호 없음")
               }
-              tone={r.kakaowork_user_id ? "default" : "warn"}
+              tone={r.notifiable ? "default" : "warn"}
               onRemove={isAdmin ? () => handleRemoveRecipient(r.id) : undefined}
             />
           ))}
@@ -442,7 +443,7 @@ export default function Criteria() {
                   {addableCandidates.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name} · {deptLabel(c.department_id)} · {ROLE_LABEL[c.role]}
-                      {c.kakaowork_user_id ? "" : " (카카오워크 미연결)"}
+                      {c.notifiable ? "" : " (휴대폰 번호 없음)"}
                     </option>
                   ))}
                 </select>

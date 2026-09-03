@@ -464,6 +464,19 @@
   white-space: nowrap;
 }
 
+/* 발송이 사람에게 닿지 않는다는 사실을 승인 버튼 옆에서 말한다. 회색으로 조용히
+   적으면 승인자는 읽지 않고 지나간다 — 이 화면에서 그 문장은 경고여야 한다. */
+.rail-channel-warning {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn-strong) 40%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warn-strong) 12%, var(--canvas));
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .rail-recipients-row {
   display: flex;
   align-items: baseline;

@@ -11,7 +11,7 @@ const content: DeptBlock[] = [
     department_name: "객실",
     staff_actions: ["수건 2개 배포"],
     guest_notice: "안내문",
-    recipients: [{ employee_id: "e1", name: "홍수진", kakaowork_user_id: "kw1" }],
+    recipients: [{ employee_id: "e1", name: "홍수진", phone: "010-6000-0001" }],
     selected: true,
   },
 ];

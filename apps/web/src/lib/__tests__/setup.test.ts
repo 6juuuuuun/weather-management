@@ -60,9 +60,14 @@ describe("computeSetupChecklist", () => {
   // 이 항목이 없던 동안 이 시스템은 "설치 완료 5/5"를 띄우면서 특보를 한 건도
   // 전달하지 못했다. 수신자를 "지정했는가"와 그 사람에게 "닿을 수 있는가"는
   // 다른 질문이다 — 체크리스트가 뒤쪽까지 묻지 않으면 운영자는 준비가 끝난 줄 안다.
-  test("수신자를 지정했어도 카카오워크에 연결된 사람이 0명이면 미완료다", () => {
+  //
+  // **SMS로 바뀌어도 이 테스트는 그대로 남는다.** 근거가 카카오워크 연결에서
+  // 휴대폰 번호로 옮겨 왔을 뿐, 묻는 것은 글자 하나 달라지지 않았다 — 이 값이
+  // 0이면 특보가 아무에게도 가지 않는다. 연결이라는 절차가 사라졌다고 이 테스트를
+  // 함께 지우면, QA가 네 번 찾아낸 결함을 지켜보는 눈이 하나도 남지 않는다.
+  test("수신자를 지정했어도 보낼 수 있는 번호를 가진 사람이 0명이면 미완료다", () => {
     const r = computeSetupChecklist({ ...READY, alertRecipientCount: 2, notifiableAlertRecipientCount: 0 });
-    const item = r.items.find((i) => i.label.includes("카카오워크"))!;
+    const item = r.items.find((i) => i.label.includes("전화번호"))!;
     expect(item).toBeDefined();
     expect(item.ok).toBe(false);
     // "Alert 수신자" 항목은 여전히 완료다 — 두 항목이 서로 다른 것을 본다는 뜻이다.
@@ -70,9 +75,9 @@ describe("computeSetupChecklist", () => {
     expect(r.done).toBe(7);
   });
 
-  test("한 명이라도 연결되어 있으면 완료다", () => {
+  test("한 명이라도 번호가 있으면 완료다", () => {
     const r = computeSetupChecklist({ ...READY, alertRecipientCount: 5, notifiableAlertRecipientCount: 1 });
-    expect(r.items.find((i) => i.label.includes("카카오워크"))!.ok).toBe(true);
+    expect(r.items.find((i) => i.label.includes("전화번호"))!.ok).toBe(true);
     expect(r.done).toBe(8);
   });
 
@@ -96,10 +101,10 @@ describe("computeSetupChecklist", () => {
   });
 
   // 검증 §신규-1 — "알릴 수 없는데 전부 초록"의 네 번째 경로.
-  // 부서 수신자를 **지정은 했는데** 그 사람들이 전원 카카오워크 미연결이면 승인
-  // 발송도 매시간 반복 발송도 0명에게 나간다. 앞의 여섯 항목은 전부 초록이었다 —
-  // `카카오워크 연결` 항목은 Alert 수신자(승인자)만 세기 때문이다.
-  test("부서 수신자를 지정했어도 그 부서에 연결된 사람이 0명이면 미완료다", () => {
+  // 부서 수신자를 **지정은 했는데** 그 사람들에게 전원 번호가 없으면 승인 발송도
+  // 매시간 반복 발송도 0명에게 나간다. 앞의 여섯 항목은 전부 초록이었다 —
+  // `수신자 전화번호` 항목은 Alert 수신자(승인자)만 세기 때문이다.
+  test("부서 수신자를 지정했어도 그 부서에 번호 있는 사람이 0명이면 미완료다", () => {
     const r = computeSetupChecklist({
       ...READY,
       guidelineDeptWithoutRecipientCount: 0,
@@ -107,15 +112,16 @@ describe("computeSetupChecklist", () => {
     });
     expect(r.items.find((i) => i.label === "부서 수신자")!.ok).toBe(false);
     // 승인자 쪽은 멀쩡하다 — 이 항목이 **다른 명단**을 본다는 것이 요점이다.
-    expect(r.items.find((i) => i.label.includes("카카오워크"))!.ok).toBe(true);
+    expect(r.items.find((i) => i.label.includes("전화번호"))!.ok).toBe(true);
     expect(r.done).toBe(7);
   });
 
   // 검증 라운드 E — 표에 없던 **25번째** "아무에게도 못 가는데 전부 초록".
   //
-  // `NOTIFY_CHANNEL=console`이 운영에 남으면 앞의 일곱 항목이 전부 초록인 채로
-  // 모든 DM이 앱 로그로만 나간다. 리허설 스택의 `.env`를 실서버로 복사하는 것이
-  // 가장 흔한 경로다 — 그때 화면은 "설치 완료 7/7"을 띄우고 있었다.
+  // 실효 채널이 로그 전용이면 앞의 일곱 항목이 전부 초록인 채로 모든 메시지가 앱
+  // 로그로만 나간다. **지금이 정확히 그 상태다** — LMS 제공자 자료를 아직 받지
+  // 못해 로그 전용이 유일한 구현이다. 그래서 이 항목은 당분간 계속 빨간불이고,
+  // 그것이 사실이다(사용자 판정 2).
   test("실효 채널이 로그 전용이면 나머지가 전부 초록이어도 완료가 아니다", () => {
     const r = computeSetupChecklist({ ...READY, logOnlyChannel: true });
     const item = r.items.find((i) => i.label === "실제 발송")!;
@@ -126,7 +132,7 @@ describe("computeSetupChecklist", () => {
     expect(r.done).toBe(7);
   });
 
-  test("실효 채널이 실제 카카오워크면 이 항목은 완료다", () => {
+  test("실효 채널이 실제 발송 채널이면 이 항목은 완료다 — 제공자가 붙는 날의 계약이다", () => {
     const r = computeSetupChecklist({ ...READY, logOnlyChannel: false });
     expect(r.items.find((i) => i.label === "실제 발송")!.ok).toBe(true);
   });

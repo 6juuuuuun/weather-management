@@ -35,30 +35,26 @@ type EmployeeFormState = {
   email: string;
   department_id: string | null;
   role: EmpRole;
-  // 카카오워크 ID는 보통 서버가 이메일로 조회해 채운다. 조회가 실패하는 경우가
-  // 실제로 있어서(카카오워크 계정 이메일이 회사 이메일과 다른 임원, 봇이 못 찾는
-  // 경우, 조직 이관 중) 운영 안내서 §1-6은 "직접 입력하라"고 지시하는데 **그
-  // 입력란이 제품에 없었다**(QA W-16). 서버는 처음부터 이 값을 받는다.
-  kakaowork_user_id: string;
-  // 저장 직후 "연결이 끊어졌는가"를 판정하려면 저장 전 값을 알아야 한다.
-  prev_kakaowork_user_id: string | null;
-  // 휴대폰 번호. 서버는 처음부터 이 값을 받는데(PATCH /api/employees/:id) 화면에
-  // 입력란이 없어서, 가입 때 적지 않은 사람의 번호를 관리자가 채울 길이 없었다.
+  // 휴대폰 번호. **이 칸이 곧 발송 주소다**(SMS 전환). 카카오워크 시절에는 이메일
+  // 조회로 채우는 별도의 값이 있었고, 그 조회가 실패하는 사람을 위해 "카카오워크 ID
+  // 직접 입력"이라는 칸이 하나 더 있었다(QA W-16). 유도가 사라져 그 칸도 사라졌다.
   phone: string;
   // **불러온 그대로의 값**이다. 저장할 때 "실제로 손댔는가"를 이 값으로 가른다 —
   // 아래 submitForm의 주석에 이유가 있다.
   prev_phone: string | null;
+  // 저장 직후 "이 직원이 연락 불가가 됐는가"를 판정하려면 저장 전 상태를 알아야 한다.
+  // 번호 문자열이 아니라 **서버의 판정**을 들고 있는다 — 형식이 깨진 옛 값은
+  // 문자열로는 "있음"이지만 발송 대상은 아니다.
+  prev_notifiable: boolean;
 };
 
 // 서버(server/src/api/org.ts)와 같은 상한이어야 한다 — 화면이 더 관대하면
 // 사용자는 다 입력한 뒤에야 400을 본다(QA W-30).
 const MAX_NAME = 40;
-const MAX_KAKAOWORK_ID = 64;
 
 const EMPTY_FORM: EmployeeFormState = {
   id: null, name: "", email: "", department_id: null, role: "staff",
-  kakaowork_user_id: "", prev_kakaowork_user_id: null,
-  phone: "", prev_phone: null,
+  phone: "", prev_phone: null, prev_notifiable: false,
 };
 
 function isToday(iso: string): boolean {
@@ -195,12 +191,11 @@ export default function Employees() {
   function openEdit(e: EmployeeRow) {
     setForm({
       id: e.id, name: e.name, email: e.email, department_id: e.department_id, role: e.role,
-      kakaowork_user_id: e.kakaowork_user_id ?? "",
-      prev_kakaowork_user_id: e.kakaowork_user_id,
       // 이미 저장된 값은 **그대로** 보여준다. 서식을 다시 입히면 옛 규칙으로
       // 저장된 번호(유선·내선 등)가 화면에서 말없이 뭉개진다.
       phone: e.phone ?? "",
       prev_phone: e.phone,
+      prev_notifiable: e.notifiable,
     });
     setFormOpen(true);
   }
@@ -217,10 +212,6 @@ export default function Employees() {
         // 병합 키다 — 보내지 않으면 관리자가 오타를 고쳤다고 믿는데 값은 버려지고,
         // 그 직원은 가입해도 부서·역할이 유실된 별도 계정이 된다. 서버가 중복 이메일에
         // 409를 주므로 아래 catch가 그 문구를 그대로 보여준다.
-        // kakaowork_user_id를 **함께** 보낸다. 서버는 이 키가 있으면 이메일로
-        // 다시 조회하지 않고 보낸 값을 존중한다(server/src/api/org.ts) — 그래서
-        // 관리자가 손으로 넣은 값이 이메일 저장 한 번에 지워지던 충돌도 함께
-        // 닫힌다. 빈 문자열은 서버가 "연결 해제"로 받아 null로 저장한다.
         // 전화번호는 **바뀌었을 때만** 보낸다. 서버는 이제 형식을 검사하는데
         // (server/src/phone.ts) DB에는 그 규칙 이전에 들어온 값이 그대로 남아 있다 —
         // 늘 함께 보내면, 옛 번호를 가진 직원의 역할만 바꾸려던 관리자가 자기가
@@ -231,18 +222,22 @@ export default function Employees() {
           email: form.email.trim(),
           department_id: form.department_id,
           role: form.role,
-          kakaowork_user_id: form.kakaowork_user_id.trim() || null,
         };
         if (form.phone.trim() !== (form.prev_phone ?? "")) {
           patch.phone = form.phone.trim() || null;
         }
         const saved = await updateEmployee(form.id, patch);
-        // 연결이 있다가 사라졌으면 그 사실을 말해 준다. 예전에는 점만 초록에서
-        // 회색으로 바뀌고 아무 경고도 없었다 — 그 직원은 그날부터 특보를 못 받는다.
-        if (form.prev_kakaowork_user_id && !saved.kakaowork_user_id) {
+        // 연락 가능하던 사람이 저장 뒤 불가가 됐으면 그 사실을 말해 준다. 예전에는
+        // 점만 초록에서 회색으로 바뀌고 아무 경고도 없었다 — 그 직원은 그날부터
+        // 특보를 못 받는다. **카카오워크 연결이 끊기던 자리를 그대로 물려받는다.**
+        //
+        // 번호 문자열이 아니라 서버가 내린 `notifiable`을 견준다: 관리자가 번호를
+        // 지운 경우뿐 아니라, 형식이 맞지 않는 값으로 바꾼 경우까지 같은 사실
+        // ("이 사람에게는 이제 안 간다")로 잡힌다.
+        if (form.prev_notifiable && !saved.notifiable) {
           setToast({
             kind: "error",
-            message: "저장했지만 카카오워크 연결이 끊어졌습니다 — 이 직원은 특보 DM을 받지 못합니다",
+            message: "저장했지만 이 직원은 이제 특보 문자를 받지 못합니다 — 휴대폰 번호를 확인해 주세요",
           });
         } else {
           setToast({ kind: "ok", message: "직원 정보를 수정했습니다" });
@@ -518,7 +513,7 @@ export default function Employees() {
                 <th>부서</th>
                 <th>역할</th>
                 <th>이메일</th>
-                <th>카카오워크</th>
+                <th>휴대폰</th>
                 <th>계정</th>
                 <th aria-label="작업" />
               </tr>
@@ -559,7 +554,11 @@ export default function Employees() {
                     </td>
                     <td className="employees-email">{e.email}</td>
                     <td>
-                      <StatusDot ok={!!e.kakaowork_user_id} label={e.kakaowork_user_id ? "연결됨" : "미연결"} />
+                      {/* 번호 문자열이 아니라 서버의 판정(notifiable)으로 그린다 —
+                          형식이 깨진 옛 값은 칸에 보이지만 발송 대상은 아니다.
+                          "있음"이라고 그려 놓고 실제로는 안 가는 것이 이 프로젝트가
+                          네 번 고친 상태의 모양이다. */}
+                      <StatusDot ok={e.notifiable} label={e.notifiable ? "있음" : "없음"} />
                     </td>
                     <td>
                       {!accountId ? (
@@ -683,7 +682,7 @@ export default function Employees() {
             </tbody>
           </table>
           <p className="employees-footnote">
-            카카오워크 미연결 직원은 메시지를 받을 수 없습니다 · 삭제 시 지침 수신자 지정에서도 제외됩니다
+            휴대폰 번호가 없는 직원은 특보 문자를 받을 수 없습니다 · 삭제 시 지침 수신자 지정에서도 제외됩니다
           </p>
         </div>
       )}
@@ -768,24 +767,10 @@ export default function Employees() {
                 목록에서만 나옵니다
               </small>
             </label>
-            {/* 수정할 때만 보여준다 — 사전 등록(추가)은 서버가 이메일로 조회해
-                채우는 것이 정상 경로이고, 실패했을 때 고치는 자리가 여기다. */}
-            {form.id && (
-              <label className="employees-form-field">
-                <span>카카오워크 ID</span>
-                <input
-                  type="text"
-                  maxLength={MAX_KAKAOWORK_ID}
-                  value={form.kakaowork_user_id}
-                  placeholder="자동 연결 실패 시에만 직접 입력"
-                  onChange={(e) => setForm((f) => ({ ...f, kakaowork_user_id: e.target.value }))}
-                />
-                <small className="employees-form-hint">
-                  보통은 이메일로 자동 연결됩니다. 카카오워크 계정 이메일이 회사 이메일과 다르면
-                  여기에 직접 넣으세요 · 비우면 연결이 해제되고 그 직원은 특보 DM을 받지 못합니다
-                </small>
-              </label>
-            )}
+            {/* 카카오워크 ID 입력란은 사라졌다(SMS 전환). 그 칸이 필요했던 이유는
+                발송 주소를 이메일에서 **유도**했고 그 유도가 실패하는 사람이 있었기
+                때문이다 — 관리자가 손으로 메워 주는 자리였다. 이제 발송 주소를 넣는
+                칸은 위의 휴대폰 번호 하나뿐이고, 유도가 없으니 메울 것도 없다. */}
           </div>
         </Modal>
       )}

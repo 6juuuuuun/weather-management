@@ -49,7 +49,7 @@ const admin: Employee = {
   auth_user_id: "u-admin",
   name: "김운영",
   email: "kim@gonjiam.com",
-  kakaowork_user_id: null,
+  notifiable: false,
   department_id: null,
   role: "admin",
   phone: null,
@@ -61,7 +61,7 @@ const target = {
   auth_user_id: "u-target",
   name: "홍길동",
   email: "hong-typo@gonjiam.com",
-  kakaowork_user_id: null,
+  notifiable: false,
   department_id: "d1",
   role: "staff" as const,
   phone: null,
@@ -74,7 +74,7 @@ const unregistered = {
   auth_user_id: null,
   name: "미가입자",
   email: "pending@gonjiam.com",
-  kakaowork_user_id: null,
+  notifiable: false,
   department_id: "d1",
   role: "staff" as const,
   phone: null,
@@ -167,7 +167,7 @@ describe("Employees 삭제 확인 (QA W-01)", () => {
   it("확인창이 로그인 계정 삭제와 승인 권한 감소를 말한다", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "emp-1", name: "홍길동", role: "staff", kakaowork_user_id: null },
+      { employee_id: "emp-1", name: "홍길동", role: "staff", phone: null, notifiable: false },
     ]);
     renderPage();
 
@@ -234,8 +234,8 @@ describe("Employees 역할 변경 확인 (QA W-19 · 결정 D-3c)", () => {
   it("Alert 수신자를 staff로 내릴 때 수신자에서 뺄지 묻고, 고른 대로 한다", async () => {
     mocks.listEmployees.mockResolvedValue([{ ...target, role: "approver" as const }]);
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "emp-1", name: "홍길동", role: "approver", kakaowork_user_id: null },
-      { employee_id: "emp-7", name: "남은이", role: "approver", kakaowork_user_id: null },
+      { employee_id: "emp-1", name: "홍길동", role: "approver", phone: null, notifiable: false },
+      { employee_id: "emp-7", name: "남은이", role: "approver", phone: null, notifiable: false },
     ]);
     renderPage();
     fireEvent.change(await screen.findByLabelText("홍길동 역할"), { target: { value: "staff" } });
@@ -252,7 +252,7 @@ describe("Employees 역할 변경 확인 (QA W-19 · 결정 D-3c)", () => {
   it("\"역할만 변경\"을 고르면 수신자 목록은 건드리지 않는다", async () => {
     mocks.listEmployees.mockResolvedValue([{ ...target, role: "approver" as const }]);
     mocks.alertRecipients.mockResolvedValue([
-      { employee_id: "emp-1", name: "홍길동", role: "approver", kakaowork_user_id: null },
+      { employee_id: "emp-1", name: "홍길동", role: "approver", phone: null, notifiable: false },
     ]);
     renderPage();
     fireEvent.change(await screen.findByLabelText("홍길동 역할"), { target: { value: "staff" } });
@@ -436,79 +436,64 @@ describe("Employees 부서 계층 (QA W-15)", () => {
   });
 });
 
-// QA W-16 · 운영 안내서 §1-6은 "카카오워크 연결이 안 되면 직접 입력하라"고 지시하는데
-// 그 입력란이 제품에 없었다. 서버(PATCH /api/employees)는 처음부터 이 값을 받는다.
-describe("Employees 카카오워크 ID 직접 입력 (W-16)", () => {
+// QA W-16의 "카카오워크 ID 직접 입력"란은 SMS 전환에서 사라졌다.
+//
+// 그 칸이 필요했던 이유는 발송 주소를 이메일에서 **유도**했고 그 유도가 실패하는
+// 사람이 있었기 때문이다 — 관리자가 손으로 메워 주는 자리였다. 이제 발송 주소를
+// 넣는 칸은 휴대폰 번호 하나뿐이고, 유도가 없으니 메울 것도 없다.
+//
+// **다만 그 칸이 지고 있던 경고는 여기 그대로 남는다**: 저장 한 번으로 어떤 직원이
+// 연락 불가가 되면 그 사실을 말해 줘야 한다. 그 직원은 그날부터 특보를 못 받는데,
+// 예전에는 점만 초록에서 회색으로 바뀌고 아무 경고도 없었다.
+describe("Employees 저장이 연락 가능 여부를 바꿀 때 (W-16 후속)", () => {
   async function openEditModal() {
     renderPage();
     fireEvent.click(await screen.findByLabelText("홍길동 수정"));
     return await screen.findByText("직원 수정");
   }
 
-  it("수정 모달에 카카오워크 ID 입력란이 있다", async () => {
+  // 사라진 칸이 되살아나면 잡는다 — 채울 수 없는 값을 받는 입력란은 관리자에게
+  // "여기에 뭔가 넣어야 하나"만 남긴다.
+  it("수정 모달에 카카오워크 ID 입력란이 없다", async () => {
     await openEditModal();
-    expect(screen.getByText("카카오워크 ID")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("자동 연결 실패 시에만 직접 입력")).toBeInTheDocument();
+    expect(screen.queryByText("카카오워크 ID")).not.toBeInTheDocument();
   });
 
-  it("입력한 값을 updateEmployee에 함께 실어 보낸다", async () => {
-    await openEditModal();
-    fireEvent.change(screen.getByPlaceholderText("자동 연결 실패 시에만 직접 입력"), {
-      target: { value: "kw-manual-1" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "저장" }));
-
-    await waitFor(() => expect(mocks.updateEmployee).toHaveBeenCalled());
-    expect(mocks.updateEmployee.mock.calls[0]![1]).toMatchObject({ kakaowork_user_id: "kw-manual-1" });
-  });
-
-  // 이메일과 **함께** 보내야 한다. 서버는 이 키가 있으면 이메일로 다시 조회하지
-  // 않고 보낸 값을 존중한다 — 그래서 손으로 넣은 값이 이메일 저장 한 번에
-  // 지워지던 충돌(QA I-2)도 함께 닫힌다.
-  it("이미 연결된 값은 그대로 다시 보내 이메일 수정에 지워지지 않게 한다", async () => {
-    mocks.listEmployees.mockResolvedValue([{ ...target, kakaowork_user_id: "kw-existing" }]);
-    await openEditModal();
-    fireEvent.change(screen.getByDisplayValue("hong-typo@gonjiam.com"), {
-      target: { value: "hong@gonjiam.com" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "저장" }));
-
-    await waitFor(() => expect(mocks.updateEmployee).toHaveBeenCalled());
-    expect(mocks.updateEmployee.mock.calls[0]![1]).toMatchObject({
-      email: "hong@gonjiam.com",
-      kakaowork_user_id: "kw-existing",
-    });
-  });
-
-  it("비우면 연결 해제(null)로 보낸다", async () => {
-    mocks.listEmployees.mockResolvedValue([{ ...target, kakaowork_user_id: "kw-existing" }]);
-    await openEditModal();
-    fireEvent.change(screen.getByDisplayValue("kw-existing"), { target: { value: "  " } });
-    fireEvent.click(screen.getByRole("button", { name: "저장" }));
-
-    await waitFor(() => expect(mocks.updateEmployee).toHaveBeenCalled());
-    expect(mocks.updateEmployee.mock.calls[0]![1]).toMatchObject({ kakaowork_user_id: null });
-  });
-
-  // 연결이 끊기면 그 직원은 그날부터 특보 DM을 받지 못한다. 예전에는 점만
-  // 초록에서 회색으로 바뀌고 아무 경고도 없었다.
-  it("저장 결과 연결이 끊겼으면 성공 토스트 대신 경고를 보여준다", async () => {
-    mocks.listEmployees.mockResolvedValue([{ ...target, kakaowork_user_id: "kw-existing" }]);
-    mocks.updateEmployee.mockResolvedValue({ ...target, kakaowork_user_id: null });
+  it("연락 가능하던 사람이 저장 뒤 불가가 되면 성공 토스트 대신 경고를 보여준다", async () => {
+    mocks.listEmployees.mockResolvedValue([
+      { ...target, phone: "010-1111-2222", notifiable: true },
+    ]);
+    mocks.updateEmployee.mockResolvedValue({ ...target, phone: null, notifiable: false });
     await openEditModal();
     fireEvent.click(screen.getByRole("button", { name: "저장" }));
 
-    expect(await screen.findByText(/카카오워크 연결이 끊어졌습니다/)).toBeInTheDocument();
+    expect(await screen.findByText(/이 직원은 이제 특보 문자를 받지 못합니다/)).toBeInTheDocument();
     expect(screen.queryByText("직원 정보를 수정했습니다")).not.toBeInTheDocument();
   });
 
-  // 사전 등록(추가)에는 이 칸을 두지 않는다 — 서버가 이메일로 조회해 채우는 것이
-  // 정상 경로이고, 실패했을 때 고치는 자리가 수정 모달이다.
-  it("직원 추가 모달에는 이 입력란이 없다", async () => {
-    renderPage();
-    fireEvent.click(await screen.findByRole("button", { name: "직원 추가" }));
-    await screen.findByText("사전 등록용입니다 · 가입 시 이메일이 일치하면 자동으로 병합됩니다");
-    expect(screen.queryByText("카카오워크 ID")).not.toBeInTheDocument();
+  // **번호를 지운 경우만이 아니다.** 형식에 맞지 않는 값으로 바꿔도 그 사람에게는
+  // 가지 않는다 — 화면이 문자열만 보면 "번호가 있다"고 읽고 조용히 지나간다.
+  it("형식이 맞지 않는 번호로 바뀌어도 같은 경고를 보여준다", async () => {
+    mocks.listEmployees.mockResolvedValue([
+      { ...target, phone: "010-1111-2222", notifiable: true },
+    ]);
+    mocks.updateEmployee.mockResolvedValue({ ...target, phone: "02-123-4567", notifiable: false });
+    await openEditModal();
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    expect(await screen.findByText(/이 직원은 이제 특보 문자를 받지 못합니다/)).toBeInTheDocument();
+  });
+
+  // 반대쪽을 고정하지 않으면 "늘 경고가 뜬다"로도 위 두 테스트가 통과한다.
+  it("연락 가능한 상태가 그대로면 평소의 성공 토스트다", async () => {
+    mocks.listEmployees.mockResolvedValue([
+      { ...target, phone: "010-1111-2222", notifiable: true },
+    ]);
+    mocks.updateEmployee.mockResolvedValue({ ...target, phone: "010-1111-2222", notifiable: true });
+    await openEditModal();
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    expect(await screen.findByText("직원 정보를 수정했습니다")).toBeInTheDocument();
   });
 });
 
