@@ -12,10 +12,9 @@ import { runSend } from "../src/jobs/send.ts";
 import { checkHealth } from "../src/jobs/watchdog.ts";
 import type { NotificationChannel } from "../src/shared/channel.ts";
 
-// HTTP 경로(POST /api/send)는 채널을 주입받지 않고 env로 고른다. 루트 .env에는
-// KAKAOWORK_BOT_KEY가 들어 있어서 이걸 그대로 두면 테스트가 실제 카카오워크 API로
-// 나간다 — 콘솔 채널로 못박는다.
-process.env.NOTIFY_CHANNEL = "console";
+// HTTP 경로(POST /api/send)는 채널을 주입받지 않고 env로 고른다. 루트 .env에
+// 실제 제공자 설정이 들어오면 테스트가 진짜 문자를 내보낸다 — 로그 채널로 못박는다.
+process.env.SMS_PROVIDER = "";
 
 const DEPT_PREFIX = "zzjob-dept-";
 const here = dirname(fileURLToPath(import.meta.url));
@@ -80,11 +79,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function makeEmployee(opts: { name: string; email: string; kw?: string | null; role?: string }) {
+async function makeEmployee(opts: { name: string; email: string; phone?: string | null; role?: string }) {
   return withService(async (q) => {
     const { rows } = await q.query(
-      "insert into employees (name, email, kakaowork_user_id, role) values ($1, $2, $3, $4) returning id",
-      [opts.name, opts.email, opts.kw ?? null, opts.role ?? "staff"],
+      "insert into employees (name, email, phone, role) values ($1, $2, $3, $4) returning id",
+      [opts.name, opts.email, opts.phone ?? null, opts.role ?? "staff"],
     );
     return rows[0].id as string;
   });
@@ -236,7 +235,7 @@ describe("관측 수집", () => {
 
   // 결측이 이어지는데 아무도 모르면 화면은 몇 시간이고 옛 값을 붙들고 있게 된다.
   it("결측이 2회까지는 관리자에게 알리지 않는다", async () => {
-    await makeEmployee({ name: "관리자", email: "jobs-admin@gonjiam.com", kw: "kw-admin", role: "admin" });
+    await makeEmployee({ name: "관리자", email: "jobs-admin@gonjiam.com", phone: "010-0000-0002", role: "admin" });
     await withService((q) =>
       q.query("insert into weather_observations (observed_at, missing) values (now() - interval '2 hours', true)"));
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network")));
@@ -246,9 +245,9 @@ describe("관측 수집", () => {
   });
 
   it("결측이 3회 연속이면 관리자에게 알린다", async () => {
-    await makeEmployee({ name: "관리자", email: "jobs-admin2@gonjiam.com", kw: "kw-admin", role: "admin" });
-    // 카카오워크 미연결 관리자는 보낼 곳이 없다 — 수신자 목록에 끼면 안 된다.
-    await makeEmployee({ name: "미연결관리자", email: "jobs-admin3@gonjiam.com", kw: null, role: "admin" });
+    await makeEmployee({ name: "관리자", email: "jobs-admin2@gonjiam.com", phone: "010-0000-0002", role: "admin" });
+    // 번호가 없는 관리자는 보낼 곳이 없다 — 수신자 목록에 끼면 안 된다.
+    await makeEmployee({ name: "번호없는관리자", email: "jobs-admin3@gonjiam.com", phone: null, role: "admin" });
     await withService((q) =>
       q.query(
         `insert into weather_observations (observed_at, missing) values
@@ -258,15 +257,15 @@ describe("관측 수집", () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network")));
     const rec = recorder();
     await runWeatherTick({ channel: rec.channel });
-    expect(rec.sent.map((s) => s.to)).toEqual(["kw-admin"]);
+    expect(rec.sent.map((s) => s.to)).toEqual(["010-0000-0002"]);
     expect(rec.sent[0]!.text).toContain("3시간 연속");
   });
 });
 
 describe("특보 판정", () => {
   it("기준을 넘으면 특보·발송 초안을 만들고 알림 수신자에게 승인 요청을 보낸다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "jobs-staff@gonjiam.com", kw: "kw-staff" });
-    const approver = await makeEmployee({ name: "사업부장", email: "jobs-appr@gonjiam.com", kw: "kw-appr" });
+    const staff = await makeEmployee({ name: "객실직원", email: "jobs-staff@gonjiam.com", phone: "010-0000-0011" });
+    const approver = await makeEmployee({ name: "사업부장", email: "jobs-appr@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
     await makeDeptWithGuideline("rain", "watch", staff);
 
@@ -287,17 +286,17 @@ describe("특보 판정", () => {
     expect(msg.status).toBe("draft");
     expect(msg.content).toHaveLength(1);
     expect(msg.content[0]!.recipients).toEqual([
-      { employee_id: staff, name: "객실직원", kakaowork_user_id: "kw-staff" },
+      { employee_id: staff, name: "객실직원", phone: "010-0000-0011" },
     ]);
 
     // 승인 요청은 알림 수신자에게만 간다 — 부서 수신자(kw-staff)에게 미리 나가면 안 된다.
-    expect(rec.sent.map((s) => s.to)).toEqual(["kw-appr"]);
+    expect(rec.sent.map((s) => s.to)).toEqual(["010-0000-0003"]);
     expect(rec.sent[0]!.text).toContain("폭우 주의보");
     expect(rec.sent[0]!.text).toContain(`/events/${ev.id}`);
   });
 
   it("승인 대기 중 비가 그치면 특보를 자동 종료하고 알림 수신자에게 알린다", async () => {
-    const approver = await makeEmployee({ name: "사업부장", email: "jobs-appr2@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "jobs-appr2@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
     await withService((q) =>
       q.query("insert into weather_events (kind, grade, status) values ('rain','watch','PENDING_APPROVAL')"));
@@ -316,12 +315,12 @@ describe("특보 판정", () => {
     });
     expect(ev.status).toBe("RESOLVED");
     expect(ev.closed_at).not.toBe(null);
-    expect(rec.sent.map((s) => s.to)).toEqual(["kw-appr"]);
+    expect(rec.sent.map((s) => s.to)).toEqual(["010-0000-0003"]);
     expect(rec.sent[0]!.text).toContain("자동 종료");
   });
 
   it("승인된 특보가 이어지면 회차를 올려 반복 발송하고 이력을 남긴다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "jobs-staff3@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "jobs-staff3@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId } = await withService(async (q) => {
       const { rows: ev } = await q.query(
@@ -331,7 +330,7 @@ describe("특보 판정", () => {
         "insert into messages (event_id, status, content) values ($1, 'approved', $2::jsonb)",
         [ev[0].id, JSON.stringify([{ department_id: deptId, department_name: "객실",
           staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
-          recipients: [{ employee_id: staff, name: "객실직원", kakaowork_user_id: "kw-staff" }],
+          recipients: [{ employee_id: staff, name: "객실직원", phone: "010-0000-0011" }],
           selected: true }])],
       );
       return { eventId: ev[0].id as string };
@@ -341,7 +340,7 @@ describe("특보 판정", () => {
     const rec = recorder();
     const out = await runWeatherTick({ channel: rec.channel });
     expect(out.actions).toEqual([{ type: "repeat", eventId, kind: "rain", grade: "watch" }]);
-    expect(rec.sent.map((s) => s.to)).toEqual(["kw-staff"]);
+    expect(rec.sent.map((s) => s.to)).toEqual(["010-0000-0011"]);
     expect(rec.sent[0]!.text).toContain("수건 2개 배포");
 
     const { d, ev } = await withService(async (q) => {
@@ -367,9 +366,9 @@ describe("특보 판정", () => {
 
 describe("특보 승격(escalate)", () => {
   it("경보로 승격하면 기존 주의보를 닫고 경보 초안을 새로 만든다", async () => {
-    const approver = await makeEmployee({ name: "사업부장", email: "jobs-esc-appr@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "jobs-esc-appr@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
-    const staff = await makeEmployee({ name: "객실직원", email: "jobs-esc-staff@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "jobs-esc-staff@gonjiam.com", phone: "010-0000-0011" });
     await makeDeptWithGuideline("rain", "warning", staff);
     const watchId = await withService(async (q) => {
       const { rows } = await q.query(
@@ -406,7 +405,7 @@ describe("특보 승격(escalate)", () => {
       return rows;
     });
     expect(msgs.map((m: any) => m.event_id)).toEqual([warning.id]);
-    expect(rec.sent.map((x) => x.to)).toEqual(["kw-appr"]);
+    expect(rec.sent.map((x) => x.to)).toEqual(["010-0000-0003"]);
     expect(rec.sent[0]!.text).toContain("폭우 경보");
   });
 });
@@ -432,7 +431,7 @@ describe("꺼진 종류에 남은 열린 특보", () => {
         "insert into messages (event_id, status, content) values ($1, 'approved', $2::jsonb)",
         [rows[0].id, JSON.stringify([{ department_id: deptId, department_name: "객실",
           staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
-          recipients: [{ employee_id: recipientId, name: "객실담당", kakaowork_user_id: "kw-staff" }],
+          recipients: [{ employee_id: recipientId, name: "객실담당", phone: "010-0000-0011" }],
           selected: true }])],
       );
       return rows[0].id as string;
@@ -440,7 +439,7 @@ describe("꺼진 종류에 남은 열린 특보", () => {
   }
 
   it("종류를 끄면 그 종류의 진행 중 특보가 다음 tick에서 해제된다", async () => {
-    const staff = await makeEmployee({ name: "객실담당", email: "off-heat@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실담당", email: "off-heat@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("heat", "watch", staff);
     const eventId = await activeEvent("heat", staff, deptId);
     await withService((q) => q.query("update alert_settings set enabled = false where kind = 'heat'"));
@@ -462,7 +461,7 @@ describe("꺼진 종류에 남은 열린 특보", () => {
 
   // 켜져 있는 종류의 특보까지 함께 닫으면 그건 훨씬 더 나쁜 사고다.
   it("켜져 있는 종류의 진행 중 특보는 건드리지 않는다", async () => {
-    const staff = await makeEmployee({ name: "객실담당", email: "off-keep@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실담당", email: "off-keep@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const eventId = await activeEvent("rain", staff, deptId);
     await withService((q) => q.query("update alert_settings set enabled = false where kind = 'heat'"));
@@ -480,7 +479,7 @@ describe("꺼진 종류에 남은 열린 특보", () => {
   // 승인 대기 중이던 초안도 같이 닫힌다 — 판정을 끈 종류의 초안을 승인 대기로
   // 남겨 두면 승인자에게 재알림만 계속 가고, 승인해도 판정은 이미 꺼져 있다.
   it("승인 대기 중이던 초안도 함께 닫는다", async () => {
-    const staff = await makeEmployee({ name: "객실담당", email: "off-pending@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실담당", email: "off-pending@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("wind", "watch", staff);
     const eventId = await withService(async (q) => {
       const { rows } = await q.query(
@@ -504,7 +503,7 @@ describe("해제 알림(resolve_notice)", () => {
   // 승인 발송을 받았던 부서 수신자에게 해제 알림을 보낼지 말지는 site_settings가 정한다.
   // 이 분기가 뒤집혀도 아무도 모르면, 껐는데 전원에게 나가거나 켰는데 아무에게도 안 나간다.
   async function resolvedActiveEvent() {
-    const staff = await makeEmployee({ name: "객실직원", email: "jobs-rn-staff@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "jobs-rn-staff@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     await withService(async (q) => {
       const { rows: ev } = await q.query(
@@ -513,7 +512,7 @@ describe("해제 알림(resolve_notice)", () => {
         "insert into messages (event_id, status, content) values ($1, 'approved', $2::jsonb)",
         [ev[0].id, JSON.stringify([{ department_id: deptId, department_name: "객실",
           staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
-          recipients: [{ employee_id: staff, name: "객실직원", kakaowork_user_id: "kw-staff" }],
+          recipients: [{ employee_id: staff, name: "객실직원", phone: "010-0000-0011" }],
           selected: true }])],
       );
     });
@@ -529,7 +528,7 @@ describe("해제 알림(resolve_notice)", () => {
     const rec = recorder();
     const out = await runWeatherTick({ channel: rec.channel });
     expect(out.actions.map((a) => a.type)).toEqual(["resolve"]);
-    expect(rec.sent.map((x) => x.to)).toEqual(["kw-staff"]);
+    expect(rec.sent.map((x) => x.to)).toEqual(["010-0000-0011"]);
     expect(rec.sent[0]!.text).toContain("해제되었습니다");
   });
 
@@ -551,7 +550,7 @@ describe("해제 알림(resolve_notice)", () => {
 
 describe("승인 재알림", () => {
   it("재알림 주기가 지난 승인 대기 특보만 재알림한다", async () => {
-    const approver = await makeEmployee({ name: "사업부장", email: "jobs-appr4@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "jobs-appr4@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
     const { oldId, freshId } = await withService(async (q) => {
       const { rows: o } = await q.query(
@@ -588,7 +587,7 @@ describe("승인 재알림", () => {
   // 배지가 언제나 "재알림 0회"였다(QA W-26). repeat_count는 **발송 회차**라서 승인 대기
   // 중에는 0에서 움직이지 않는데 화면이 그 값을 재알림 횟수로 읽고 있었다.
   it("재알림할 때마다 remind_count를 올린다 (발송 회차와 다른 값이다)", async () => {
-    const approver = await makeEmployee({ name: "사업부장", email: "remind-cnt@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "remind-cnt@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
     const id = await withService(async (q) => {
       const { rows } = await q.query(
@@ -615,7 +614,7 @@ describe("승인 재알림", () => {
   // 재알림 DM에 관측값이 없으면 승인자는 지금 날씨가 나아졌는지 알 수 없어 매번
   // 링크를 눌러야 한다.
   it("재알림 메시지에 현재 관측값이 들어간다", async () => {
-    const approver = await makeEmployee({ name: "사업부장", email: "remind-obs@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "remind-obs@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
     await withService(async (q) => {
       await q.query(
@@ -636,9 +635,9 @@ describe("승인 재알림", () => {
   // 상한에 도달하면 멈추고, **관리자에게 따로 알린다**(사용자 결정) — 승인자가 반응하지
   // 않는다는 사실 자체가 관리자가 알아야 할 정보다.
   it("재알림 상한에 도달하면 멈추고 관리자에게 알린다", async () => {
-    const approver = await makeEmployee({ name: "사업부장", email: "remind-lim-appr@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "remind-lim-appr@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
-    await makeEmployee({ name: "관리자", email: "remind-lim-admin@gonjiam.com", kw: "kw-admin", role: "admin" });
+    await makeEmployee({ name: "관리자", email: "remind-lim-admin@gonjiam.com", phone: "010-0000-0002", role: "admin" });
     const id = await withService(async (q) => {
       const { rows } = await q.query(
         `insert into weather_events (kind, grade, status, detected_at, remind_count)
@@ -652,7 +651,7 @@ describe("승인 재알림", () => {
     const out = await runRemindTick({ channel: rec.channel });
     expect(out.reminded).toBe(1);
     expect(out.escalated).toBe(1);
-    const toAdmin = rec.sent.find((x) => x.to === "kw-admin");
+    const toAdmin = rec.sent.find((x) => x.to === "010-0000-0002");
     expect(toAdmin).toBeTruthy();
     expect(toAdmin!.text).toMatch(/응답하지 않고 있어 재알림을 멈춥니다/);
 
@@ -666,7 +665,7 @@ describe("승인 재알림", () => {
   });
 
   it("승인 대기가 아닌 특보는 재알림하지 않는다", async () => {
-    const approver = await makeEmployee({ name: "사업부장", email: "jobs-appr5@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "jobs-appr5@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
     await withService((q) =>
       q.query(
@@ -687,9 +686,9 @@ describe("승인 재알림", () => {
 // "인력 조정 지침"이라는 제목만 있고 아래가 빈 DM이 나간다.
 describe("빈 지침 제외", () => {
   it("내용이 비어 있는 지침은 발송 초안의 부서 블록이 되지 않는다", async () => {
-    const approver = await makeEmployee({ name: "사업부장", email: "empty-appr@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "empty-appr@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
-    const staff = await makeEmployee({ name: "객실직원", email: "empty-staff@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "empty-staff@gonjiam.com", phone: "010-0000-0011" });
     await makeDeptWithGuideline("rain", "watch", staff);   // 내용이 있는 지침
     await withService(async (q) => {
       const { rows } = await q.query(
@@ -718,9 +717,9 @@ describe("빈 지침 제외", () => {
 // ---------------------------------------------------------------------------
 describe("액션 격리", () => {
   it("폭우 처리가 터져도 같은 tick의 폭설 판정은 살아남는다", async () => {
-    const approver = await makeEmployee({ name: "사업부장", email: "iso-appr@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "iso-appr@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
-    const staff = await makeEmployee({ name: "객실직원", email: "iso-staff@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "iso-staff@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     await withService(async (q) => {
       // 진행 중인 폭우 주의보(반복 발송 대상) — 이 액션이 터진다.
@@ -731,7 +730,7 @@ describe("액션 격리", () => {
         "insert into messages (event_id, status, content) values ($1, 'approved', $2::jsonb)",
         [ev[0].id, JSON.stringify([{ department_id: deptId, department_name: "객실",
           staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
-          recipients: [{ employee_id: staff, name: "객실직원", kakaowork_user_id: "kw-staff" }],
+          recipients: [{ employee_id: staff, name: "객실직원", phone: "010-0000-0011" }],
           selected: true }])],
       );
       // 오늘 누적 적설 6cm — 이 tick에서 폭설 주의보가 새로 떠야 한다.
@@ -762,7 +761,7 @@ describe("액션 격리", () => {
       return rows;
     });
     expect(events.map((e: any) => `${e.kind}/${e.grade}`)).toContain("snow/watch");
-    expect(sent).toContain("kw-appr"); // 폭설 승인 요청은 나갔다
+    expect(sent).toContain("010-0000-0003"); // 폭설 승인 요청은 나갔다
 
     // 실패를 삼키지 않는다 — 하트비트가 ok=false로 찍히고 상태 점검이 그것을 말한다.
     expect(out.actionFailures).toBe(1);
@@ -778,7 +777,7 @@ describe("액션 격리", () => {
   // 구체적 유발 경로: 승격 분기가 이미 열린 경보를 보지 않고 createEvent를 부른다
   // (shared/engine.ts, 손댈 수 없다). 예전에는 one_open_event 유니크 위반으로 터졌다.
   it("이미 경보가 열려 있는데 승격이 일어나도 tick이 죽지 않는다", async () => {
-    const approver = await makeEmployee({ name: "사업부장", email: "iso-esc-appr@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "iso-esc-appr@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
     const { watchId } = await withService(async (q) => {
       const { rows: w } = await q.query(
@@ -825,7 +824,7 @@ describe("반복 발송 수신자 갱신", () => {
         "insert into messages (event_id, status, content) values ($1, 'approved', $2::jsonb)",
         [ev[0].id, JSON.stringify([{ department_id: deptId, department_name: "객실",
           staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
-          recipients: [{ employee_id: dayShiftId, name: "주간담당", kakaowork_user_id: "kw-day" }],
+          recipients: [{ employee_id: dayShiftId, name: "주간담당", phone: "010-0000-0005" }],
           selected: true }])],
       );
       return ev[0].id as string;
@@ -833,12 +832,12 @@ describe("반복 발송 수신자 갱신", () => {
   }
 
   it("승인 뒤에 교대한 담당자에게 반복 발송이 간다", async () => {
-    const day = await makeEmployee({ name: "주간담당", email: "shift-day@gonjiam.com", kw: "kw-day" });
+    const day = await makeEmployee({ name: "주간담당", email: "shift-day@gonjiam.com", phone: "010-0000-0005" });
     const deptId = await makeDeptWithGuideline("rain", "watch", day);
     const eventId = await activeWithSnapshot(deptId, day);
 
     // 교대: 주간 담당자를 부서 수신자에서 빼고 야간 담당자를 넣는다.
-    const night = await makeEmployee({ name: "야간담당", email: "shift-night@gonjiam.com", kw: "kw-night" });
+    const night = await makeEmployee({ name: "야간담당", email: "shift-night@gonjiam.com", phone: "010-0000-0007" });
     await withService(async (q) => {
       await q.query("delete from recipients where department_id = $1", [deptId]);
       await q.query("insert into recipients (department_id, employee_id) values ($1, $2)", [deptId, night]);
@@ -849,7 +848,7 @@ describe("반복 발송 수신자 갱신", () => {
     await runWeatherTick({ channel: rec.channel });
 
     // 스냅샷의 주간 담당자가 아니라 지금 근무 중인 야간 담당자에게 간다.
-    expect(rec.sent.map((x) => x.to)).toEqual(["kw-night"]);
+    expect(rec.sent.map((x) => x.to)).toEqual(["010-0000-0007"]);
 
     // 감사 추적: 이 회차가 실제로 누구에게 갔는지가 이력에 남아야 한다.
     const d = await withService(async (q) => {
@@ -858,14 +857,14 @@ describe("반복 발송 수신자 갱신", () => {
     });
     expect(d.results).toEqual([{ employee_id: night, name: "야간담당", ok: true }]);
     expect(d.content[0].recipients).toEqual([
-      { employee_id: night, name: "야간담당", kakaowork_user_id: "kw-night" },
+      { employee_id: night, name: "야간담당", phone: "010-0000-0007" },
     ]);
     // 메시지 내용(승인된 문구)은 그대로다 — 바뀌는 것은 받는 사람뿐이다.
     expect(d.content[0].staff_actions).toEqual(["수건 2개 배포"]);
   });
 
   it("부서 수신자가 비면 그 회차는 0명에게 가고 이력에 그렇게 남는다", async () => {
-    const day = await makeEmployee({ name: "주간담당", email: "shift-empty@gonjiam.com", kw: "kw-day" });
+    const day = await makeEmployee({ name: "주간담당", email: "shift-empty@gonjiam.com", phone: "010-0000-0005" });
     const deptId = await makeDeptWithGuideline("rain", "watch", day);
     const eventId = await activeWithSnapshot(deptId, day);
     await withService((q) => q.query("delete from recipients where department_id = $1", [deptId]));
@@ -888,12 +887,12 @@ describe("반복 발송 수신자 갱신", () => {
   // 실제 전달은 0명이고, 예전에는 그 회차가 조용히 성공으로 기록돼 하트비트가
   // ok=true였다 — 매시간 반복 발송이 0명에게 나가는데 모든 지표가 초록이었다.
   it("수신자가 전원 미연결이면 그 회차를 실패로 기록해 지표에 남긴다", async () => {
-    const day = await makeEmployee({ name: "주간담당", email: "shift-unlinked@gonjiam.com", kw: "kw-day" });
+    const day = await makeEmployee({ name: "주간담당", email: "shift-unlinked@gonjiam.com", phone: "010-0000-0005" });
     const deptId = await makeDeptWithGuideline("rain", "watch", day);
     await activeWithSnapshot(deptId, day);
-    // 카카오워크 계정이 사라졌거나 이메일이 달라 조회에 실패한 상태.
+    // 번호가 지워진 상태(퇴사 처리 중이거나 관리자가 잘못 지웠다).
     await withService((q) =>
-      q.query("update employees set kakaowork_user_id = null where id = $1", [day]));
+      q.query("update employees set phone = null where id = $1", [day]));
 
     stubKma(RAIN_32MM);
     const rec = recorder();
@@ -911,10 +910,10 @@ describe("반복 발송 수신자 갱신", () => {
   });
 
   it("해제 알림도 지금 근무 중인 사람에게 간다", async () => {
-    const day = await makeEmployee({ name: "주간담당", email: "shift-res-day@gonjiam.com", kw: "kw-day" });
+    const day = await makeEmployee({ name: "주간담당", email: "shift-res-day@gonjiam.com", phone: "010-0000-0005" });
     const deptId = await makeDeptWithGuideline("rain", "watch", day);
     await activeWithSnapshot(deptId, day);
-    const night = await makeEmployee({ name: "야간담당", email: "shift-res-night@gonjiam.com", kw: "kw-night" });
+    const night = await makeEmployee({ name: "야간담당", email: "shift-res-night@gonjiam.com", phone: "010-0000-0007" });
     await withService(async (q) => {
       await q.query("delete from recipients where department_id = $1", [deptId]);
       await q.query("insert into recipients (department_id, employee_id) values ($1, $2)", [deptId, night]);
@@ -926,7 +925,7 @@ describe("반복 발송 수신자 갱신", () => {
     ]);
     const rec = recorder();
     await runWeatherTick({ channel: rec.channel });
-    expect(rec.sent.map((x) => x.to)).toEqual(["kw-night"]);
+    expect(rec.sent.map((x) => x.to)).toEqual(["010-0000-0007"]);
     expect(rec.sent[0]!.text).toContain("해제");
   });
 });
@@ -986,7 +985,7 @@ describe("폭설 반복·해제", () => {
         "insert into messages (event_id, status, content) values ($1, 'approved', $2::jsonb)",
         [ev[0].id, JSON.stringify([{ department_id: deptId, department_name: "제설",
           staff_actions: ["제설 장비 투입"], guest_notice: "",
-          recipients: [{ employee_id: staffId, name: "제설담당", kakaowork_user_id: "kw-snow" }],
+          recipients: [{ employee_id: staffId, name: "제설담당", phone: "010-0000-0010" }],
           selected: true }])],
       );
       return ev[0].id as string;
@@ -1001,7 +1000,7 @@ describe("폭설 반복·해제", () => {
   ];
 
   it("눈이 그치면 폭설 특보를 해제한다 (반복하지 않는다)", async () => {
-    const staff = await makeEmployee({ name: "제설담당", email: "snow-stop@gonjiam.com", kw: "kw-snow" });
+    const staff = await makeEmployee({ name: "제설담당", email: "snow-stop@gonjiam.com", phone: "010-0000-0010" });
     const eventId = await snowedTodayThenStopped(staff);
     await setSnowPolicy("until_daily_accum_below");
 
@@ -1023,7 +1022,7 @@ describe("폭설 반복·해제", () => {
   // 대조군 겸 회귀 증인: 정책 값이 예전(hourly_until_below)이면 같은 상황에서
   // 해제 대신 반복이 나온다. 이 테스트가 깨지면 QA가 본 버그가 되살아난 것이다.
   it("예전 정책(hourly_until_below)이면 같은 상황에서 반복 발송이 나간다", async () => {
-    const staff = await makeEmployee({ name: "제설담당", email: "snow-old@gonjiam.com", kw: "kw-snow" });
+    const staff = await makeEmployee({ name: "제설담당", email: "snow-old@gonjiam.com", phone: "010-0000-0010" });
     const eventId = await snowedTodayThenStopped(staff);
     await setSnowPolicy("hourly_until_below");
 
@@ -1033,7 +1032,7 @@ describe("폭설 반복·해제", () => {
   });
 
   it("아직 눈이 내리는 중이면 반복 발송을 계속한다", async () => {
-    const staff = await makeEmployee({ name: "제설담당", email: "snow-cont@gonjiam.com", kw: "kw-snow" });
+    const staff = await makeEmployee({ name: "제설담당", email: "snow-cont@gonjiam.com", phone: "010-0000-0010" });
     const eventId = await snowedTodayThenStopped(staff);
     await setSnowPolicy("until_daily_accum_below");
 
@@ -1114,7 +1113,7 @@ describe("기상청 응답 형식이 바뀌면", () => {
   });
 
   it("대조군 — 형식이 그대로면 특보가 뜨고 상태 점검도 정상이다", async () => {
-    const approver = await makeEmployee({ name: "사업부장", email: "jobs-kma1@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "jobs-kma1@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
     for (const t of ["0600", "0700", "0800"]) {
       stubKma([
@@ -1159,7 +1158,7 @@ describe("시계 도메인", () => {
   }
 
   it("앱 시계가 이틀 뒤처져도 재알림 주기는 DB 시계로 판정한다", async () => {
-    const approver = await makeEmployee({ name: "사업부장", email: "jobs-clock1@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "jobs-clock1@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
     const id = await withService(async (q) => {
       const { rows } = await q.query(
@@ -1208,14 +1207,14 @@ describe("시계 도메인", () => {
 // ---------------------------------------------------------------------------
 
 // 로그인한 에이전트를 만든다. signup이 employees 행까지 만들어 주므로 그 뒤에
-// 역할·카카오워크 id만 손본다.
-async function agentAs(opts: { email: string; role?: string; kw?: string | null }) {
+// 역할·전화번호만 손본다.
+async function agentAs(opts: { email: string; role?: string; phone?: string | null }) {
   const who = { email: opts.email, password: "send-password-1", name: "테스트" };
   await request(app).post("/api/auth/signup").send(who);
   const employeeId = await withService(async (q) => {
     const { rows } = await q.query(
-      "update employees set role = $2, kakaowork_user_id = $3 where email = $1 returning id",
-      [opts.email, opts.role ?? "staff", opts.kw ?? null],
+      "update employees set role = $2, phone = $3 where email = $1 returning id",
+      [opts.email, opts.role ?? "staff", opts.phone ?? null],
     );
     return rows[0].id as string;
   });
@@ -1228,7 +1227,7 @@ async function pendingEventWithDraft(deptId: string, staffId: string) {
   return withService(async (q) => {
     const content = [{ department_id: deptId, department_name: "객실",
       staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
-      recipients: [{ employee_id: staffId, name: "객실직원", kakaowork_user_id: "kw-staff" }],
+      recipients: [{ employee_id: staffId, name: "객실직원", phone: "010-0000-0011" }],
       selected: true }];
     const { rows: obs } = await q.query(
       `insert into weather_observations (observed_at, rain_mm_per_hr, temp_c, feels_c, wind_ms)
@@ -1266,7 +1265,7 @@ describe("POST /api/send — 권한", () => {
   it.each(["staff", "approver", "admin"] as const)(
     "alert_recipients에 없으면 역할이 %s여도 승인할 수 없고 아무에게도 발송되지 않는다",
     async (role) => {
-      const staff = await makeEmployee({ name: "객실직원", email: `send-staff-${role}@gonjiam.com`, kw: "kw-staff" });
+      const staff = await makeEmployee({ name: "객실직원", email: `send-staff-${role}@gonjiam.com`, phone: "010-0000-0011" });
       const deptId = await makeDeptWithGuideline("rain", "watch", staff);
       const { eventId, content } = await pendingEventWithDraft(deptId, staff);
       const { agent } = await agentAs({ email: `send-nonrecip-${role}@gonjiam.com`, role });
@@ -1297,7 +1296,7 @@ describe("POST /api/send — 권한", () => {
   // 가드가 없어도 runSend가 `employees where id = null` → 0행 → 401로 거부하니 보안
   // 구멍은 아니지만, 상태 코드가 403에서 401로 바뀐다 — 403을 단언해야 가드를 지킨다.
   it("직원 행이 없는 세션은 발송할 수 없다", async () => {
-    const { agent, employeeId } = await agentAs({ email: "send-noemp@gonjiam.com", role: "admin", kw: "kw-noemp" });
+    const { agent, employeeId } = await agentAs({ email: "send-noemp@gonjiam.com", role: "admin", phone: "010-0000-0008" });
     // 로그인 뒤 직원 행만 지운다 — auth_accounts와 세션은 그대로 살아 있다.
     await withService((q) => q.query("delete from employees where id = $1", [employeeId]));
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -1309,7 +1308,7 @@ describe("POST /api/send — 권한", () => {
   });
 
   it("알림 수신자면 역할이 staff여도 승인·발송할 수 있다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "send-staff2@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "send-staff2@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId, content } = await pendingEventWithDraft(deptId, staff);
     const { agent, employeeId } = await agentAs({ email: "send-recip@gonjiam.com", role: "staff" });
@@ -1329,7 +1328,7 @@ describe("POST /api/send — 권한", () => {
     expect(s.dispatches).toEqual([{ repeat_no: 1, is_test: false }]);
     // 실제로 부서 수신자에게 나갔는지 — 관측 줄까지 붙어야 한다(스펙 결정 11).
     const text = log.mock.calls.map((c) => String(c[0])).join("\n");
-    expect(text).toContain("kw-staff");
+    expect(text).toContain("010-0000-0011");
     expect(text).toContain("수건 2개 배포");
     expect(text).toContain("시간당 32.5mm");
   });
@@ -1337,7 +1336,7 @@ describe("POST /api/send — 권한", () => {
   // 이 검사가 빠지면 관리자가 아닌 사람도 봇 발송을 마음대로 시험해 볼 수 있다.
   it("관리자가 아니면 테스트 발송을 할 수 없다", async () => {
     // 알림 수신자로 등록까지 해 둔다 — 그래도 막혀야 role 검사가 실제로 걸린 것이다.
-    const { agent, employeeId } = await agentAs({ email: "send-nonadmin@gonjiam.com", role: "approver", kw: "kw-me" });
+    const { agent, employeeId } = await agentAs({ email: "send-nonadmin@gonjiam.com", role: "approver", phone: "010-0000-0006" });
     await makeAlertRecipient(employeeId);
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
@@ -1348,7 +1347,7 @@ describe("POST /api/send — 권한", () => {
   });
 
   it("관리자는 알림 수신자가 아니어도 테스트 발송을 할 수 있다", async () => {
-    const { agent } = await agentAs({ email: "send-admin@gonjiam.com", role: "admin", kw: "kw-admin" });
+    const { agent } = await agentAs({ email: "send-admin@gonjiam.com", role: "admin", phone: "010-0000-0002" });
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
     const res = await agent.post("/api/send").send({ mode: "test" });
@@ -1357,11 +1356,11 @@ describe("POST /api/send — 권한", () => {
     expect(log.mock.calls.map((c) => String(c[0])).join("\n")).toContain("테스트 메시지입니다");
   });
 
-  it("카카오워크가 연결되지 않은 관리자의 테스트 발송은 400이다", async () => {
-    const { agent } = await agentAs({ email: "send-admin2@gonjiam.com", role: "admin", kw: null });
+  it("휴대폰 번호가 없는 관리자의 테스트 발송은 400이다", async () => {
+    const { agent } = await agentAs({ email: "send-admin2@gonjiam.com", role: "admin", phone: null });
     const res = await agent.post("/api/send").send({ mode: "test" });
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe("카카오워크 미연결");
+    expect(res.body.error).toContain("휴대폰 번호가 없거나 형식이 올바르지 않습니다");
   });
 });
 
@@ -1373,7 +1372,7 @@ describe("POST /api/send — 모드별 동작", () => {
   }
 
   it("승인 대기가 아닌 특보는 승인할 수 없다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "send-staff3@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "send-staff3@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId, content } = await pendingEventWithDraft(deptId, staff);
     await withService((q) => q.query("update weather_events set status='ACTIVE' where id=$1", [eventId]));
@@ -1385,7 +1384,7 @@ describe("POST /api/send — 모드별 동작", () => {
   });
 
   it("무시는 승인 대기 특보만 처리하고 두 번째는 409다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "send-staff4@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "send-staff4@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId } = await pendingEventWithDraft(deptId, staff);
     const agent = await recipientAgent("send-recip3@gonjiam.com");
@@ -1397,7 +1396,7 @@ describe("POST /api/send — 모드별 동작", () => {
   });
 
   it("재발송은 회차를 올려 새 이력을 남긴다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "send-staff5@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "send-staff5@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId, messageId, content } = await pendingEventWithDraft(deptId, staff);
     await withService((q) =>
@@ -1416,7 +1415,7 @@ describe("POST /api/send — 모드별 동작", () => {
   // 채널이 실패했을 때 4xx로 바꿔 버리면 클라이언트가 throw해서 Settings.tsx의
   // "테스트 발송에 실패했습니다" 분기(result.ok === false)가 영영 돌지 않는다.
   it("테스트 발송이 채널에서 실패하면 200에 ok:false로 돌려준다", async () => {
-    const admin = await makeEmployee({ name: "관리자", email: "send-admin3@gonjiam.com", kw: "kw-admin", role: "admin" });
+    const admin = await makeEmployee({ name: "관리자", email: "send-admin3@gonjiam.com", phone: "010-0000-0002", role: "admin" });
     const out = await runSend({ mode: "test" }, admin, {
       channel: { async send() { return { ok: false, error: "invalid user" }; } },
     });
@@ -1427,9 +1426,9 @@ describe("POST /api/send — 모드별 동작", () => {
   // 서버가 늘 0을 보고하면 일부 직원에게 못 갔는데도 화면은 완전 성공으로 보인다.
   // 성공 경로만 보는 테스트(fail_count === 0)는 상수 0으로 바꿔도 통과하므로,
   // 실패가 섞인 블록으로 승인해 1 이상이 나오는 것을 따로 확인한다.
-  it("카카오워크 미연결 수신자가 섞이면 fail_count에 그 수가 잡힌다", async () => {
-    const connected = await makeEmployee({ name: "연결됨", email: "send-fc-ok@gonjiam.com", kw: "kw-ok" });
-    const orphan = await makeEmployee({ name: "미연결", email: "send-fc-no@gonjiam.com", kw: null });
+  it("휴대폰 번호가 없는 수신자가 섞이면 fail_count에 그 수가 잡힌다", async () => {
+    const connected = await makeEmployee({ name: "연결됨", email: "send-fc-ok@gonjiam.com", phone: "010-0000-0009" });
+    const orphan = await makeEmployee({ name: "미연결", email: "send-fc-no@gonjiam.com", phone: null });
     const deptId = await makeDeptWithGuideline("rain", "watch", connected);
     const { eventId } = await pendingEventWithDraft(deptId, connected);
     // 발송 대상 블록에 미연결 수신자를 하나 섞는다 — 채널을 타지 못해 ok:false가 된다.
@@ -1438,8 +1437,8 @@ describe("POST /api/send — 모드별 동작", () => {
         department_id: deptId, department_name: "객실",
         staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
         recipients: [
-          { employee_id: connected, name: "연결됨", kakaowork_user_id: "kw-ok" },
-          { employee_id: orphan, name: "미연결", kakaowork_user_id: null },
+          { employee_id: connected, name: "번호있음", phone: "010-0000-0009" },
+          { employee_id: orphan, name: "번호없음", phone: null },
         ],
         selected: true,
       },
@@ -1457,8 +1456,8 @@ describe("POST /api/send — 모드별 동작", () => {
       return rows[0].results as { name: string; ok: boolean; error?: string }[];
     });
     expect(results).toHaveLength(2);
-    expect(results.find((r) => r.name === "연결됨")!.ok).toBe(true);
-    expect(results.find((r) => r.name === "미연결")).toMatchObject({ ok: false, error: "카카오워크 미연결" });
+    expect(results.find((r) => r.name === "번호있음")!.ok).toBe(true);
+    expect(results.find((r) => r.name === "번호없음")).toMatchObject({ ok: false, error: "휴대폰 번호 없음" });
   });
 
   // -------------------------------------------------------------------------
@@ -1469,7 +1468,7 @@ describe("POST /api/send — 모드별 동작", () => {
   // 이력에는 초록 "성공 0"이 찍혀 있다. 실제 수신자는 0명이다. fail_count가 0인
   // 이유는 실패한 사람이 없어서가 아니라 **대상이 아예 없어서**다.
   it("선택한 부서에 수신자가 0명이면 승인을 거부하고 특보는 승인 대기로 남는다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "send-zero-staff@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "send-zero-staff@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId } = await pendingEventWithDraft(deptId, staff);
     // 부서는 선택돼 있는데 그 안의 수신자가 비었다(부서 수신자 미지정 상태).
@@ -1489,7 +1488,7 @@ describe("POST /api/send — 모드별 동작", () => {
   });
 
   it("부서를 하나도 선택하지 않으면 승인을 거부한다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "send-nosel-staff@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "send-nosel-staff@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId, content } = await pendingEventWithDraft(deptId, staff);
     const agent = await recipientAgent("send-nosel-recip@gonjiam.com");
@@ -1504,7 +1503,7 @@ describe("POST /api/send — 모드별 동작", () => {
   // "10명에게 성공"과 "0명에게 성공"을 화면이 구분하려면 서버가 대상 인원을 함께
   // 줘야 한다. fail_count만으로는 둘이 똑같이 0이다.
   it("승인 결과에 실제 대상 인원과 성공 인원이 실려 온다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "send-cnt-staff@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "send-cnt-staff@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId, content } = await pendingEventWithDraft(deptId, staff);
     const agent = await recipientAgent("send-cnt-recip@gonjiam.com");
@@ -1522,14 +1521,14 @@ describe("POST /api/send — 모드별 동작", () => {
   // 예전에는 발송이 통째로 터져도 특보가 "승인·발송됨"으로 커밋된 채 남고 화면은
   // 실패라고 말했다. 재시도는 409고 화면 안에 되돌릴 수단이 없었다.
   it("한 명에게도 못 나가면 승인을 되돌려 다시 승인할 수 있게 한다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "send-rb-staff@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "send-rb-staff@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId, content } = await pendingEventWithDraft(deptId, staff);
-    const approver = await makeEmployee({ name: "사업부장", email: "send-rb-appr@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "send-rb-appr@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
 
     const exploding: NotificationChannel = {
-      async send() { throw new Error("카카오워크 장애"); },
+      async send() { throw new Error("제공자 장애"); },
     };
     const out = await runSend({ mode: "approve", event_id: eventId, content }, approver, { channel: exploding });
     expect(out.ok).toBe(false);
@@ -1544,26 +1543,26 @@ describe("POST /api/send — 모드별 동작", () => {
     const rec = recorder();
     const retry = await runSend({ mode: "approve", event_id: eventId, content }, approver, { channel: rec.channel });
     expect(retry.ok).toBe(true);
-    expect(rec.sent.map((x) => x.to)).toEqual(["kw-staff"]);
+    expect(rec.sent.map((x) => x.to)).toEqual(["010-0000-0011"]);
     expect((await state()).event.status).toBe("ACTIVE");
   });
 
   // 검증 §신규-1·W-09 — **실제 채널은 던지지 않는다.**
   //
   // 위 테스트는 주입한 채널이 예외를 던지므로 통과했다. 하지만 진짜 채널
-  // (shared/kakaowork.ts)은 네트워크 예외까지 삼키고 `{ok:false}`를 돌려준다 —
+  // (shared/sms.ts의 제공자 자리)은 네트워크 예외까지 삼키고 `{ok:false}`를 돌려준다 —
   // 그래서 unapprove()는 **운영에서 한 번도 실행되지 않는 코드**였다. 봇 키 오타나
-  // 카카오워크 장애에서 결과는 "승인됨 · ACTIVE · ok:true · 0명 전달"이었다.
+  // 제공자 장애에서 결과는 "승인됨 · ACTIVE · ok:true · 0명 전달"이었다.
   it("채널이 예외를 삼키고 실패만 돌려줘도 0명 전달이면 승인을 되돌린다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "send-swallow-staff@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "send-swallow-staff@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId, content } = await pendingEventWithDraft(deptId, staff);
-    const approver = await makeEmployee({ name: "사업부장", email: "send-swallow-appr@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "send-swallow-appr@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
 
-    // 실제 kakaowork.ts와 같은 모양: 던지지 않고 { ok:false }만 돌려준다.
+    // 실제 제공자 구현과 같은 모양: 던지지 않고 { ok:false }만 돌려준다.
     const swallowing: NotificationChannel = {
-      async send() { return { ok: false, error: "카카오워크 장애" }; },
+      async send() { return { ok: false, error: "제공자 장애" }; },
     };
     const out = await runSend({ mode: "approve", event_id: eventId, content }, approver, { channel: swallowing });
 
@@ -1582,18 +1581,18 @@ describe("POST /api/send — 모드별 동작", () => {
 
   // 같은 뿌리의 다른 입구: 채널은 멀쩡한데 **받을 사람이 아무도 연결돼 있지 않다.**
   // 검증이 실제로 만든 상태이고, 그때 API는 200 {"ok":true,"sent_count":0}을 돌려줬다.
-  it("수신자 전원이 카카오워크 미연결이면 승인을 성공으로 보고하지 않는다", async () => {
-    const a = await makeEmployee({ name: "안전1", email: "send-nolink-a@gonjiam.com", kw: null });
-    const b = await makeEmployee({ name: "안전2", email: "send-nolink-b@gonjiam.com", kw: null });
+  it("수신자 전원에게 휴대폰 번호가 없으면 승인을 성공으로 보고하지 않는다", async () => {
+    const a = await makeEmployee({ name: "안전1", email: "send-nolink-a@gonjiam.com", phone: null });
+    const b = await makeEmployee({ name: "안전2", email: "send-nolink-b@gonjiam.com", phone: null });
     const deptId = await makeDeptWithGuideline("rain", "watch", a);
     const { eventId } = await pendingEventWithDraft(deptId, a);
-    const approver = await makeEmployee({ name: "사업부장", email: "send-nolink-appr@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "send-nolink-appr@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
     const content = [{ department_id: deptId, department_name: "객실",
       staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
       recipients: [
-        { employee_id: a, name: "안전1", kakaowork_user_id: null },
-        { employee_id: b, name: "안전2", kakaowork_user_id: null },
+        { employee_id: a, name: "안전1", phone: null },
+        { employee_id: b, name: "안전2", phone: null },
       ], selected: true }];
 
     const rec = recorder();
@@ -1612,17 +1611,17 @@ describe("POST /api/send — 모드별 동작", () => {
   // 되돌리면 "받은 사람이 있는데 승인 대기"라는 더 나쁜 상태가 되고, 재승인하면
   // 같은 사람에게 두 번 간다.
   it("일부라도 나갔으면 승인을 되돌리지 않는다", async () => {
-    const a = await makeEmployee({ name: "직원A", email: "send-half-a@gonjiam.com", kw: "kw-a" });
-    const b = await makeEmployee({ name: "직원B", email: "send-half-b@gonjiam.com", kw: "kw-b" });
+    const a = await makeEmployee({ name: "직원A", email: "send-half-a@gonjiam.com", phone: "010-0000-0001" });
+    const b = await makeEmployee({ name: "직원B", email: "send-half-b@gonjiam.com", phone: "010-0000-0004" });
     const deptId = await makeDeptWithGuideline("rain", "watch", a);
     const { eventId } = await pendingEventWithDraft(deptId, a);
-    const approver = await makeEmployee({ name: "사업부장", email: "send-half-appr@gonjiam.com", kw: "kw-appr" });
+    const approver = await makeEmployee({ name: "사업부장", email: "send-half-appr@gonjiam.com", phone: "010-0000-0003" });
     await makeAlertRecipient(approver);
     const content = [{ department_id: deptId, department_name: "객실",
       staff_actions: ["수건 2개 배포"], guest_notice: "안내문",
       recipients: [
-        { employee_id: a, name: "직원A", kakaowork_user_id: "kw-a" },
-        { employee_id: b, name: "직원B", kakaowork_user_id: "kw-b" },
+        { employee_id: a, name: "직원A", phone: "010-0000-0001" },
+        { employee_id: b, name: "직원B", phone: "010-0000-0004" },
       ], selected: true }];
 
     let n = 0;
@@ -1644,7 +1643,7 @@ describe("POST /api/send — 모드별 동작", () => {
   // 이미 해제된 상태에서 "[곤지암] 폭우 주의보 — 현재 관측: 시간당 0mm"가 직원들에게
   // 도착했다. obs_line은 언제나 그 특보의 트리거 관측이라 지난주 값이 현재로 나간다.
   it("이미 해제된 특보는 재발송할 수 없다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "resend-closed-staff@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "resend-closed-staff@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId, messageId, content } = await pendingEventWithDraft(deptId, staff);
     await withService((q) =>
@@ -1663,7 +1662,7 @@ describe("POST /api/send — 모드별 동작", () => {
   });
 
   it("승인되지 않은 초안은 재발송할 수 없다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "resend-draft-staff@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "resend-draft-staff@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { messageId, content } = await pendingEventWithDraft(deptId, staff);
     const agent = await recipientAgent("resend-draft-recip@gonjiam.com");
@@ -1677,7 +1676,7 @@ describe("POST /api/send — 모드별 동작", () => {
   // 대조군: 열려 있는 특보의 재발송은 그대로 동작해야 한다(위 게이트가 전부를 막으면
   // 이력 화면의 재발송 기능 자체가 죽는다).
   it("열려 있는 특보는 그대로 재발송된다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "resend-open-staff@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "resend-open-staff@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId, messageId, content } = await pendingEventWithDraft(deptId, staff);
     await withService((q) =>
@@ -1715,9 +1714,9 @@ describe("POST /api/send — 모드별 동작", () => {
 // QA 수정 라운드 D
 // ---------------------------------------------------------------------------
 
-// 발송 이력의 "채널"은 컬럼 기본값 'kakaowork'가 그대로 박혀 있었다(QA W-29).
-// 설치 직후 점검 단계는 NOTIFY_CHANNEL=console로 도는데, 그때 카카오워크로는
-// 아무것도 나가지 않았는데도 이력은 카카오워크로 보냈다고 말했다.
+// 발송 이력의 "채널"은 컬럼 기본값이 그대로 박혀 있었다(QA W-29).
+// 지금 실제로 나가는 곳은 앱 로그뿐인데, 이력이 다른 곳으로 보냈다고 말하면
+// 나중에 이력을 되짚는 사람은 "그때 발송됐다"고 읽는다.
 describe("발송 이력의 채널은 실제로 나간 채널이다 (W-29)", () => {
   async function recipientAgent(email: string) {
     const { agent, employeeId } = await agentAs({ email, role: "staff" });
@@ -1725,11 +1724,11 @@ describe("발송 이력의 채널은 실제로 나간 채널이다 (W-29)", () =
     return agent;
   }
 
-  it("콘솔 채널로 나간 승인 발송은 이력에도 console로 남는다", async () => {
-    // 이 스위트 전체가 NOTIFY_CHANNEL=console로 돈다(setup.ts) — 즉 QA가 지적한
-    // 바로 그 상태다: 카카오워크로는 한 글자도 나가지 않았다.
-    expect(process.env.NOTIFY_CHANNEL).toBe("console");
-    const staff = await makeEmployee({ name: "객실직원", email: "ch-staff@gonjiam.com", kw: "kw-staff" });
+  it("로그 채널로 나간 승인 발송은 이력에도 log로 남는다", async () => {
+    // 이 스위트 전체가 SMS_PROVIDER 없이 돈다(setup.ts) — 즉 QA가 지적한
+    // 바로 그 상태다: 사람에게는 한 글자도 나가지 않았다.
+    expect(process.env.SMS_PROVIDER).toBe("");
+    const staff = await makeEmployee({ name: "객실직원", email: "ch-staff@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId, content } = await pendingEventWithDraft(deptId, staff);
     const agent = await recipientAgent("ch-recip@gonjiam.com");
@@ -1740,11 +1739,11 @@ describe("발송 이력의 채널은 실제로 나간 채널이다 (W-29)", () =
       const { rows } = await q.query("select channel from dispatches");
       return rows.map((r: any) => r.channel);
     });
-    expect(channels).toEqual(["console"]);
+    expect(channels).toEqual(["log"]);
   });
 
   it("자동 반복 발송의 이력에도 실제 채널이 남는다", async () => {
-    const staff = await makeEmployee({ name: "객실직원", email: "ch-tick-staff@gonjiam.com", kw: "kw-staff" });
+    const staff = await makeEmployee({ name: "객실직원", email: "ch-tick-staff@gonjiam.com", phone: "010-0000-0011" });
     const deptId = await makeDeptWithGuideline("rain", "watch", staff);
     const { eventId, messageId } = await pendingEventWithDraft(deptId, staff);
     await withService(async (q) => {
@@ -1758,8 +1757,8 @@ describe("발송 이력의 채널은 실제로 나간 채널이다 (W-29)", () =
       const { rows } = await q.query("select channel from dispatches");
       return rows.map((r: any) => r.channel);
     });
-    // 주입된 대역 채널은 카카오워크가 아니다 — 그렇게 기록돼야 나중에 이력을
-    // 되짚는 사람이 "카카오워크로 나갔다"고 잘못 읽지 않는다.
+    // 주입된 대역 채널은 실채널이 아니다 — 그렇게 기록돼야 나중에 이력을
+    // 되짚는 사람이 "사람에게 나갔다"고 잘못 읽지 않는다.
     expect(channels).toEqual(["custom"]);
   });
 });

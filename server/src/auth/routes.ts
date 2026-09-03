@@ -6,7 +6,6 @@ import { issue, lookup, revoke, tokenHash } from "./session.ts";
 import { COOKIE, requireAuth, requireAdmin, sessionCookieOptions } from "./middleware.ts";
 import { isAllowedEmailDomain, isValidEmailShape } from "./emailDomain.ts";
 import { normalizePhone, PHONE_ERROR } from "../phone.ts";
-import { linkKakaoworkUserId } from "../kakaoLink.ts";
 import { loginRateLimiter } from "./rateLimit.ts";
 
 const MAX_ATTEMPTS = 5;
@@ -70,7 +69,7 @@ authRouter.post("/signup", async (req, res) => {
     return res.status(400).json({ error: "회사 이메일로만 가입할 수 있습니다" });
   }
 
-  // 이름은 그대로 employees.name에 들어간다 — 직원 명부·승인 화면·카카오워크 DM
+  // 이름은 그대로 employees.name에 들어간다 — 직원 명부·승인 화면·특보 문자
   // 본문에 실리는 값인데 trim도 길이 제한도 없어서 5000자가 그대로 저장됐다
   // (QA W-30). 같은 요청 안에서 이메일만 정규화되고 이름은 아니었다.
   const trimmedName = String(name).trim();
@@ -144,12 +143,15 @@ authRouter.post("/signup", async (req, res) => {
     if (e?.code === "23505") return res.status(409).json({ error: "이미 가입된 이메일입니다" });
     throw e;
   }
-  // 옛 시스템에서는 매직링크 로그인이 곧 카카오워크 연결이었다(supabase/functions/
-  // auth-kakaowork). 그 절차가 사라지면서 이 값을 채우는 경로가 시스템에 하나도 남지
-  // 않았고, 모든 알림이 0명에게 갔다. 가입이 그 자리를 대신한다.
-  // linkKakaoworkUserId는 절대 던지지 않는다 — 봇 키가 없거나 조회가 실패해도
-  // 가입 자체는 성공해야 한다. DM으로 닿을 수 없는 사람도 시스템에는 들어와야 한다.
-  await linkKakaoworkUserId(email);
+  // 예전에는 여기서 회사 이메일로 카카오워크 user id를 조회해 채웠다 — 그것이
+  // "이 사람에게 보낼 수 있다"를 만드는 유일한 경로였기 때문이다. 이제 그 자리는
+  // 위에서 이미 저장한 `phone` 한 칸이다. 조회가 없으므로 가입이 바깥 서비스의
+  // 응답을 기다리지 않는다.
+  //
+  // **전화번호는 여전히 선택 입력이다**(사용자 판정 3). 없다고 가입을 막지 않는
+  // 것은 카카오워크 조회 실패가 가입을 막지 않게 했던 것과 같은 이유다 —
+  // 연락이 안 되는 것과 시스템에 못 들어오는 것은 다른 문제다. 대신 "수신자인데
+  // 번호가 없는 사람"은 셋업 체크리스트·/api/health/deep·워치독이 드러낸다.
   res.status(201).json({ ok: true });
 });
 

@@ -2,8 +2,7 @@ import { Router } from "express";
 import { UUID, withUser, withService } from "../db.ts";
 import { requireAuth, requireAdmin } from "../auth/middleware.ts";
 import { isAllowedEmailDomain, isValidEmailShape } from "../auth/emailDomain.ts";
-import { normalizePhone, PHONE_ERROR } from "../phone.ts";
-import { linkKakaoworkUserId, clearKakaoworkUserId } from "../kakaoLink.ts";
+import { normalizePhone, PHONE_ERROR, sendablePhoneSql } from "../phone.ts";
 
 export const orgRouter = Router();
 orgRouter.use(requireAuth);
@@ -11,7 +10,7 @@ orgRouter.use(requireAuth);
 // 직원 행이 없는 세션은 이 라우터 전체를 쓸 수 없다(QA W-01b).
 //
 // 예전에는 직원을 삭제해도 로그인 계정이 남았고, 그 계정(role: null)이 여기 모든
-// GET을 200으로 통과해 **전 직원의 이름·이메일·전화번호·카카오워크 ID**를 계속
+// GET을 200으로 통과해 **전 직원의 이름·이메일·전화번호**를 계속
 // 읽었다. RLS의 r_all 정책도 auth.uid() is not null만 보므로 막지 못한다
 // (db/migrations/0002_rls.sql:34).
 //
@@ -34,7 +33,7 @@ orgRouter.use(
   },
 );
 
-const EMP_COLS = "id, auth_user_id, name, email, kakaowork_user_id, department_id, role, phone, created_at";
+const EMP_COLS = "id, auth_user_id, name, email, department_id, role, phone, created_at";
 
 // db/migrations/0001_schema.sql의 enum 정의와 그대로 맞춘다. 잘못된 값을 검증
 // 없이 그대로 바인딩하면 Postgres가 "invalid input value for enum ..."으로
@@ -47,14 +46,13 @@ const REPEAT_POLICIES = ["once", "hourly_until_below", "until_daily_accum_below"
 const HEAT_BASES = ["temp", "feels"] as const;
 
 // 입력 길이 상한(QA W-30). 어디에도 상한이 없어서 QA가 부서 이름 500자와 직원
-// 이름 5000자를 그대로 저장했다. 이 값들은 화면 표·부서 트리·**카카오워크 DM
+// 이름 5000자를 그대로 저장했다. 이 값들은 화면 표·부서 트리·**특보 문자
 // 본문**에 그대로 실린다 — 한 행이 표를 가로로 밀어내 다른 열을 화면 밖으로
 // 내보내고, 긴 이름 하나가 특보 메시지를 통째로 못 읽게 만든다.
 // 화면(apps/web)의 maxLength와 같은 값이어야 하지만, 화면 검사는 우회할 수
 // 있으므로 최종 관문은 여기다.
 export const MAX_DEPT_NAME = 40;
 export const MAX_EMP_NAME = 40;
-export const MAX_KAKAOWORK_ID = 64;
 // MAX_PHONE(30자)은 없앴다 — 전화번호는 이제 길이가 아니라 **형식**으로 막는다
 // (src/phone.ts). 정규형은 13자를 넘을 수 없으므로 길이 상한이 따로 할 일이 없다.
 
@@ -358,7 +356,7 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
     return res.status(400).json({ error: "id 형식이 올바르지 않습니다" });
   }
   // 이름은 지금까지 trim도 길이 검사도 없었다(QA W-30 — 이메일만 정규화됐다).
-  // 이 값은 직원 명부·승인 화면 수신자 목록·카카오워크 DM 본문에 그대로 실린다.
+  // 이 값은 직원 명부·승인 화면 수신자 목록·특보 문자 본문에 그대로 실린다.
   if ("name" in body) {
     const name = String(body.name ?? "").trim();
     if (!name) return res.status(400).json({ error: "이름이 비어 있습니다" });
@@ -388,25 +386,15 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
   if ("department_id" in body && body.department_id !== null && !UUID.test(String(body.department_id))) {
     return res.status(400).json({ error: "department_id 형식이 올바르지 않습니다" });
   }
-  // kakaowork_user_id는 보통 서버가 이메일로 조회해 채운다(kakaoLink.ts). 그런데
-  // 조회가 실패하는 경우가 실제로 있다: 카카오워크 계정 이메일이 회사 이메일과 다르거나,
-  // 봇이 그 사용자를 못 찾거나, 조직 이관 중이거나. 그때 관리자가 손으로 넣을 수 있는
-  // 길이 없으면 그 사람은 영원히 특보를 못 받는다 — 이 라우트는 requireAdmin이다.
-  // 빈 문자열은 "지운다"는 뜻으로 받아 null로 저장한다(공백만 든 값이 들어가면
-  // is not null 필터를 통과해 발송이 카카오워크 API 오류로 실패한다).
-  if ("kakaowork_user_id" in body) {
-    const raw = body.kakaowork_user_id;
-    if (raw !== null && typeof raw !== "string") {
-      return res.status(400).json({ error: "kakaowork_user_id는 문자열이거나 null이어야 합니다" });
-    }
-    if (raw !== null && overLength(String(raw).trim(), MAX_KAKAOWORK_ID)) {
-      return res.status(400).json({ error: `카카오워크 ID는 ${MAX_KAKAOWORK_ID}자 이하여야 합니다` });
-    }
-    body.kakaowork_user_id = raw === null || String(raw).trim() === "" ? null : String(raw).trim();
-  }
+  // 카카오워크 ID 수동 입력란은 사라졌다(QA W-16).
+  //
+  // 그 입력란은 **조회가 실패할 수 있어서** 필요했다: 카카오워크 계정 이메일이 회사
+  // 이메일과 다른 임원, 봇이 못 찾는 사람. 발송 주소를 이메일에서 유도하는 구조가
+  // 만든 예외였고, 관리자가 손으로 메워 줘야 했다. SMS에서는 유도가 없다 —
+  // 전화번호 자체가 주소이고, 그 입력란이 바로 위의 `phone`이다.
   const sets: string[] = [];
   const vals: unknown[] = [req.params.id];
-  for (const key of ["name", "role", "department_id", "phone", "kakaowork_user_id"] as const) {
+  for (const key of ["name", "role", "department_id", "phone"] as const) {
     if (key in body) {
       vals.push(body[key]);
       sets.push(`${key} = $${vals.length}`);
@@ -522,26 +510,13 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
     });
   }
   if (rows.length === 0) return res.status(404).json({ error: "직원을 찾을 수 없습니다" });
-  // 이메일이 바뀌면 카카오워크 연결도 다시 맞춰야 한다 — 옛 이메일로 조회한 id가
-  // 그대로 남으면 그 직원의 특보가 남의 계정으로 간다. 관리자가 이 요청에서
-  // kakaowork_user_id를 직접 지정했다면 그 값을 존중하고 조회하지 않는다.
-  // 이메일이 실제로 달라졌을 때만 움직인다(수정 폼이 같은 값을 매번 보낸다).
-  if ("email" in body && !("kakaowork_user_id" in body) && prevEmail !== rows[0].email) {
-    const out = await linkKakaoworkUserId(rows[0].email);
-    if (out.linked) {
-      rows[0].kakaowork_user_id = out.linked;
-    } else if (rows[0].kakaowork_user_id !== null) {
-      // 조회가 실패했다(봇 키 없음·네트워크 오류·새 이메일의 카카오워크 계정 없음).
-      // 여기서 옛 값을 그대로 두면 **바로 위 주석이 경고한 그 상태**가 된다:
-      // 이 직원 앞으로 나가는 특보가 옛 이메일 주인의 계정으로 간다. 인사이동으로
-      // 이메일이 넘어간 경우라면 낯선 사람이 남의 특보 DM을 받는다.
-      // 지워서 "미연결"로 떨어뜨린다 — 미연결은 하루 한 번 도는 재시도와 관리자의
-      // 수동 입력으로 복구되고, 그 사실이 셋업 체크리스트·/api/health/deep·워치독에
-      // 드러난다. 잘못 간 DM은 복구도 발견도 안 된다.
-      await clearKakaoworkUserId(rows[0].id);
-      rows[0].kakaowork_user_id = null;
-    }
-  }
+  // 예전에는 여기서 **이메일이 바뀔 때마다 카카오워크를 다시 조회**했다. 그러지
+  // 않으면 옛 이메일로 얻은 user id가 남아 그 직원의 특보가 남의 계정으로 갔기
+  // 때문이다(인사이동으로 이메일이 넘어가면 낯선 사람이 남의 특보를 받는다).
+  //
+  // **그 위험 자체가 사라졌다.** 발송 주소가 이메일에서 유도되지 않으므로 이메일을
+  // 고쳐도 발송 주소는 움직이지 않는다. 조회도, 옛 값 지우기도, 하루 한 번 도는
+  // 재시도도 필요 없다 — 이 작업에서 걷어낸 코드의 대부분이 이 한 문장 때문이다.
   res.json(rows[0]);
 });
 
@@ -549,7 +524,7 @@ orgRouter.patch("/employees/:id", requireAdmin, async (req, res) => {
 //
 // 예전에는 employees 행만 지웠다. 그러면 두 가지 중 하나가 일어났다:
 //   - 그 사람이 특보를 승인한 적이 없으면 → 계정이 그대로 남아 계속 로그인했다.
-//     퇴사자가 전 직원의 이름·이메일·전화번호·카카오워크 ID를 계속 읽었고,
+//     퇴사자가 전 직원의 이름·이메일·전화번호를 계속 읽었고,
 //     그 계정을 끄는 유일한 버튼은 방금 사라진 그 행에 달려 있었다.
 //   - 승인한 적이 있으면 → weather_events.approved_by가 NO ACTION 외래키라
 //     삭제 자체가 실패하고 관리자 화면에는 "서버 오류가 발생했습니다"(500)만 떴다.
@@ -660,10 +635,9 @@ orgRouter.post("/employees", requireAdmin, async (req, res) => {
     if (rows === null) {
       return res.status(400).json({ error: `department_id ${departmentId}에 해당하는 부서가 없습니다` });
     }
-    // 사전 등록된 직원도 곧바로 카카오워크에 연결한다. 이 사람이 Alert 수신자로
-    // 지정되는 것은 대개 등록 직후인데, 그때 연결이 없으면 승인 요청이 안 간다.
-    const linked = await linkKakaoworkUserId(email);
-    if (linked.linked) rows[0].kakaowork_user_id = linked.linked;
+    // 예전에는 여기서 곧바로 카카오워크 연결을 시도했다(등록 직후 Alert 수신자로
+    // 지정되는 일이 흔한데 그때 연결이 없으면 승인 요청이 안 갔다). 이제 발송
+    // 주소는 위 insert의 `phone` 한 칸이 전부다 — 이어 붙일 조회가 없다.
     res.status(201).json(rows[0]);
   } catch (e: any) {
     // employees.email은 unique다 — 이미 있는 이메일로 사전 등록을 시도한 경우.
@@ -720,7 +694,12 @@ orgRouter.get("/recipients", async (req, res) => {
   }
   const rows = await withUser(req.user!.accountId, async (q) => {
     const { rows } = await q.query(
-      `select r.department_id, r.employee_id, e.name, e.role, e.kakaowork_user_id
+      // notifiable은 **서버가 판정해서 내려준다.** 화면은 전화번호 형식 규칙을 한
+      // 글자도 갖지 않는다 — 규칙이 두 벌이 되면 화면은 "연락 가능"이라 세는데
+      // 발송은 거절되는(또는 그 반대의) 상태가 생기고, 그게 이 프로젝트가 계속
+      // 없애 온 어긋남이다. 판정은 phone.ts 하나에서만 나온다.
+      `select r.department_id, r.employee_id, e.name, e.role, e.phone,
+              ${sendablePhoneSql("e.phone")} as notifiable
          from recipients r join employees e on e.id = r.employee_id
         where $1::uuid is null or r.department_id = $1
         order by e.name`,
@@ -796,14 +775,16 @@ orgRouter.put("/alert-recipients", requireAdmin, async (req, res) => {
 orgRouter.get("/alert-recipients", async (req, res) => {
   const rows = await withUser(req.user!.accountId, async (q) => {
     const { rows } = await q.query(
-      // kakaowork_user_id를 함께 내려준다 — 화면(대시보드 셋업 체크리스트·알림 설정)이
+      // notifiable을 함께 내려준다 — 화면(대시보드 셋업 체크리스트·알림 설정)이
       // "특보를 받을 수 있는 사람이 실제로 있는가"를 이 값으로 센다. 없으면 화면은
       // 수신자가 지정돼 있다는 것만 보고 "준비 완료"라고 말한다(그게 F-0의 절반이었다).
+      // 카카오워크 시절 `kakaowork_user_id`가 하던 일이고, 안전망은 그대로 남는다.
       //
       // department_id도 함께 내려준다(QA W-31). 이 목록은 승인 권한을 지정하는
       // 화면인데 그 사람이 어느 부서인지 보이지 않아, 동명이인이 있으면 누구를
       // 지우는지 알 수 없었다.
-      `select ar.employee_id, e.name, e.role, e.kakaowork_user_id, e.department_id
+      `select ar.employee_id, e.name, e.role, e.phone, e.department_id,
+              ${sendablePhoneSql("e.phone")} as notifiable
          from alert_recipients ar join employees e on e.id = ar.employee_id
         order by e.name`,
     );

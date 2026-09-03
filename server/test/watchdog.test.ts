@@ -4,15 +4,16 @@ import { withService, type Querier } from "../src/db.ts";
 import { checkHealth, reportIfUnhealthy, COLLECT_STALE_MIN, MISSING_STREAK } from "../src/jobs/watchdog.ts";
 import type { NotificationChannel } from "../src/shared/channel.ts";
 // 25번째 경로(실효 채널이 로그 전용)를 재현하려면 그 채널 객체가 필요하다.
-import { ConsoleChannel } from "../src/shared/kakaowork.ts";
+import { LogOnlyChannel } from "../src/shared/sms.ts";
+import { LOG_ONLY_REASON } from "../src/jobs/watchdog.ts";
 
-// 이 파일은 실제 카카오워크로 나가면 안 된다. reportIfUnhealthy는 채널을 주입할 수
-// 있지만, 주입하지 않는 경로를 한 번이라도 밟으면 루트 .env의 봇 키로 실제 발송이
-// 나간다 — jobs.test.ts와 같은 방식으로 콘솔 채널로 못박는다.
-process.env.NOTIFY_CHANNEL = "console";
+// 이 파일은 실제 문자를 내보내면 안 된다. reportIfUnhealthy는 채널을 주입할 수
+// 있지만, 주입하지 않는 경로를 한 번이라도 밟으면 루트 .env의 제공자 설정으로
+// 실제 발송이 나간다 — jobs.test.ts와 같은 방식으로 로그 채널로 못박는다.
+process.env.SMS_PROVIDER = "";
 
-// 이 스위트 전체가 NOTIFY_CHANNEL=console로 도는데, **그 상태 자체가 이제 사유다**
-// (검증 라운드 E의 25번째 경로: 로그 전용 채널 + 연결된 수신자 = 아무에게도 안 간다).
+// 이 스위트 전체가 로그 전용 채널로 도는데, **그 상태 자체가 이제 사유다**
+// (검증 라운드 E의 25번째 경로: 로그 전용 채널 = 아무에게도 안 간다).
 // 그 사유를 일부러 보려는 describe 말고는 **운영과 같은 실채널**을 주입해 둔다 —
 // 안 그러면 모든 테스트의 reasons에 같은 문장이 섞여 무엇을 보고 있는지 알 수 없다.
 const REAL_CHANNEL: NotificationChannel = {
@@ -24,25 +25,6 @@ const REAL_CHANNEL: NotificationChannel = {
 /** 기본이 "실채널이 붙은 운영 상태"인 checkHealth. deps로 덮어쓸 수 있다. */
 const health = (deps: Parameters<typeof checkHealth>[0] = {}) =>
   checkHealth({ channel: REAL_CHANNEL, ...deps });
-
-/**
- * HTTP 경로(`/api/health/deep`)는 채널을 주입할 수 없다 — 환경변수를 읽는다.
- * "실채널이 설정된 운영 상태"를 잠깐 흉내 낸다. 이 블록 안에서는 아무것도 발송하지
- * 않는다(checkHealth는 읽기만 한다). 끝나면 반드시 되돌린다.
- */
-async function withRealChannelEnv<T>(fn: () => Promise<T>): Promise<T> {
-  const notify = process.env.NOTIFY_CHANNEL;
-  const key = process.env.KAKAOWORK_BOT_KEY;
-  process.env.NOTIFY_CHANNEL = "";
-  process.env.KAKAOWORK_BOT_KEY = "test-only-not-a-real-key";
-  try {
-    return await fn();
-  } finally {
-    process.env.NOTIFY_CHANNEL = notify ?? "console";
-    if (key === undefined) delete process.env.KAKAOWORK_BOT_KEY;
-    else process.env.KAKAOWORK_BOT_KEY = key;
-  }
-}
 
 // 발송된 내용을 그대로 모으는 채널. "알렸다/안 알렸다"를 눈으로 봐야
 // 감시가 실제로 사람을 부르는지 증명할 수 있다.
@@ -76,21 +58,21 @@ async function insertObs(
   }
 }
 
-// 이제 checkHealth는 "알릴 수 있는 사람이 있는가"도 본다 — Alert 수신자 중 카카오워크에
-// 연결된 사람이 0명이면 특보가 아무에게도 전달되지 않으므로 그것 자체가 불건강이다.
-// 그래서 "정상"을 확인하는 테스트는 연결된 수신자가 한 명 있는 상태를 먼저 만들어야
+// 이제 checkHealth는 "알릴 수 있는 사람이 있는가"도 본다 — Alert 수신자 중 보낼 수
+// 있는 휴대폰 번호를 가진 사람이 0명이면 특보가 아무에게도 전달되지 않으므로 그것
+// 자체가 불건강이다. 그래서 "정상"을 확인하는 테스트는 번호가 있는 수신자가 한 명 있는 상태를 먼저 만들어야
 // 한다. 작업 DB의 alert_recipients는 다른 파일도 쓰므로, 이 파일 전용 직원 한 명만
 // 넣고 테스트가 끝나면 지운다.
-const NOTIFIABLE = { email: "zzwatchdog-ok@gonjiam.com", kw: "zzwatchdog-ok-kakao" };
+const NOTIFIABLE = { email: "zzwatchdog-ok@gonjiam.com", phone: "010-7000-0001" };
 
 async function ensureNotifiable(): Promise<void> {
   await withService(async (q) => {
     const { rows } = await q.query(
-      `insert into employees (name, email, kakaowork_user_id, role)
+      `insert into employees (name, email, phone, role)
        values ('감시정상', $1, $2, 'staff')
-       on conflict (email) do update set kakaowork_user_id = excluded.kakaowork_user_id
+       on conflict (email) do update set phone = excluded.phone
        returning id`,
-      [NOTIFIABLE.email, NOTIFIABLE.kw],
+      [NOTIFIABLE.email, NOTIFIABLE.phone],
     );
     await q.query("insert into alert_recipients (employee_id) values ($1) on conflict do nothing", [rows[0].id]);
   });
@@ -123,16 +105,16 @@ async function ensureGuideline(): Promise<void> {
     const deptId =
       d[0]?.id ??
       (await q.query("select id from departments where name = $1", [GUIDE.dept])).rows[0].id;
-    // **카카오워크 ID를 채운다.** 채우지 않으면 이 부서 몫은 승인해도 0명에게
+    // **휴대폰 번호를 채운다.** 채우지 않으면 이 부서 몫은 승인해도 0명에게
     // 나간다 — 그리고 그것이 검증 §신규-1이 찾아낸 상태다. 이 파일의 "정상" 전제가
     // 그동안 정확히 그 상태였다(지정은 돼 있고 아무도 닿을 수 없는).
     const { rows: e } = await q.query(
-      `insert into employees (name, email, role, kakaowork_user_id)
+      `insert into employees (name, email, role, phone)
        values ('감시수신', $1, 'staff', $2)
        on conflict (email) do update
-         set name = excluded.name, kakaowork_user_id = excluded.kakaowork_user_id
+         set name = excluded.name, phone = excluded.phone
        returning id`,
-      [GUIDE.email, "zzwatchdog-recv-kakao"],
+      [GUIDE.email, "010-7000-0002"],
     );
     await q.query(
       `insert into action_guidelines (department_id, kind, grade, staff_actions, guest_notice)
@@ -374,7 +356,7 @@ describe("상태 점검", () => {
             // 관측 목록)만 인자로 받은 행을 돌려준다. 좌표를 고정하지 않으면
             // 관측 행에 nx/ny가 없어 격자 범위 사유(QA W-10)가 함께 붙는다.
             if (text.includes("heartbeats")) return { rows: [{ stale: false }] };
-            if (text.includes("alert_recipients")) return { rows: [{ total: 1, linked: 1 }] };
+            if (text.includes("alert_recipients")) return { rows: [{ total: 1, reachable: 1 }] };
             if (text.includes("site_settings")) return { rows: [{ nx: 61, ny: 121 }] };
             // 특보 기준도 관심사가 아니다 — 쓸 수 있는 값 한 벌로 고정한다.
             // 고정하지 않으면 아래 관측 행이 기준 행으로 읽혀 "기준 값이 잘못됐다"가
@@ -382,6 +364,9 @@ describe("상태 점검", () => {
             if (text.includes("weather_criteria")) {
               return { rows: [{ kind: "rain", grade: "watch", threshold: { rain_mm_per_hr: 30 } }] };
             }
+            // 지침 길이(LMS 한 통) 검사도 이 시나리오의 관심사가 아니다 —
+            // 고정하지 않으면 아래 관측 행이 "너무 긴 지침"으로 읽혀 사유가 붙는다.
+            if (text.includes("action_guidelines")) return { rows: [] };
             return { rows };
           },
         }),
@@ -429,9 +414,10 @@ describe("상태 점검", () => {
   });
 });
 
-// 이 시스템이 겪은 가장 큰 사고의 절반이다. 값을 채우는 경로를 만드는 것만으로는
-// 같은 사고가 다른 이유(봇 키 오타, 카카오워크 계정 삭제, 이메일 불일치)로 되풀이된다 —
-// "알릴 수 있는 사람이 0명"이라는 사실이 지표에 보여야 한다.
+// 이 시스템이 겪은 가장 큰 사고의 절반이다. 카카오워크에서는 "연결이 안 됐다"가
+// 원인이었고 지금은 "휴대폰 번호가 없거나 형식이 틀렸다"가 원인이지만, 결과는 같다 —
+// "알릴 수 있는 사람이 0명"이라는 사실이 지표에 보여야 한다. **조회·연결이라는 기계가
+// 사라졌다고 이 안전망까지 같이 사라지면 QA가 네 번 찾아낸 결함이 그대로 돌아온다.**
 describe("알릴 수 있는 사람이 없으면 불건강이다", () => {
   const UNLINKED = "zzwatchdog-unlinked@gonjiam.com";
 
@@ -455,20 +441,20 @@ describe("알릴 수 있는 사람이 없으면 불건강이다", () => {
     });
   });
 
-  it("수신자가 지정돼 있는데 아무도 카카오워크에 연결돼 있지 않으면 불건강이다", async () => {
+  it("수신자가 지정돼 있는데 아무도 휴대폰 번호가 없으면 불건강이다", async () => {
     await withService(async (q) => {
       await healthyCollection(q);
       await clearRecipients(q);
       const { rows } = await q.query(
-        "insert into employees (name, email) values ('미연결', $1) returning id", [UNLINKED]);
+        "insert into employees (name, email) values ('번호없음', $1) returning id", [UNLINKED]);
       await q.query("insert into alert_recipients (employee_id) values ($1)", [rows[0].id]);
     });
     const out = await health();
     expect(out.ok).toBe(false);
-    expect(out.reasons.join()).toMatch(/카카오워크에 연결된 사람이 0명/);
+    expect(out.reasons.join()).toMatch(/보낼 수 있는 휴대폰 번호를 가진 사람이 0명/);
   });
 
-  it("한 명이라도 연결돼 있으면 그 사유는 없다", async () => {
+  it("한 명이라도 번호가 있으면 그 사유는 없다", async () => {
     await withService(async (q) => {
       await healthyCollection(q);
       await clearRecipients(q);
@@ -476,7 +462,7 @@ describe("알릴 수 있는 사람이 없으면 불건강이다", () => {
     await ensureAlertable();
     const out = await health();
     expect(out.ok).toBe(true);
-    expect(out.reasons.join()).not.toMatch(/카카오워크/);
+    expect(out.reasons.join()).not.toMatch(/휴대폰 번호를 가진 사람이 0명/);
   });
 
   it("수신자가 아예 지정되지 않았어도 불건강이다", async () => {
@@ -501,7 +487,7 @@ describe("알릴 수 있는 사람이 없으면 불건강이다", () => {
     expect(res.body.reasons.join()).toMatch(/Alert 수신자/);
   });
 
-  // 이 사유일 때는 카카오워크로 알릴 수 없다(그 통로가 없다는 것이 곧 사유다).
+  // 이 사유일 때는 문자로 알릴 수 없다(그 통로가 없다는 것이 곧 사유다).
   // 조용히 지나가면 아무도 모르므로 서버 로그에 반드시 남아야 한다.
   it("알릴 대상이 없으면 서버 로그에 남긴다", async () => {
     await withService(async (q) => {
@@ -520,16 +506,16 @@ describe("알릴 수 있는 사람이 없으면 불건강이다", () => {
 
 describe("문제가 있으면 알린다", () => {
   const EMAIL = "zzwatchdog@gonjiam.com";
-  const KAKAO_ID = "zzwatchdog-kakao";
+  const PHONE = "010-7000-0003";
 
   async function makeRecipient() {
     return withService(async (q) => {
       const { rows } = await q.query(
-        `insert into employees (name, email, kakaowork_user_id, role)
+        `insert into employees (name, email, phone, role)
          values ('감시테스트', $1, $2, 'staff')
-         on conflict (email) do update set kakaowork_user_id = excluded.kakaowork_user_id
+         on conflict (email) do update set phone = excluded.phone
          returning id`,
-        [EMAIL, KAKAO_ID],
+        [EMAIL, PHONE],
       );
       await q.query("insert into alert_recipients (employee_id) values ($1) on conflict do nothing", [rows[0].id]);
       return rows[0].id as string;
@@ -555,7 +541,7 @@ describe("문제가 있으면 알린다", () => {
     const { sent, channel } = recorder();
     await reportIfUnhealthy({ channel });
     expect(sent).toHaveLength(1);
-    expect(sent[0].to).toBe(KAKAO_ID);
+    expect(sent[0].to).toBe(PHONE);
     expect(sent[0].text).toMatch(/수집/);
   });
 
@@ -576,8 +562,8 @@ describe("문제가 있으면 알린다", () => {
     expect(sent).toHaveLength(0);
   });
 
-  // 감지는 했는데 **알리지 못한** 경우. 예전에는 send의 반환값을 버려서, 봇 키가
-  // 틀렸거나 카카오워크가 죽어 한 통도 못 나가도 이 함수는 "알렸다"고 여기고 조용히
+  // 감지는 했는데 **알리지 못한** 경우. 예전에는 send의 반환값을 버려서, 제공자
+  // 설정이 틀려 한 통도 못 나가도 이 함수는 "알렸다"고 여기고 조용히
   // 끝났다 — 문제를 찾고도 그 사실이 아무 데도 남지 않는, 이 시스템에서 가장 위험한
   // 종류의 침묵이다.
   it("전원에게 전달하지 못하면 그 사실을 로그에 남긴다", async () => {
@@ -586,16 +572,16 @@ describe("문제가 있으면 알린다", () => {
       q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now() - interval '5 hours')"),
     );
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
-    const failing: NotificationChannel = { async send() { return { ok: false, error: "봇 키 오류" }; } };
+    const failing: NotificationChannel = { async send() { return { ok: false, error: "제공자 오류" }; } };
     await reportIfUnhealthy({ channel: failing });
     expect(err.mock.calls.map((c) => String(c[0])).join("\n")).toMatch(/모두에게 전달하지 못했습니다/);
     err.mockRestore();
   });
 
-  // 카카오워크 ID가 없는 직원에게 보내려 하면 발송이 통째로 터진다.
-  it("카카오워크 ID가 없는 수신자에게는 보내지 않는다", async () => {
+  // 번호가 없는 직원에게 보내려 하면 제공자가 요청 자체를 거절한다.
+  it("휴대폰 번호가 없는 수신자에게는 보내지 않는다", async () => {
     const id = await makeRecipient();
-    await withService((q) => q.query("update employees set kakaowork_user_id = null where id = $1", [id]));
+    await withService((q) => q.query("update employees set phone = null where id = $1", [id]));
     await withService((q) =>
       q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now() - interval '5 hours')"),
     );
@@ -609,17 +595,24 @@ describe("GET /api/health/deep", () => {
   beforeEach(ensureAlertable);
   afterEach(clearAlertable);
 
-  it("정상이면 200과 ok:true를 준다", async () => {
+  // **지금은 200이 나올 수 없다.** LMS 제공자 자료를 아직 받지 못해 로그 전용이
+  // 유일한 구현이고, 그 사실이 언제나 사유 하나를 만든다(사용자 판정 2).
+  //
+  // 그래서 이 테스트가 지키는 것은 "정상이면 200"이 아니라 **"빨간불의 이유가
+  // 정확히 그것 하나여야 한다"**이다. 다른 사유가 함께 섞여 있으면 그것은 이
+  // 시스템에 SMS 말고도 다른 문제가 있다는 뜻이고, 사유 하나가 빠져 있으면
+  // 발송 상태를 초록으로 칠한 것이다. 제공자가 붙는 날 이 테스트는 실패하고,
+  // 그때 고칠 곳이 어디인지는 실패 문구가 그대로 말해 준다.
+  it("다른 모든 것이 정상이어도 SMS 미연동 하나 때문에 503이다", async () => {
     await withService(async (q) => {
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
       await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
     const { app } = await import("../src/index.ts");
-    // 실채널이 붙은 운영 상태에서만 200이다. 이 스위트의 기본값인
-    // NOTIFY_CHANNEL=console은 그 자체로 사유이므로 아래 describe가 따로 본다.
-    const res = await withRealChannelEnv(() => request(app).get("/api/health/deep"));
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
+    const res = await request(app).get("/api/health/deep");
+    expect(res.status).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.reasons).toEqual([LOG_ONLY_REASON]);
   });
 
   // 200을 항상 주면 바깥에서 거는 감시(사내 모니터링·수동 확인)가
@@ -798,23 +791,23 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
   // 검증 §신규-1 — 이 프로젝트가 네 번째로 만난 "알릴 수 없는데 전부 초록".
   //
   // 부서 수신자는 **특보를 실제로 받는 사람**인데, checkHealth도 셋업 체크리스트도
-  // Alert 수신자(승인자)의 연결만 셌다. 그래서 부서 수신자 전원이 미연결이면
+  // Alert 수신자(승인자)만 셌다. 그래서 부서 수신자 전원에게 번호가 없으면
   // 승인 발송·매시간 반복 발송이 0명에게 나가는데 하트비트·워치독·health/deep이
   // 전부 초록이었다(실측: `sent_count:0` + `ok:true`).
-  it("지침·수신자는 있는데 그 부서에 카카오워크 연결자가 0명이면 문제로 본다", async () => {
+  it("지침·수신자는 있는데 그 부서에 번호 있는 사람이 0명이면 문제로 본다", async () => {
     await healthyPipes();
     await ensureGuideline();
     await withService((q) =>
-      q.query("update employees set kakaowork_user_id = null where email = $1", [GUIDE.email]),
+      q.query("update employees set phone = null where email = $1", [GUIDE.email]),
     );
     const out = await health();
     expect(out.ok).toBe(false);
-    expect(out.reasons.join()).toMatch(/연결된 수신자가 한 명도 없는 부서가 1곳/);
+    expect(out.reasons.join()).toMatch(/휴대폰 번호를 가진 수신자가 한 명도 없는 부서가 1곳/);
   });
 
   // 수신자가 아예 없는 부서를 두 사유가 각각 세면 운영자는 부서 수를 두 배로 읽고
   // 있지도 않은 부서를 찾아 헤맨다. 앞의 사유("수신자가 한 명도 없는")만 낸다.
-  it("수신자가 아예 없는 부서를 '미연결'로 두 번 세지 않는다", async () => {
+  it("수신자가 아예 없는 부서를 '번호 없음'으로 두 번 세지 않는다", async () => {
     await healthyPipes();
     await ensureGuideline();
     await withService((q) =>
@@ -825,7 +818,7 @@ describe("특보를 낼 수 없는 상태를 사유로 잡는다", () => {
     );
     const out = await health();
     expect(out.reasons.join()).toMatch(/수신자가 한 명도 없는 부서가 1곳/);
-    expect(out.reasons.join()).not.toMatch(/연결된 수신자가 한 명도 없는 부서/);
+    expect(out.reasons.join()).not.toMatch(/휴대폰 번호를 가진 수신자가 한 명도 없는 부서/);
   });
 
   // 회귀 검증 §B-2 — `count(*)`가 부서가 아니라 **지침 행**을 셌다. 한 부서에
@@ -1067,66 +1060,54 @@ describe("관측 지점 좌표가 격자 범위 밖이면 불건강이다 (W-10)
 // ---------------------------------------------------------------------------
 //
 // 열거 표(라운드 E)가 24개 경로를 적고 각 경로마다 지표를 붙였는데, **메시지가
-// 실제로 어디로 가는가**를 묻는 칸이 없었다. `NOTIFY_CHANNEL=console`이 운영에
-// 남으면: 봇 키가 유효하니 kakaoLinkTick이 연결을 채우고 → 수신자·승인자 전부
-// "연결됨" → 셋업 체크리스트·health/deep 전부 초록 → 승인은
-// `{"ok":true,"sent_count":1}`. 그런데 그 DM은 전부 앱 로그로만 갔다.
-// 라운드 E가 넣은 "0명 전달" 방어조차 우회한다 — ConsoleChannel.send가 ok:true를
+// 실제로 어디로 가는가**를 묻는 칸이 없었다. 실효 채널이 로그 전용이면: 수신자·
+// 승인자 전부 "닿을 수 있음" → 셋업 체크리스트·health/deep 전부 초록 → 승인은
+// `{"ok":true,"sent_count":1}`. 그런데 그 메시지는 전부 앱 로그로만 갔다.
+// 라운드 E가 넣은 "0명 전달" 방어조차 우회한다 — 로그 채널의 send가 ok:true를
 // 주므로 코드 입장에서 발송은 성공이다.
 //
-// 리허설 스택의 .env(일부러 console로 둔다)를 실서버에 복사하는 것이 가장 흔한 경로다.
+// **SMS 전환으로 이 경로는 "설정 실수"에서 "지금의 상태"가 됐다.** 제공자 자료를
+// 받기 전까지 로그 전용이 유일한 구현이므로 이 사유는 언제나 켜져 있다.
 describe("실효 발송 채널이 로그 전용이면", () => {
   beforeEach(ensureAlertable);
   afterEach(clearAlertable);
 
-  it("연결된 수신자가 있는데 채널이 콘솔이면 사유를 낸다", async () => {
+  it("다른 모든 지표가 초록이어도 사유를 낸다", async () => {
     await withService(async (q) => {
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
       await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
-    // 다른 모든 지표는 초록이다 — 실채널이면 ok:true인 바로 그 상태.
+    // 실채널을 주입하면 ok:true인 바로 그 상태 — 남은 문제는 "어디로 가는가" 하나다.
     expect((await health()).ok).toBe(true);
 
-    const out = await checkHealth({ channel: new ConsoleChannel() });
+    const out = await checkHealth({ channel: new LogOnlyChannel() });
     expect(out.ok).toBe(false);
-    expect(out.reasons.join()).toMatch(/로그 전용/);
-    expect(out.reasons.join()).toMatch(/앱 로그로만 나갑니다/);
-    // 무엇을 고쳐야 하는지가 사유 안에 있어야 한다.
-    expect(out.reasons.join()).toMatch(/NOTIFY_CHANNEL/);
+    // **문구를 글자 그대로 고정한다**(사용자 판정 2). 이 문장이 지금 이 시스템의
+    // 상태를 대표하고, 흐려지면 빨간불의 이유가 무엇이었는지 아무도 모르게 된다.
+    expect(out.reasons).toContain(LOG_ONLY_REASON);
+    expect(LOG_ONLY_REASON).toBe("SMS 발송 설정이 아직 없습니다 — 인프라 연동 대기 중");
   });
 
-  // 승인자(Alert 수신자)가 아니라 **부서 수신자**만 연결돼 있어도 특보 DM은 그리로
-  // 나간다. 두 명단은 다르고, 한쪽만 보면 그 절반이 로그로 새는 것을 못 본다.
-  it("부서 수신자만 연결돼 있어도 사유를 낸다", async () => {
-    await clearNotifiable(); // 승인자 쪽을 통째로 비운다 — 부서 수신자만 남는다
-    await withService(async (q) => {
-      await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
-      await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
-    });
-    const out = await checkHealth({ channel: new ConsoleChannel() });
-    expect(out.reasons.join()).toMatch(/로그 전용/);
-  });
-
-  // **설치 직후에 울리면 안 된다.** `.env.selfhost.example`이 설치 점검 단계에서
-  // console을 권하고, 그때는 아직 아무도 연결되어 있지 않다. 그 상태는 이미
-  // "수신자가 한 명도 없습니다"로 빨간불이고, 여기까지 겹쳐 울리면 설치 내내
-  // 잡음이 되어 사람이 사유 목록 자체를 안 읽게 된다.
-  it("연결된 수신자가 한 명도 없으면(설치 직후) 이 사유는 나오지 않는다", async () => {
+  // **수신자가 한 명도 없어도 울린다.** 카카오워크 시절에는 "연결된 수신자가 한
+  // 명이라도 있을 때만" 울리도록 조건을 걸어 설치 직후의 잡음을 피했다. 그때는
+  // `.env` 한 줄로 고칠 수 있는 설정 실수였기 때문이다. 지금은 시스템에 아예 없는
+  // 기능이고, 수신자가 0명이든 100명이든 "아무에게도 못 보낸다"는 사실은 같다.
+  // 조건을 되살리면 갓 설치한 시스템의 "실제 발송" 항목이 초록으로 보인다.
+  it("수신자가 한 명도 없어도(설치 직후) 이 사유는 나온다", async () => {
     await clearAlertable();
     await withService(async (q) => {
       await q.query("delete from alert_recipients");
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
       await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
-    const out = await checkHealth({ channel: new ConsoleChannel() });
-    // 다른 사유(수신자 0명 등)는 당연히 나온다. 이 사유만 없어야 한다.
-    expect(out.reasons.join()).not.toMatch(/로그 전용/);
+    const out = await checkHealth({ channel: new LogOnlyChannel() });
+    expect(out.reasons).toContain(LOG_ONLY_REASON);
     await ensureAlertable(); // afterEach의 clear와 짝을 맞춘다
   });
 
-  // 운영자가 실제로 보는 자리. 환경변수만으로 이 상태가 되는지를 HTTP로 확인한다 —
-  // 채널 주입은 테스트만 할 수 있고, 실서버는 .env 한 줄로 이 상태가 된다.
-  it("/api/health/deep이 503으로 내려간다 (NOTIFY_CHANNEL=console 그대로)", async () => {
+  // 운영자가 실제로 보는 자리. 채널 주입 없이 **환경변수만으로** 이 상태가 되는지를
+  // HTTP로 확인한다 — 채널 주입은 테스트만 할 수 있는 일이다.
+  it("/api/health/deep이 503으로 내려간다 (제공자 미설정 그대로)", async () => {
     await withService(async (q) => {
       await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
       await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
@@ -1134,7 +1115,7 @@ describe("실효 발송 채널이 로그 전용이면", () => {
     const { app } = await import("../src/index.ts");
     const res = await request(app).get("/api/health/deep");
     expect(res.status).toBe(503);
-    expect(res.body.reasons.join()).toMatch(/로그 전용/);
+    expect(res.body.reasons).toContain(LOG_ONLY_REASON);
   });
 
   // 워치독의 점검과 발송이 **같은 채널**을 봐야 한다. 다르면 "로그 전용입니다"라는
@@ -1146,10 +1127,10 @@ describe("실효 발송 채널이 로그 전용이면", () => {
       await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
     });
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    await reportIfUnhealthy({ channel: new ConsoleChannel() });
+    await reportIfUnhealthy({ channel: new LogOnlyChannel() });
     const printed = log.mock.calls.map((c) => String(c[0])).join("\n");
     log.mockRestore();
-    expect(printed).toMatch(/\[console-channel\]/);
-    expect(printed).toMatch(/로그 전용/);
+    expect(printed).toMatch(/\[log-channel\]/);
+    expect(printed).toContain(LOG_ONLY_REASON);
   });
 });

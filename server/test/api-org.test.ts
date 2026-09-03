@@ -1338,7 +1338,7 @@ describe("직원 이름 길이와 공백 (W-30)", () => {
       return rows[0].id as string;
     });
     expect((await admin.patch(`/api/employees/${id}`).send({ name: "가".repeat(41) })).status).toBe(400);
-    // 이메일은 정규화되는데 이름은 아니었다 — 이 값은 카카오워크 DM 본문에 그대로 실린다.
+    // 이메일은 정규화되는데 이름은 아니었다 — 이 값은 특보 문자 본문에 그대로 실린다.
     const ok = await admin.patch(`/api/employees/${id}`).send({ name: "  홍길동  " });
     expect(ok.status).toBe(200);
     expect(ok.body.name).toBe("홍길동");
@@ -1421,18 +1421,23 @@ describe("알림 설정의 잘못된 값 (W-24)", () => {
   });
 });
 
-// 승인 권한을 지정하는 화면(Criteria.tsx)이 "이 사람이 누구인가 · DM을 받을 수
+// 승인 권한을 지정하는 화면(Criteria.tsx)이 "이 사람이 누구인가 · 특보를 받을 수
 // 있는가"를 그리려면 서버가 그 값을 함께 줘야 한다(QA W-31).
+//
+// **notifiable은 서버가 판정한다.** 화면이 `phone !== null`로 스스로 세면 형식이
+// 깨진 옛 값을 "연락 가능"으로 세는데 발송은 거절된다 — 화면과 발송이 갈라지는
+// 그 순간이 "전부 초록인데 아무도 못 받는" 상태다. 규칙은 server/src/phone.ts
+// 하나에서만 나온다.
 describe("특보 승인 수신자 목록의 내용 (W-31)", () => {
-  it("부서와 카카오워크 연결 상태를 함께 내려준다", async () => {
+  it("부서와 발송 가능 여부를 함께 내려준다", async () => {
     const admin = await agentAs("admin", "w31@gonjiam.com");
     const { deptId, empId } = await withService(async (q) => {
       const { rows: d } = await q.query("insert into departments (name) values ($1) returning id", [
         `${DEPT_PREFIX}w31`,
       ]);
       const { rows: e } = await q.query(
-        `insert into employees (name, email, department_id, kakaowork_user_id)
-         values ('승인자', 'w31-target@gonjiam.com', $1, 'kw-w31') returning id`,
+        `insert into employees (name, email, department_id, phone)
+         values ('승인자', 'w31-target@gonjiam.com', $1, '010-9111-2222') returning id`,
         [d[0].id],
       );
       await q.query("insert into alert_recipients (employee_id) values ($1)", [e[0].id]);
@@ -1441,10 +1446,11 @@ describe("특보 승인 수신자 목록의 내용 (W-31)", () => {
     const res = await admin.get("/api/alert-recipients");
     expect(res.status).toBe(200);
     const row = res.body.find((r: any) => r.employee_id === empId);
-    expect(row).toMatchObject({ name: "승인자", department_id: deptId, kakaowork_user_id: "kw-w31" });
+    expect(row).toMatchObject({ name: "승인자", department_id: deptId,
+      phone: "010-9111-2222", notifiable: true });
   });
 
-  it("부서가 없거나 연결이 없으면 null로 내려준다", async () => {
+  it("부서가 없으면 null, 번호가 없으면 notifiable=false로 내려준다", async () => {
     const admin = await agentAs("admin", "w31b@gonjiam.com");
     const empId = await withService(async (q) => {
       const { rows } = await q.query(
@@ -1454,6 +1460,7 @@ describe("특보 승인 수신자 목록의 내용 (W-31)", () => {
     });
     const row = (await admin.get("/api/alert-recipients")).body.find((r: any) => r.employee_id === empId);
     expect(row.department_id).toBe(null);
-    expect(row.kakaowork_user_id).toBe(null);
+    expect(row.phone).toBe(null);
+    expect(row.notifiable).toBe(false);
   });
 });

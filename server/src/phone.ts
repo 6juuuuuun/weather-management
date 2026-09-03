@@ -64,3 +64,54 @@ function hyphenate(digits: string): string {
   const mid = digits.length === 11 ? 4 : 3;
   return `${digits.slice(0, 3)}-${digits.slice(3, 3 + mid)}-${digits.slice(3 + mid)}`;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 여기서부터는 **발송 주소로서의** 전화번호다 (카카오워크 → SMS(LMS) 전환).
+//
+// 카카오워크 시절에는 "이 사람에게 보낼 수 있는가"가 employees.kakaowork_user_id로
+// 판정됐다. 그 값은 이메일 조회로 채워졌으므로 조회·재연결·수동 입력·미연결 표시라는
+// 기계 장치가 통째로 필요했다. 전화번호는 **번호 자체가 주소**라 조회가 없다.
+// 그래서 그 기계는 사라지지만, 그것이 지고 있던 안전망 —
+// "이 수신자에게는 특보가 아무에게도 가지 않는다" — 은 그대로 여기로 옮겨 온다.
+//
+// **"값이 있다"가 아니라 "보낼 수 있는 형식이다"로 센다.**
+// employees.phone에는 위 검증이 생기기 전에 저장된 값이 남아 있을 수 있다(주석 22행).
+// 그런 값을 "연락 가능"으로 세면 지표는 초록인데 LMS 제공자가 발송을 거절한다 —
+// 이 프로젝트가 네 번 고친 "아무에게도 못 알리는데 전부 초록"의 정확히 같은 모양이다.
+// 세는 기준과 실제로 보낼 수 있는 기준이 어긋나면 안 되므로 둘 다 아래 하나를 본다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 이 값이 지금 그대로 LMS 수신번호로 쓸 수 있는가.
+ *
+ * normalizePhone을 그대로 쓴다 — 쓰기 경로가 통과시키는 값과 발송이 보낼 수 있는
+ * 값이 같아야 한다. 빈 값(ok:true, phone:null)은 "보낼 수 없음"이다: 가입에서는
+ * 선택 항목이라 정상이지만(판정 3), 발송 주소로서는 없는 것과 같다.
+ */
+export function isSendablePhone(raw: unknown): boolean {
+  const r = normalizePhone(raw);
+  return r.ok && r.phone !== null;
+}
+
+/**
+ * 위 판정과 같은 뜻의 SQL 조건. `col`은 전화번호 컬럼의 정규화된 참조
+ * (`"e.phone"`처럼 **코드에 적힌 식별자**만 넣는다 — 사용자 입력이 아니다).
+ *
+ * guidelineContent.ts의 effectiveGuidelineSql과 같은 처방이다: 한 규칙이 JS와 SQL
+ * 두 언어로 적히는 것을 피할 수 없으면, **두 벌을 적지 말고 한 벌에서 뽑아 쓴다.**
+ * 아래는 위 정규식 두 개의 `source`를 그대로 가져다 붙이므로, 규칙을 고치면 SQL도
+ * 함께 바뀐다 — 규칙이 갈라질 자리가 없다.
+ *
+ * Postgres의 ARE는 `\d`와 `{7,8}` 바운드를 JS와 같은 뜻으로 읽는다. 구분자 제거도
+ * normalizePhone과 같은 집합(` .-`)이다. 숫자·구분자 외의 문자는 제거 뒤에도 남아
+ * 정규식에서 걸리므로, JS 쪽의 `^[0-9 .-]+$` 선검사를 따로 옮길 필요가 없다
+ * (`abc010...`은 제거 후 `abc010...`이라 `^010\d{8}$`에 맞지 않는다).
+ *
+ * 실제로 두 언어가 같은 판정을 내는지는 test/phone-sendable.test.ts가 진짜 DB에
+ * 물어본다 — 그 대조가 없으면 "한 곳에서 뽑았다"는 말은 주석일 뿐이다.
+ */
+export function sendablePhoneSql(col: string): string {
+  const digits = `regexp_replace(${col}, '[ .-]', '', 'g')`;
+  return `(${col} is not null and (${digits} ~ '${ELEVEN_ONLY.source}'` +
+    ` or ${digits} ~ '${TEN_OR_ELEVEN.source}'))`;
+}

@@ -6,8 +6,11 @@
 // 나가지 않는다는 뜻이다. 그래서 6시간마다 스스로 상태를 보고, 문제가 있으면
 // 알림 수신자에게 사람이 읽는 메시지로 알린다.
 import { withService, type Querier } from "../db.ts";
-import { envChannel, alertRecipientKakaoIds, isLogOnlyChannel } from "./common.ts";
-import { alertRecipientLinkCounts } from "../kakaoLink.ts";
+import {
+  envChannel, alertRecipientPhones, alertRecipientReachCounts, isLogOnlyChannel,
+} from "./common.ts";
+import { sendablePhoneSql } from "../phone.ts";
+import { LMS_CONTENT_BUDGET_BYTES, LMS_MAX_BYTES } from "../shared/sms.ts";
 import { GRID_NX_MAX, GRID_NY_MAX, isValidGrid } from "../kmaGrid.ts";
 import { effectiveGuidelineSql } from "../guidelineContent.ts";
 import { KIND_LABEL_KO, thresholdUsable, type CriteriaKind } from "../criteriaFields.ts";
@@ -19,7 +22,16 @@ export const COLLECT_STALE_MIN = 130;
 /** 연속 3회가 모두 결측이면 일시적 실패가 아니라 고장으로 본다. */
 export const MISSING_STREAK = 3;
 
-/** 사유 문구용. shared/template.ts의 GRADE_LABEL과 같은 말이지만 그 파일은 손댈 수 없다. */
+/**
+ * 발송이 로그로만 나갈 때의 사유. **사용자가 문구까지 정했다**(판정 2).
+ *
+ * 상수로 빼 두는 이유: 이 문장이 지금 이 시스템의 상태를 대표한다. 화면·문서·
+ * 테스트가 같은 문장을 가리켜야 하고, 누가 문구를 다듬다가 뜻이 흐려지면
+ * (예: "발송 준비 중") 빨간불의 이유가 무엇이었는지 아무도 모르게 된다.
+ */
+export const LOG_ONLY_REASON = "SMS 발송 설정이 아직 없습니다 — 인프라 연동 대기 중";
+
+/** 사유 문구용. shared/template.ts의 GRADE_LABEL과 같은 말이다. */
 const GRADE_LABEL_KO: Record<string, string> = { watch: "주의보", warning: "경보" };
 
 export type Health = { ok: boolean; reasons: string[] };
@@ -141,49 +153,41 @@ export async function checkHealth(
       // "알릴 수 있는 사람이 있는가"를 본다. 수집이 아무리 정상이어도 이 값이 0이면
       // 특보 승인 요청·재알림·워치독 경보가 전부 0명에게 간다 — 시스템은 아무것도
       // 알리지 못하는데 다른 모든 지표는 초록이다. 이관 직후 이 시스템이 실제로 그
-      // 상태였고(kakaowork_user_id를 채우는 경로 자체가 없었다), 아무 지표도 그것을
-      // 말해 주지 않았다. 값을 채우는 경로를 만든 것(kakaoLink.ts)만으로는 같은 사고가
-      // 다른 이유(봇 키 오타, 카카오워크 계정 삭제, 이메일 불일치)로 되풀이된다.
-      const counts = await alertRecipientLinkCounts(q);
+      // 상태였고, 아무 지표도 그것을 말해 주지 않았다.
+      //
+      // **SMS로 바뀌어도 이 사유는 그대로 남는다.** 카카오워크에서는 "연결이 안 됐다"가
+      // 원인이었고 지금은 "휴대폰 번호가 없거나 형식이 틀렸다"가 원인이지만, 결과는
+      // 글자 하나 다르지 않다 — 특보가 아무에게도 가지 않는다. 조회·연결이라는 기계가
+      // 사라졌다고 이 안전망까지 같이 사라지면, QA가 네 번 찾아낸 결함이 그대로 돌아온다.
+      const counts = await alertRecipientReachCounts(q);
       if (counts.total === 0) {
         reasons.push("특보 승인 요청을 받을 Alert 수신자가 한 명도 지정되어 있지 않습니다");
-      } else if (counts.linked === 0) {
+      } else if (counts.reachable === 0) {
         reasons.push(
-          `Alert 수신자 ${counts.total}명 중 카카오워크에 연결된 사람이 0명입니다 — 특보가 아무에게도 전달되지 않습니다`,
+          `Alert 수신자 ${counts.total}명 중 보낼 수 있는 휴대폰 번호를 가진 사람이 0명입니다 — 특보가 아무에게도 전달되지 않습니다`,
         );
       }
 
       // **메시지가 실제로 어디로 가는가**(검증 라운드 E — 표에 없던 25번째 경로).
       //
-      // 위의 사유들은 전부 "그 사람에게 닿을 수 있는가"만 묻는다. 그런데
-      // `NOTIFY_CHANNEL=console`이 운영에 남아 있으면 그 질문의 답은 전부 예스인 채로
-      // (봇 키가 유효하면 kakaoLinkTick이 연결을 채운다) 모든 DM이 앱 로그로만 나간다.
+      // 위의 사유들은 전부 "그 사람에게 닿을 수 있는가"만 묻는다. 실효 채널이 로그
+      // 전용이면 그 질문의 답이 전부 예스인 채로 **모든 메시지가 앱 로그로만 나간다.**
       // 승인은 `{"ok":true,"sent_count":1}`을 돌려주고 — 라운드 E가 넣은 "0명 전달"
-      // 방어(send.ts)조차 우회한다. ConsoleChannel.send가 `{ok:true}`를 주므로 코드
+      // 방어(send.ts)조차 우회한다. 로그 채널의 send가 `{ok:true}`를 주므로 코드
       // 입장에서 그 발송은 성공했다. 로그 파일로 성공한 것이다.
       //
-      // **판정 규칙과 그 이유**: 실효 채널이 로그 전용이고 **카카오워크에 연결된
-      // 수신자(승인자 또는 부서 수신자)가 한 명이라도 있을 때**만 사유로 낸다.
-      //  - 설치 직후·시연용 빈 DB에서는 수신자 자체가 없고 연결된 사람도 0명이라
-      //    울리지 않는다. 그 상태는 위의 "수신자가 한 명도 없습니다" 사유가 이미
-      //    빨간불로 만들고 있고, 여기까지 겹쳐 울리면 설치 점검 내내 잡음이 된다.
-      //  - 연결된 사람이 한 명이라도 생겼다는 것은 이 시스템이 "이제 사람에게
-      //    보낼 수 있다"고 믿기 시작했다는 뜻이다. 그 순간부터 **어디로 보내는가**가
-      //    사고가 된다 — 폭설이 오기 전에 울려야 하는 시점이 정확히 여기다.
-      const { rows: reachRows } = await q.query(
-        `select count(*)::int as n
-           from employees e
-          where e.kakaowork_user_id is not null
-            and (exists (select 1 from alert_recipients ar where ar.employee_id = e.id)
-                 or exists (select 1 from recipients r where r.employee_id = e.id))`,
-      );
-      const notifiablePeople = Number(reachRows[0]?.n);
-      if (isLogOnlyChannel(channel) && notifiablePeople > 0) {
-        reasons.push(
-          `발송 채널이 로그 전용(console)입니다 — 카카오워크에 연결된 수신자 ${notifiablePeople}명이 있는데 ` +
-            `모든 특보 DM이 사람 대신 앱 로그로만 나갑니다. ` +
-            `서버 .env에서 NOTIFY_CHANNEL을 비우고 KAKAOWORK_BOT_KEY를 채운 뒤 다시 올려 주세요`,
-        );
+      // **지금은 이 사유가 언제나 켜져 있다.** LMS 제공자 계정 자료를 아직 받지
+      // 못했고, 로그 전용이 유일한 구현이기 때문이다(shared/sms.ts). 당분간 그것이
+      // 정상 상태이고 `/api/health/deep`은 계속 503이지만, **그래도 초록으로 바꾸지
+      // 않는다**(사용자 판정 2) — 시스템이 진짜로 아무에게도 못 알리는 것이 사실이다.
+      //
+      // 카카오워크 시절에는 "연결된 수신자가 한 명이라도 있을 때만" 울리도록 조건을
+      // 걸었다. 빈 DB에서 설치 점검 내내 울리는 잡음을 피하려던 것이다. **그 조건은
+      // 걷어낸다.** 그때는 `.env` 한 줄로 고칠 수 있는 설정 실수였지만 지금은
+      // 시스템에 아예 없는 기능이고, 수신자가 0명이든 100명이든 사실은 같다.
+      // 조건을 남겨 두면 갓 설치한 시스템이 "실제 발송 ✓"로 보인다.
+      if (isLogOnlyChannel(channel)) {
+        reasons.push(LOG_ONLY_REASON);
       }
 
       // 여기서부터는 "수집·전달 통로"가 아니라 **판정과 내용**이 살아 있는가를 본다.
@@ -239,7 +243,7 @@ export async function checkHealth(
                   where not exists (
                     select 1 from recipients r
                       join employees e on e.id = r.employee_id
-                     where r.department_id = g.department_id and e.kakaowork_user_id is not null)
+                     where r.department_id = g.department_id and ${sendablePhoneSql("e.phone")})
                 )::int as no_reachable
            from action_guidelines g
           where ${effectiveGuidelineSql("g")}`,
@@ -263,14 +267,49 @@ export async function checkHealth(
       //
       // 이 시스템은 "아무에게도 알릴 수 없는데 모든 지표가 초록"을 세 번 고쳤고,
       // 검증이 네 번째를 찾았다. 원인이 구조적이었다: checkHealth도 셋업 체크리스트도
-      // **Alert 수신자(승인자)의 연결만** 셌고, 정작 특보가 나갈 대상인 부서 수신자의
-      // 연결은 서버 어디에서도 세지 않았다. 그래서 부서 수신자 전원이 미연결이면
+      // **Alert 수신자(승인자)만** 셌고, 정작 특보가 나갈 대상인 부서 수신자는
+      // 서버 어디에서도 세지 않았다. 그래서 부서 수신자 전원이 닿을 수 없으면
       // 승인 발송과 매시간 반복 발송이 0명에게 나가는데 하트비트·워치독·health/deep·
       // 체크리스트가 전부 초록이었다. 승인자가 폭설 새벽 4시에 승인 버튼을 누른
       // **다음에야** 알게 되는 상태였고, 그때는 고칠 시간이 없다.
       if (effective > 0 && noReachable > 0) {
         reasons.push(
-          `지침과 수신자는 있는데 카카오워크에 연결된 수신자가 한 명도 없는 부서가 ${noReachable}곳입니다 — 그 부서 몫은 승인해도 0명에게 발송됩니다`,
+          `지침과 수신자는 있는데 보낼 수 있는 휴대폰 번호를 가진 수신자가 한 명도 없는 부서가 ${noReachable}곳입니다 — 그 부서 몫은 승인해도 0명에게 발송됩니다`,
+        );
+      }
+
+      // **본문이 LMS 한 통에 담기는가** (SMS 전환에서 새로 생긴 경로).
+      //
+      // 카카오워크 DM에는 실질적인 길이 제한이 없어서 이 질문 자체가 없었다. LMS는
+      // 2,000바이트다 — 한글로 약 666자. 그런데 발송 본문에는 부서별 행동지침이
+      // 통째로 들어가고, 지침의 상한은 인력 조정 지침 20개 × 200자 + 고객 안내
+      // 1,000자다(api/content.ts). 즉 **넘칠 수 있는 정도가 아니라 넘치도록 허용된
+      // 구조**이고, 넘치면 뒤쪽 — 마지막 지침들과 고객 안내 — 이 잘려 나간다.
+      //
+      // 잘림 자체는 발송 시점에 표시가 붙고 로그도 남지만(jobs/common.ts의
+      // renderLmsBody), **그때는 이미 폭설이 온 뒤다.** 지침을 고칠 수 있는 시간은
+      // 특보가 뜨기 전뿐이므로 여기서 미리 잰다. 예비를 넉넉히 빼고(고정 부분 몫)
+      // 재기 때문에 실제 잘림보다 **먼저** 울린다 — 경고가 이른 것은 안전한 방향이고,
+      // 반대 방향(지표는 초록인데 잘려 나감)이 이 프로젝트가 없애 온 모양이다.
+      const { rows: longRows } = await q.query(
+        `select d.name as dept, g.kind, g.grade,
+                octet_length(coalesce(array_to_string(g.staff_actions, chr(10)), '')
+                             || coalesce(g.guest_notice, ''))::int as bytes
+           from action_guidelines g
+           join departments d on d.id = g.department_id
+          where octet_length(coalesce(array_to_string(g.staff_actions, chr(10)), '')
+                             || coalesce(g.guest_notice, '')) > $1
+          order by bytes desc limit 5`,
+        [LMS_CONTENT_BUDGET_BYTES],
+      );
+      if (longRows.length > 0) {
+        const where = (longRows as { dept: string; kind: string; grade: string; bytes: number }[])
+          .map((r) => `${r.dept} ${KIND_LABEL_KO[r.kind as CriteriaKind] ?? r.kind} ` +
+            `${GRADE_LABEL_KO[r.grade] ?? r.grade}(${r.bytes}바이트)`)
+          .join(", ");
+        reasons.push(
+          `행동지침이 길어 문자 한 통(LMS ${LMS_MAX_BYTES}바이트)에 담기지 않는 항목이 있습니다: ${where} ` +
+            `— 발송 시 뒷부분이 잘려 나갑니다. 행동 지침 화면에서 내용을 줄여 주세요`,
         );
       }
 
@@ -282,7 +321,7 @@ export async function checkHealth(
       // 특보를 두고 `/api/health/deep`이 `{"ok":true}`였다. **시끄러운 문제를 조용한
       // 문제로 바꾼 것이고, 이 시스템에서는 그게 더 나쁜 방향이다** — 수정 전에는
       // 최소한 승인될 때까지 계속 두드렸다. 관리자 에스컬레이션 DM은 1회뿐이고,
-      // role='admin'이면서 카카오워크가 연결된 사람이 0명이면 서버 로그 한 줄로 끝난다.
+      // role='admin'이면서 보낼 수 있는 번호를 가진 사람이 0명이면 서버 로그 한 줄로 끝난다.
       //
       // 두 갈래를 함께 본다:
       //  - remind_count가 상한에 닿았다 = 재알림이 이미 멈췄다.
@@ -329,18 +368,18 @@ export async function reportIfUnhealthy(
   const health = await checkHealth({ channel });
   if (health.ok) return;
 
-  // 카카오워크 ID가 없는 직원은 애초에 제외된다(alertRecipientKakaoIds).
-  const targets = await withService(alertRecipientKakaoIds);
+  // 보낼 수 있는 번호가 없는 직원은 애초에 제외된다(alertRecipientPhones).
+  const targets = await withService(alertRecipientPhones);
   const text = `[날씨경영 점검]\n${health.reasons.join("\n")}`;
 
   // 보낼 곳이 하나도 없는 경우가 이 시스템에서 가장 위험한 상태다: 문제를 감지했는데
   // 그것을 알릴 통로 자체가 없다. 특히 사유가 "연결된 사람이 0명"일 때는 그 통로가
-  // 없다는 것이 곧 사유다 — 카카오워크로는 절대 알릴 수 없다. 조용히 지나가면
+  // 없다는 것이 곧 사유다 — 메시지로는 절대 알릴 수 없다. 조용히 지나가면
   // 아무도 모르므로 서버 로그에 확실히 남긴다. 사람 눈에 보이는 쪽(셋업 체크리스트·
   // 알림 설정 화면·/api/health/deep)이 이 상태의 주된 통보 수단이다.
   if (targets.length === 0) {
     console.error(
-      `[watchdog] 점검에서 문제를 찾았지만 알릴 대상이 없습니다(카카오워크 연결 0명). ` +
+      `[watchdog] 점검에서 문제를 찾았지만 알릴 대상이 없습니다(보낼 수 있는 휴대폰 번호 0명). ` +
         `화면의 초기 설정 체크리스트와 GET /api/health/deep에서 확인하세요.\n${text}`,
     );
     return;
@@ -349,7 +388,7 @@ export async function reportIfUnhealthy(
   // 발송(네트워크)은 트랜잭션 밖에서 한다 — remindTick과 같은 순서다.
   //
   // **결과를 버리지 않는다.** 예전에는 send의 반환값을 무시해서, 봇 키가 틀렸거나
-  // 카카오워크가 죽어 한 통도 나가지 않아도 이 함수는 "알렸다"고 여기고 조용히
+  // 제공자 설정이 틀려 한 통도 나가지 않아도 이 함수는 "알렸다"고 여기고 조용히
   // 끝났다 — 문제를 감지하고도 그 사실이 아무 데도 남지 않는 상태다. 이 시스템에서
   // 가장 위험한 종류의 침묵이므로 서버 로그에 확실히 남긴다.
   let delivered = 0;
@@ -360,7 +399,7 @@ export async function reportIfUnhealthy(
   if (delivered === 0) {
     console.error(
       `[watchdog] 점검에서 문제를 찾았지만 ${targets.length}명 모두에게 전달하지 못했습니다 ` +
-        `(카카오워크 봇 키·연결 상태를 확인하세요).\n${text}`,
+        `(수신자 휴대폰 번호와 SMS 제공자 설정을 확인하세요).\n${text}`,
     );
   }
 }

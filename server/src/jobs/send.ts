@@ -6,10 +6,11 @@
 // 둘 중 하나라도 빠지면 로그인한 아무나 전 직원에게 발송할 수 있게 된다.
 import { UUID, withService, type Querier } from "../db.ts";
 import {
-  renderMessage, formatObsLine, OBS_LINE_FALLBACK, KIND_LABEL, GRADE_LABEL, type DeptBlock,
+  formatObsLine, OBS_LINE_FALLBACK, KIND_LABEL, GRADE_LABEL, type DeptBlock,
 } from "../shared/template.ts";
 import type { NotificationChannel } from "../shared/channel.ts";
-import { channelName, envChannel } from "./common.ts";
+import { channelName, envChannel, renderLmsBody } from "./common.ts";
+import { isSendablePhone } from "../phone.ts";
 // 폭설 메시지의 "오늘 누적"은 판정 엔진이 쓰는 것과 같은 합산이어야 한다 —
 // 두 벌로 적으면 화면·메시지·판정이 조용히 어긋난다.
 import { todayAccums } from "./weatherTick.ts";
@@ -85,19 +86,22 @@ async function dispatch(
   //
   // 발송 루프와 기록을 분리해 둔다(QA W-09). 이 둘을 한 덩어리로 두면 "이미 나간
   // 발송"과 "아직 안 나간 발송"을 호출부가 구분할 수 없어, 승인 상태를 되돌려야
-  // 할지 말지를 판단할 수 없다. 카카오워크 채널은 스스로 예외를 삼키고
-  // { ok:false }를 돌려주므로(shared/kakaowork.ts) 보통은 여기서 던지지 않지만,
+  // 할지 말지를 판단할 수 없다. 발송 채널은 스스로 예외를 삼키고 { ok:false }를
+  // 돌려주기로 되어 있지만(shared/sms.ts의 제공자 자리 주석),
   // 주입된 채널이 던질 수 있으므로 그 경우까지 결과로 바꿔 돌려준다.
   let sendError: unknown = null;
   try {
     for (const b of blocks.filter((b) => b.selected))
       for (const r of b.recipients)
         results.push({ employee_id: r.employee_id, name: r.name,
-          ...(r.kakaowork_user_id
-            ? await channel.send(r.kakaowork_user_id, renderMessage(b, {
+          // **보낼 수 있는 번호인가**를 phone.ts 하나로 묻는다. "값이 있는가"만 보면
+          // 형식이 깨진 옛 값이 대상에 들어가 제공자에게 거절당하는데, 화면·지표는
+          // 그 사람을 "연락 가능"으로 세고 있다.
+          ...(isSendablePhone(r.phone)
+            ? await channel.send(r.phone as string, renderLmsBody(b, {
                 kindLabel: KIND_LABEL[ctx.kind as never], gradeLabel: GRADE_LABEL[ctx.grade as never],
                 siteName: ctx.site, obsLine: ctx.obsLine }))
-            : { ok: false, error: "카카오워크 미연결" }) } as { ok: boolean });
+            : { ok: false, error: "휴대폰 번호 없음" }) } as { ok: boolean });
   } catch (e) {
     sendError = e;
   }
@@ -120,7 +124,7 @@ async function dispatch(
   try {
     const d = await withService(async (q) => {
       const { rows } = await q.query(
-        // channel은 컬럼 기본값('kakaowork')에 맡기지 않는다 — 실제로 어디로
+        // channel은 컬럼 기본값에 맡기지 않는다 — 실제로 어디로
         // 나갔는지를 기록하는 것이 이 컬럼의 존재 이유다(QA W-29).
         `insert into dispatches (message_id, event_id, repeat_no, is_test, results, content, channel)
          values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7) returning id`,
@@ -149,19 +153,18 @@ async function dispatch(
   //
   // 라운드 B는 "0명 발송은 성공이 아니다"를 대상이 **없는** 경우(countTargets === 0)로만
   // 닫았다. 정작 실제 운영에서 일어나는 모양은 그게 아니다: 대상은 2명인데 둘 다
-  // 카카오워크 미연결이면 전달은 0명인데 HTTP 200 `{"ok":true,"sent_count":0}`이 나갔고,
-  // 특보는 ACTIVE로 굳었다. 봇 키 오타·카카오워크 장애에서도 결과가 같다.
+  // 휴대폰 번호가 없으면 전달은 0명인데 HTTP 200 `{"ok":true,"sent_count":0}`이 나갔고,
+  // 특보는 ACTIVE로 굳었다. 제공자 장애·발신번호 미등록에서도 결과가 같다.
   //
   // 이것이 W-09가 만든 `unapprove()`가 **실제 채널에서는 절대 실행되지 않던** 이유이기도
-  // 하다: shared/kakaowork.ts는 네트워크 예외까지 삼키고 `{ok:false}`를 돌려주므로
-  // sendError가 나지 않는다(그 파일은 원본과 바이트 동일이라 손댈 수 없다 —
-  // 호출부인 여기서 판정한다). 여기서 ok:false를 내야 승인 되돌리기가 살아난다.
+  // 하다: 발송 채널은 네트워크 예외까지 삼키고 `{ok:false}`를 돌려주므로 sendError가
+  // 나지 않는다. 여기서 ok:false를 내야 승인 되돌리기가 살아난다.
   //
-  // 상태는 502다: 요청도 우리 처리도 정상이었고 **바깥(카카오워크)으로 나가지 못했다.**
+  // 상태는 502다: 요청도 우리 처리도 정상이었고 **바깥(발송 제공자)으로 나가지 못했다.**
   if (targetCount > 0 && sentCount === 0) {
     return { ok: false, status: 502,
       error: `${targetCount}명 중 아무에게도 전달되지 않았습니다 (실제 발송 0명). ` +
-        `수신자의 카카오워크 연결 상태를 확인해 주세요.`, ...base };
+        `수신자의 휴대폰 번호를 확인해 주세요.`, ...base };
   }
   return { ok: true, ...base };
 }
@@ -229,7 +232,7 @@ export async function runSend(
       // name도 읽는다 — 승인·수정 시점의 이름을 이력에 함께 스냅샷한다
       // (0013_actor_name_snapshot.sql). 그 사람이 나중에 삭제되면 외래키는
       // null이 되지만 "누가 승인했는가"는 이 이름으로 남는다.
-      "select id, role, name, kakaowork_user_id from employees where id = $1", [actorEmployeeId]);
+      "select id, role, name, phone from employees where id = $1", [actorEmployeeId]);
     const { rows: siteRows } = await q.query("select site_name from site_settings limit 1");
     // 단일 행 시드가 항상 존재하지만 타입상 null 가드
     return { emp: rows[0] ?? null, siteName: (siteRows[0]?.site_name as string) ?? "날씨경영" };
@@ -239,8 +242,11 @@ export async function runSend(
   if (body.mode === "test") {
     // 권한 검사 (2/2): 테스트 발송은 관리자만.
     if (emp.role !== "admin") return { ok: false, status: 403, error: "권한이 없습니다" };
-    if (!emp.kakaowork_user_id) return { ok: false, status: 400, error: "카카오워크 미연결" };
-    const r = await channel.send(emp.kakaowork_user_id, `[날씨경영] 테스트 메시지입니다. 설정이 정상 동작합니다.`);
+    if (!isSendablePhone(emp.phone)) {
+      return { ok: false, status: 400,
+        error: "본인 휴대폰 번호가 없거나 형식이 올바르지 않습니다 — 직원 관리에서 번호를 먼저 저장해 주세요" };
+    }
+    const r = await channel.send(emp.phone as string, `[날씨경영] 테스트 메시지입니다. 설정이 정상 동작합니다.`);
     // 채널 발송 실패는 "요청이 잘못됐다"가 아니라 "보냈는데 실패했다"이다. 원본도 200에
     // { ok:false, error }를 실어 돌려줬고, 화면(Settings.tsx)은 그 error 문구를 그대로
     // 띄운다 — 여기서 4xx로 바꾸면 클라이언트가 throw해 그 분기가 죽는다.

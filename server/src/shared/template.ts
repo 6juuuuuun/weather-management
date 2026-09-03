@@ -5,11 +5,14 @@ export const GRADE_LABEL: Record<Grade,string> = { watch:"주의보", warning:"�
 
 export type GuidelineRow = { department_id: string; department_name: string;
   kind: Kind; grade: Grade; staff_actions: string[]; guest_notice: string };
+// 수신자의 **발송 주소는 휴대폰 번호**다(카카오워크 user id에서 바뀌었다).
+// null이거나 형식이 어긋난 값은 "그 사람에게는 특보가 가지 않는다"를 뜻한다 —
+// 그 판정은 phone.ts의 isSendablePhone 하나가 내린다(여기서 되풀이하지 않는다).
 export type RecipientRow = { department_id: string; employee_id: string;
-  name: string; kakaowork_user_id: string|null };
+  name: string; phone: string|null };
 export type DeptBlock = { department_id: string; department_name: string;
   staff_actions: string[]; guest_notice: string;
-  recipients: { employee_id: string; name: string; kakaowork_user_id: string|null }[];
+  recipients: { employee_id: string; name: string; phone: string|null }[];
   selected: boolean };
 
 export function composeDraft(kind: Kind, grade: Grade,
@@ -18,7 +21,7 @@ export function composeDraft(kind: Kind, grade: Grade,
     department_id: g.department_id, department_name: g.department_name,
     staff_actions: g.staff_actions, guest_notice: g.guest_notice,
     recipients: recipients.filter(r => r.department_id === g.department_id)
-      .map(({ employee_id, name, kakaowork_user_id }) => ({ employee_id, name, kakaowork_user_id })),
+      .map(({ employee_id, name, phone }) => ({ employee_id, name, phone })),
     selected: true,
   }));
 }

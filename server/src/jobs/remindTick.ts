@@ -3,7 +3,8 @@ import { withService } from "../db.ts";
 import { KIND_LABEL, GRADE_LABEL } from "../shared/template.ts";
 import type { NotificationChannel } from "../shared/channel.ts";
 import type { Kind, Grade } from "../shared/types.ts";
-import { env, envChannel, alertRecipientKakaoIds } from "./common.ts";
+import { env, envChannel, alertRecipientPhones } from "./common.ts";
+import { sendablePhoneSql } from "../phone.ts";
 import { todayAccums, upsertHeartbeat } from "./weatherTick.ts";
 import { formatObsLine } from "../shared/template.ts";
 
@@ -52,14 +53,14 @@ export async function runRemindTick(
     );
     const { snowToday } = await todayAccums(q, new Date());
     const admins = await q.query(
-      "select kakaowork_user_id from employees where role = 'admin' and kakaowork_user_id is not null",
+      `select phone from employees where role = 'admin' and ${sendablePhoneSql("phone")}`,
     );
     return {
       due: rows as PendingEvent[],
-      alertIds: await alertRecipientKakaoIds(q),
+      alertIds: await alertRecipientPhones(q),
       obs: obsRows[0] ?? null,
       snowToday,
-      adminIds: admins.rows.map((r: { kakaowork_user_id: string }) => r.kakaowork_user_id),
+      adminIds: admins.rows.map((r: { phone: string }) => r.phone),
       intervalMin,
     };
   });
@@ -72,8 +73,8 @@ export async function runRemindTick(
       ? formatObsLine(obs) + (e.kind === "snow" ? ` · 신적설 ${obs.snow_new_cm ?? "-"}cm(오늘 누적 ${snowToday ?? "-"}cm)` : "")
       : "관측값 없음";
     // 발송(네트워크)은 트랜잭션 밖에서 한다.
-    for (const kw of alertIds)
-      await channel.send(kw,
+    for (const to of alertIds)
+      await channel.send(to,
         `[날씨경영] (재알림 ${nth}/${REMIND_LIMIT}) ${KIND_LABEL[e.kind]} ${GRADE_LABEL[e.grade]} 초안이 아직 승인 대기 중입니다.\n현재 관측: ${obsLine}\n검토: ${env("APP_BASE_URL")}/events/${e.id}`);
     // last_reminded_at도 Postgres 시계로 찍는다 — 바로 위 cutoff 비교가 그 값을
     // now()와 견주므로, 여기서 앱 시계를 쓰면 다시 두 시계가 섞인다.
@@ -95,7 +96,7 @@ export async function runRemindTick(
         `승인 권한자가 응답하지 않고 있어 재알림을 멈춥니다 — 직접 확인해 주세요.\n현재 관측: ${obsLine}\n검토: ${env("APP_BASE_URL")}/events/${e.id}`;
       if (adminIds.length === 0)
         console.error(`[remind-tick] 재알림 상한에 도달했지만 알릴 관리자가 없습니다 (event=${e.id})`);
-      for (const kw of adminIds) await channel.send(kw, text);
+      for (const to of adminIds) await channel.send(to, text);
       escalated++;
     }
   }

@@ -65,7 +65,7 @@ describe("직원 삭제 — 계정도 함께 사라진다 (W-01a)", () => {
     // (1) 계정 자체가 사라졌다
     expect(await accountBy("life-leaver@gonjiam.com")).toBeNull();
     // (2) 남아 있던 세션으로 명부를 더 읽을 수 없다 — 예전에는 200으로 전 직원의
-    //     이름·이메일·전화번호·카카오워크 ID가 그대로 열렸다.
+    //     이름·이메일·전화번호가 그대로 열렸다.
     expect((await leaver.get("/api/employees")).status).toBe(401);
     // (3) 다시 로그인할 수도 없다
     const relogin = await request(app)

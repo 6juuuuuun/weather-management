@@ -696,12 +696,12 @@ describe("GET /api/notify-channel — 실효 발송 채널", () => {
     expect((await agent.get("/api/notify-channel")).status).toBe(403);
   });
 
-  // 이 스위트는 NOTIFY_CHANNEL=console로 돈다(test/setup.ts) — 실서버에서 이 값이
+  // 이 스위트는 SMS_PROVIDER 없이 돈다(test/setup.ts) — 실서버에서 이 상태가
   // 남아 있으면 모든 특보 DM이 앱 로그로만 나간다. 그 상태를 그대로 돌려줘야 한다.
   it("로그 전용 채널이면 log_only=true를 돌려준다", async () => {
     const admin = await adminAgent();
     const res = await admin.get("/api/notify-channel");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ channel: "console", log_only: true });
+    expect(res.body).toEqual({ channel: "log", log_only: true });
   });
 });

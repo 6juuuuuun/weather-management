@@ -16,13 +16,11 @@ vi.mock("../src/jobs/weatherTick.ts", () => ({ runWeatherTick: vi.fn(async () =>
 vi.mock("../src/jobs/remindTick.ts", () => ({ runRemindTick: vi.fn(async () => ({ reminded: 0 })) }));
 vi.mock("../src/auth/session.ts", () => ({ purgeExpired: vi.fn(async () => 0) }));
 vi.mock("../src/jobs/watchdog.ts", () => ({ reportIfUnhealthy: vi.fn(async () => {}) }));
-vi.mock("../src/jobs/kakaoLinkTick.ts", () => ({ runKakaoLinkTick: vi.fn(async () => ({ candidates: 0, linked: 0 })) }));
 
 const { runWeatherTick } = await import("../src/jobs/weatherTick.ts");
 const { runRemindTick } = await import("../src/jobs/remindTick.ts");
 const { purgeExpired } = await import("../src/auth/session.ts");
 const { reportIfUnhealthy } = await import("../src/jobs/watchdog.ts");
-const { runKakaoLinkTick } = await import("../src/jobs/kakaoLinkTick.ts");
 const { startScheduler } = await import("../src/jobs/scheduler.ts");
 
 // startScheduler는 마지막에 catchUpIfMissed도 부른다. 그건 실제 DB를 읽으므로
@@ -41,7 +39,6 @@ beforeEach(() => {
   vi.mocked(runRemindTick).mockClear();
   vi.mocked(purgeExpired).mockClear();
   vi.mocked(reportIfUnhealthy).mockClear();
-  vi.mocked(runKakaoLinkTick).mockClear();
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -76,13 +73,11 @@ describe("스케줄 콜백이 실제로 작업을 부른다", () => {
     expect(purgeExpired).toHaveBeenCalledTimes(1);
   });
 
-  // 미연결 직원 재시도가 등록만 되고 아무도 안 불리면, 설치 직후 봇 키가 없어
-  // 미연결로 남은 사람들이 영원히 그대로다 — 그만큼 특보가 덜 전달된다.
-  it("새벽 5시 20분 콜백은 카카오워크 연결 재시도를 부른다", async () => {
-    const cb = registeredCallbacks().get("20 5 * * *");
-    expect(cb).toBeTypeOf("function");
-    await cb!();
-    expect(runKakaoLinkTick).toHaveBeenCalledTimes(1);
+  // 카카오워크 재연결 tick(새벽 5시 20분)은 SMS 전환에서 사라졌다. **등록 자체가
+  // 없어야 한다** — 남아 있으면 cron이 매일 새벽 없는 함수를 부르거나, 더 나쁘게는
+  // guarded가 예외를 삼켜 아무 일도 안 하는 주기가 조용히 돈다.
+  it("카카오워크 재연결 주기는 더 이상 등록되지 않는다", () => {
+    expect(registeredCallbacks().has("20 5 * * *")).toBe(false);
   });
 
   // guarded가 예외를 삼키므로, 콜백이 던져도 cron 밖으로 새지 않아야 한다.

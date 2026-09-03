@@ -4,7 +4,7 @@ import { composeDraft, renderMessage, KIND_LABEL, GRADE_LABEL } from "../../src/
 
 const G = [{ department_id:"d1", department_name:"객실", kind:"rain", grade:"watch",
   staff_actions:["수건 2개 배포"], guest_notice:"안내문" }];
-const R = [{ department_id:"d1", employee_id:"e1", name:"홍수진", kakaowork_user_id:"kw1" }];
+const R = [{ department_id:"d1", employee_id:"e1", name:"홍수진", phone:"010-1234-5678" }];
 
 describe("발송 템플릿", () => {
   it("composeDraft: 지침 있는 부서만 블록 생성 + 수신자 병합 + selected 기본 true", () => {

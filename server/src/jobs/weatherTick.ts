@@ -7,7 +7,7 @@
 // withService를 한 번 열어 작업 전체를 감싸지 않고 단계마다 나눠 여는 이유가 두 가지다.
 // (1) 원본은 Supabase 호출마다 자동 커밋이었다 — 통째로 트랜잭션에 넣으면 판정 도중
 //     오류가 났을 때 방금 저장한 관측까지 함께 롤백돼 "수집은 됐다"는 사실이 사라진다.
-// (2) 카카오워크 발송(네트워크)이 트랜잭션 안에 들어가면 그동안 커넥션이 붙잡힌다.
+// (2) 발송(네트워크)이 트랜잭션 안에 들어가면 그동안 커넥션이 붙잡힌다.
 //     그래서 발송은 항상 withService 블록 바깥에서 한다.
 import { hasGuidelineContent } from "../guidelineContent.ts";
 import { withService, type Querier } from "../db.ts";
@@ -15,11 +15,12 @@ import { baseDateTime, fetchObservation, type KmaObservation } from "../shared/k
 import { feelsLikeC, snowNewCm } from "../shared/derive.ts";
 import { evaluate } from "../shared/engine.ts";
 import {
-  composeDraft, renderMessage, formatObsLine, KIND_LABEL, GRADE_LABEL, type DeptBlock,
+  composeDraft, formatObsLine, KIND_LABEL, GRADE_LABEL, type DeptBlock,
 } from "../shared/template.ts";
 import type { NotificationChannel } from "../shared/channel.ts";
 import type { Kind, Grade, Obs, Criterion, AlertSetting, OpenEvent, Action } from "../shared/types.ts";
-import { env, envChannel, channelName, alertRecipientKakaoIds } from "./common.ts";
+import { env, envChannel, channelName, alertRecipientPhones, renderLmsBody } from "./common.ts";
+import { isSendablePhone, sendablePhoneSql } from "../phone.ts";
 
 export type SiteSettings = {
   site_name: string; nx: number; ny: number; remind_interval_min: number; resolve_notice: boolean;
@@ -98,7 +99,7 @@ export async function refreshRecipients(q: Querier, blocks: DeptBlock[]): Promis
   const deptIds = blocks.map((b) => b.department_id);
   if (deptIds.length === 0) return blocks;
   const { rows } = await q.query(
-    `select r.department_id, r.employee_id, e.name, e.kakaowork_user_id
+    `select r.department_id, r.employee_id, e.name, e.phone
        from recipients r
        join employees e on e.id = r.employee_id
       where r.department_id = any($1::uuid[])`,
@@ -108,7 +109,7 @@ export async function refreshRecipients(q: Querier, blocks: DeptBlock[]): Promis
     ...b,
     recipients: rows
       .filter((r: any) => r.department_id === b.department_id)
-      .map((r: any) => ({ employee_id: r.employee_id, name: r.name, kakaowork_user_id: r.kakaowork_user_id })),
+      .map((r: any) => ({ employee_id: r.employee_id, name: r.name, phone: r.phone })),
   }));
 }
 
@@ -208,12 +209,12 @@ export async function runWeatherTick(
       );
       if (!(last3.length === 3 && last3.every((r: any) => r.missing))) return [];
       const { rows } = await q.query(
-        "select kakaowork_user_id from employees where role = 'admin' and kakaowork_user_id is not null",
+        `select phone from employees where role = 'admin' and ${sendablePhoneSql("phone")}`,
       );
-      return rows.map((r: any) => r.kakaowork_user_id as string);
+      return rows.map((r: any) => r.phone as string);
     });
-    for (const kw of admins)
-      await channel.send(kw, "[날씨경영] 날씨 수집이 3시간 연속 실패했습니다. 시스템을 확인해 주세요.");
+    for (const to of admins)
+      await channel.send(to, "[날씨경영] 날씨 수집이 3시간 연속 실패했습니다. 시스템을 확인해 주세요.");
     await upsertHeartbeat("weather-tick", false, "missing");
     return { collected: false, events: 0, actions: [] };
   }
@@ -283,7 +284,7 @@ export async function runWeatherTick(
         [kind, grade],
       );
       const { rows: rRows } = await q.query(
-        `select r.department_id, r.employee_id, e.name, e.kakaowork_user_id
+        `select r.department_id, r.employee_id, e.name, e.phone
            from recipients r
            join employees e on e.id = r.employee_id`,
       );
@@ -298,7 +299,7 @@ export async function runWeatherTick(
       const blocks = composeDraft(kind, grade, effective as any, rRows as any);
       await q.query("insert into messages (event_id, content) values ($1, $2::jsonb)",
         [ev.id, JSON.stringify(blocks)]);
-      return { eventId: ev.id as string, alertIds: await alertRecipientKakaoIds(q) };
+      return { eventId: ev.id as string, alertIds: await alertRecipientPhones(q) };
     });
     if (!created) {
       console.warn(`[weather-tick] ${kind} ${grade}는 이미 열려 있어 새로 만들지 않았습니다`);
@@ -306,8 +307,8 @@ export async function runWeatherTick(
     }
     const { eventId, alertIds } = created;
     const deepLink = `${env("APP_BASE_URL")}/events/${eventId}`;
-    for (const kw of alertIds)
-      await channel.send(kw,
+    for (const to of alertIds)
+      await channel.send(to,
         `[날씨경영] ${KIND_LABEL[kind]} ${GRADE_LABEL[grade]} 감지 — 발송 초안이 승인을 기다립니다.\n${lineFor(kind)}\n검토: ${deepLink}`);
   }
 
@@ -347,14 +348,14 @@ export async function runWeatherTick(
           for (const b of blocks.filter((b) => b.selected))
             for (const r of b.recipients)
               results.push({ employee_id: r.employee_id, name: r.name,
-                ...(r.kakaowork_user_id
-                  ? await channel.send(r.kakaowork_user_id, renderMessage(b, { kindLabel: KIND_LABEL[a.kind],
+                ...(isSendablePhone(r.phone)
+                  ? await channel.send(r.phone as string, renderLmsBody(b, { kindLabel: KIND_LABEL[a.kind],
                       gradeLabel: GRADE_LABEL[a.grade], siteName: site.site_name, obsLine: lineFor(a.kind) }))
-                  : { ok: false, error: "카카오워크 미연결" }) });
+                  : { ok: false, error: "휴대폰 번호 없음" }) });
           // **명단에는 사람이 있는데 한 명도 못 받은 회차**를 실패로 센다(검증 §신규-1).
           //
-          // 위 `targets === 0`은 "수신자가 지정되지 않았다"만 잡는다. 전원이 카카오워크
-          // 미연결이면 targets는 2인데 실제 전달은 0명이고, 예전에는 그 회차가 조용히
+          // 위 `targets === 0`은 "수신자가 지정되지 않았다"만 잡는다. 전원이 휴대폰
+          // 번호가 없으면 targets는 2인데 실제 전달은 0명이고, 예전에는 그 회차가 조용히
           // 성공으로 기록됐다 — 하트비트가 ok=true라 health/deep도 워치독도 초록이었다.
           // 여기서 액션 실패로 세면 heartbeats.ok=false가 되고, checkHealth의
           // "마지막 수집·판정이 실패로 끝났습니다 (action-failed:N)"가 그 사실을 말한다.
@@ -362,7 +363,7 @@ export async function runWeatherTick(
           if (results.length > 0 && repeatSent === 0) {
             actionFailures++;
             console.error(
-              `[weather-tick] 반복 발송이 ${results.length}명 중 0명에게 전달됐습니다 (event=${a.eventId}) — 부서 수신자의 카카오워크 연결을 확인하세요`,
+              `[weather-tick] 반복 발송이 ${results.length}명 중 0명에게 전달됐습니다 (event=${a.eventId}) — 부서 수신자의 휴대폰 번호를 확인하세요`,
             );
           }
           await withService(async (q) => {
@@ -372,8 +373,8 @@ export async function runWeatherTick(
             // content에는 **이번 회차에 실제로 쓴 블록**(갱신된 수신자 포함)을 남긴다 —
             // 승인 스냅샷을 그대로 남기면 "누가 받았나"를 사후에 알 수 없다.
             await q.query(
-              // channel은 실제로 나간 채널을 적는다 — 컬럼 기본값('kakaowork')에
-              // 맡기면 콘솔로만 흘린 회차도 이력에는 카카오워크로 남는다(QA W-29).
+              // channel은 실제로 나간 채널을 적는다 — 컬럼 기본값에 맡기면
+              // 로그로만 흘린 회차도 이력에는 실제로 보낸 것처럼 남는다(QA W-29).
               `insert into dispatches (message_id, event_id, repeat_no, results, content, channel)
                values ($1, $2, $3, $4::jsonb, $5::jsonb, $6)`,
               [msg.id, a.eventId, repeatNo, JSON.stringify(results), JSON.stringify(blocks),
@@ -391,7 +392,7 @@ export async function runWeatherTick(
           const { rows } = await q.query(
             "select content from messages where event_id = $1 and status = 'approved'", [a.eventId]);
           await q.query("update weather_events set status = 'RESOLVED', closed_at = $2 where id = $1", [a.eventId, now]);
-          return { approvedMsg: rows[0] ?? null, alertIds: rows[0] ? [] : await alertRecipientKakaoIds(q) };
+          return { approvedMsg: rows[0] ?? null, alertIds: rows[0] ? [] : await alertRecipientPhones(q) };
         });
         if (approvedMsg) {
           if (site.resolve_notice) {
@@ -400,13 +401,13 @@ export async function runWeatherTick(
             const closing = await withService((q) =>
               refreshRecipients(q, (approvedMsg.content ?? []) as DeptBlock[]));
             for (const b of closing.filter((b) => b.selected))
-              for (const r of b.recipients) if (r.kakaowork_user_id)
-                await channel.send(r.kakaowork_user_id,
+              for (const r of b.recipients) if (isSendablePhone(r.phone))
+                await channel.send(r.phone as string,
                   `[날씨경영] ${KIND_LABEL[a.kind]} ${GRADE_LABEL[a.grade]} 상황이 해제되었습니다. 조치해 주셔서 감사합니다.`);
           }
         } else {
-          for (const kw of alertIds)
-            await channel.send(kw,
+          for (const to of alertIds)
+            await channel.send(to,
               `[날씨경영] ${KIND_LABEL[a.kind]} ${GRADE_LABEL[a.grade]} 상황이 해제되어 승인 대기 초안이 자동 종료되었습니다`);
         }
       }
