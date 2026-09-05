@@ -1,22 +1,19 @@
-// tsc --noEmit은 src/shared/engine.ts에서 오류 7개를 낸다. 고치지 않고 남겨 둔다:
+// tsc --noEmit의 기대 출력은 **오류 0건**이다. 하나라도 나오면 우리 코드가 깨진 것이다.
 //
-//  1. **"원본과 바이트 단위로 같아야 한다"는 제약은 풀렸다**(SMS 전환, 사용자 판정 1).
-//     그 제약은 이식이 충실했음을 증명하려고 둔 것이고 그 증명은 끝났으며,
-//     비교 대상이던 supabase/functions/_shared/도 이제 없다. 그래서 이 디렉터리의
-//     파일은 자유롭게 고칠 수 있다 — 실제로 channel.ts·template.ts는 이번에 고쳤다.
-//     **다만 engine.ts의 판정 로직만은 다른 이야기다.** 날씨 판정은 이 시스템의
-//     핵심이고 타입 오류 일곱 개는 그것을 건드릴 이유가 되지 못한다. 발송 채널을
-//     바꾸는 작업에서 판정 엔진을 만지기 시작하면 무엇이 무엇을 깨뜨렸는지
-//     아무도 말할 수 없게 된다.
-//  2. 전부 런타임 버그가 아니다. noUncheckedIndexedAccess가 Record<string,number>
-//     조회를 넓게 잡아 나는 것이고, 호출부가 항상 채워 넣는 임계값이다.
-//  3. 컨테이너는 TypeScript를 그대로 실행한다(node --experimental-transform-types,
-//     server/Dockerfile). tsc는 빌드 단계가 아니므로 이 오류들이 배포를 막지 않는다.
+// 이 값을 지키는 것은 사람의 기억이 아니라 CI다(.github/workflows/ci.yml의
+// "서버 타입 검사"). 그 단계가 없던 동안 오류가 9건까지 쌓였고, 아무도 그것을
+// 보고 있지 않았다 — 화면(apps/web)은 `npm run build`가 타입 검사를 겸해서
+// 저절로 지켜졌지만, 서버는 컨테이너가 TypeScript를 그대로 실행하므로
+// (node --experimental-transform-types, server/Dockerfile) 빌드 단계가 아예
+// 없고 따라서 딸려오는 검사도 없다. **빌드를 하지 않기로 했으면 검사를 따로
+// 챙겨야 한다** — 그것을 빠뜨린 것이 그 9건이었다.
 //
-// "shared/만 이 엄격성에서 빼기"는 tsconfig로는 할 수 없다 — exclude는 include
-// 글롭에만 걸리고, 임포트된 파일은 그대로 검사 대상에 들어온다(실제로 확인함).
-// 그래서 tsc --noEmit의 기대 출력은 "engine.ts 7개, 그 외 0개"다. 그 외에서 하나라도
-// 나오면 우리 코드가 깨진 것이다.
+// 그 9건에 대한 기록: 6건은 shared/engine.ts에서 noUncheckedIndexedAccess가
+// Record<string,number> 조회를 number|undefined로 넓혀 난 것이고, 임계값이 빈
+// 경우 `숫자 >= undefined`가 false가 되는 자바스크립트 동작에 기대고 있었다.
+// atLeast() 헬퍼로 그 조건을 코드에 드러냈다 — **판정 결과는 이전과 같다.**
+// 나머지 3건(api/content.ts, test/watchdog.test.ts)은 같은 저장소의 다른
+// 라우트·테스트가 이미 쓰던 형태를 이 자리들만 따르지 않아 난 것이다.
 {
   "compilerOptions": {
     "target": "ES2023",

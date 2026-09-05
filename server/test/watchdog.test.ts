@@ -541,8 +541,8 @@ describe("문제가 있으면 알린다", () => {
     const { sent, channel } = recorder();
     await reportIfUnhealthy({ channel });
     expect(sent).toHaveLength(1);
-    expect(sent[0].to).toBe(PHONE);
-    expect(sent[0].text).toMatch(/수집/);
+    expect(sent[0]!.to).toBe(PHONE);
+    expect(sent[0]!.text).toMatch(/수집/);
   });
 
   // 정상인데도 6시간마다 메시지가 오면 사람이 곧 무시하기 시작한다.

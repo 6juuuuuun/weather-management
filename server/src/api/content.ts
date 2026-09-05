@@ -150,7 +150,11 @@ contentRouter.put("/guidelines", requireAdmin, async (req, res) => {
 // w_admin_all(0002_rls.sql)이 action_guidelines의 delete까지 admin에게 허용하므로
 // withUser 그대로 두면 정책이 판정한다. requireAdmin은 화면 오동작을 막는 앞단이다.
 contentRouter.delete("/guidelines/:id", requireAdmin, async (req, res) => {
-  const id = req.params.id;
+  // String(... ?? "")은 org.ts·auth/routes.ts가 쓰는 것과 같은 형태다. 미들웨어를
+  // 함께 넘기는 이 오버로드에서는 express@5의 타입이 :id를 string으로 좁히지 못하고
+  // string | string[] | undefined로 준다 — 바로 아래 UUID 검사가 그 셋을 모두
+  // 걸러내므로 동작은 같고, 형태만 나머지 라우트와 맞춘다.
+  const id = String(req.params.id ?? "");
   if (!UUID.test(id)) return res.status(400).json({ error: "id 형식이 올바르지 않습니다" });
   const deleted = await withUser(req.user!.accountId, async (q) => {
     const { rows } = await q.query("delete from action_guidelines where id = $1 returning id", [id]);

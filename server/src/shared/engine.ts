@@ -1,14 +1,29 @@
 import type { Obs, Criterion, AlertSetting, OpenEvent, Action, Kind, Grade } from "./types.ts";
 
+/**
+ * `v >= t`. **임계값이 없으면(undefined) false다.**
+ *
+ * 예전에는 `obs.rain >= th.rain_mm_per_hr`라고만 적혀 있었고, 키가 없으면
+ * `숫자 >= undefined`가 NaN 비교로 false가 되어 **결과는 지금과 똑같았다.**
+ * 바뀐 것은 동작이 아니라 그 사실이 코드에 보이는가다 — 저 한 줄을 읽고
+ * "임계값이 비면 특보가 영영 안 뜬다"를 알아채는 사람은 없다.
+ *
+ * 임계값이 비는 것 자체를 막고 드러내는 일은 여기가 아니라 두 곳에서 한다
+ * (criteriaFields.ts의 thresholdUsable): 저장을 막는 쪽(api/dashboard.ts의
+ * PUT /criteria)과 이미 저장된 잘못된 값을 드러내는 쪽(jobs/watchdog.ts).
+ * 판정 엔진은 값을 믿고 계산만 한다.
+ */
+const atLeast = (v: number, t: number | undefined): boolean => t !== undefined && v >= t;
+
 function exceeds(kind: Kind, obs: Obs, th: Record<string, number>): boolean|null {
   switch (kind) {
-    case "rain": return obs.rain === null ? null : obs.rain >= th.rain_mm_per_hr;
-    case "snow": return obs.snowToday === null ? null : obs.snowToday >= th.snow_cm;
-    case "wind": return obs.wind === null ? null : obs.wind >= th.wind_ms;
+    case "rain": return obs.rain === null ? null : atLeast(obs.rain, th.rain_mm_per_hr);
+    case "snow": return obs.snowToday === null ? null : atLeast(obs.snowToday, th.snow_cm);
+    case "wind": return obs.wind === null ? null : atLeast(obs.wind, th.wind_ms);
     case "heat": {
       if (obs.temp === null && obs.feels === null) return null;
-      return (obs.temp !== null && obs.temp >= th.temp_c)
-          || (obs.feels !== null && obs.feels >= th.feels_c);
+      return (obs.temp !== null && atLeast(obs.temp, th.temp_c))
+          || (obs.feels !== null && atLeast(obs.feels, th.feels_c));
     }
   }
 }
@@ -35,7 +50,7 @@ function repeatConditionMet(s: AlertSetting, obs: Obs, crit: Criterion): boolean
     const th = crit.threshold, basis = s.heatRepeatBasis ?? "temp";
     const v = basis === "feels" ? obs.feels : obs.temp;
     const t = basis === "feels" ? th.feels_c : th.temp_c;
-    return v !== null && v >= t;
+    return v !== null && atLeast(v, t);
   }
   return exceeds(s.kind, obs, crit.threshold) === true;
 }
