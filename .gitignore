@@ -8,3 +8,6 @@
 node_modules/
 supabase/.temp/
 apps/web/dist/
+
+# SDD 작업용 격리 워크트리. 저장소에 들어가면 안 된다.
+.worktrees/
