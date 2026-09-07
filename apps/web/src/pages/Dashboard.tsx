@@ -10,7 +10,7 @@ import type { CriteriaRow, HeartbeatRow, ObservationRow } from "../lib/api/dashb
 import { listDepartments, alertRecipients, listRecipients } from "../lib/api/org";
 import { guidelines as fetchGuidelines, dispatches as fetchDispatches } from "../lib/api/content";
 import type { DispatchRow } from "../lib/api/content";
-import { forecast, type ForecastResponse } from "../lib/api/forecast";
+import { forecast, type ForecastResponse, type ForecastHour } from "../lib/api/forecast";
 import { ForecastStrip } from "../components/ForecastStrip";
 import { ForecastDaily } from "../components/ForecastDaily";
 import { ForecastBanner } from "../components/ForecastBanner";
@@ -766,7 +766,7 @@ const KIND_OF_METRIC: Record<BoardMetric["key"], Kind> = {
   feels: "heat",
 };
 
-const METRIC_DEFS: Omit<BoardMetric, "value" | "threshold" | "history">[] = [
+const METRIC_DEFS: Omit<BoardMetric, "value" | "threshold" | "history" | "forecast">[] = [
   { key: "rain", label: "시간당 강수량", unit: "mm", gradeLabel: "폭우 주의보", allowNegative: false },
   { key: "temp", label: "기온", unit: "℃", gradeLabel: "폭염 주의보", allowNegative: true },
   { key: "wind", label: "풍속", unit: "m/s", gradeLabel: "강풍 주의보", allowNegative: false },
@@ -785,6 +785,12 @@ const OBS_FIELD: Record<BoardMetric["key"], keyof ObservationPoint> = {
   temp: "temp_c",
   wind: "wind_ms",
   feels: "feels_c",
+};
+
+/** 월보드 지표별로 어느 예보 필드를 잇는가. 체감온도는 예보에 없어서 뺀다 —
+ *  없는 값을 0으로 채우면 차트가 0℃까지 떨어지는 거짓 예보를 그린다. */
+const FORECAST_FIELD: Partial<Record<BoardMetric["key"], keyof ForecastHour>> = {
+  rain: "pcp_mm", temp: "temp_c", wind: "wsd_ms",
 };
 
 /** "얼마나 됐는가"를 3미터 밖에서 읽히는 한 마디로. 벽걸이 화면은 시:분만 적혀
@@ -824,6 +830,13 @@ export function toBoardProps(
         // 실제 Supabase 응답은 선택된 컬럼을 항상 null로 채우지만, 테스트 하네스는
         // 필드 자체가 없는 행을 돌려줄 수 있어 undefined도 걸러야 한다.
         .filter((v): v is number => v !== null && v !== undefined),
+      forecast: (() => {
+        const forecastField = FORECAST_FIELD[def.key];
+        if (!forecastField || !data?.forecast) return [];
+        return data.forecast.hourly
+          .map((h) => h[forecastField] as number | null)
+          .filter((v): v is number => v !== null);
+      })(),
     };
   });
 
@@ -855,5 +868,6 @@ export function toBoardProps(
     loadError,
     metrics,
     events,
+    forecast: data?.forecast ?? null,
   };
 }

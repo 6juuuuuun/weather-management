@@ -1,6 +1,10 @@
 import { MetricChart } from "../components/MetricChart";
 import { BoardTicker } from "../components/BoardTicker";
 import type { TickerItem } from "../components/BoardTicker";
+import { ForecastStrip } from "../components/ForecastStrip";
+import { ForecastDaily } from "../components/ForecastDaily";
+import { ForecastBanner } from "../components/ForecastBanner";
+import type { ForecastResponse } from "../lib/api/forecast";
 import "./DashboardBoard.css";
 
 /** 특보 배너를 가로로 눕혀도 읽히는 최대 개수. 넘으면 접는다. */
@@ -15,6 +19,8 @@ export type BoardMetric = {
   gradeLabel: string;
   allowNegative: boolean;
   history: number[];
+  /** 앞으로의 예보. 없으면 빈 배열이고, 그때 차트는 지금과 똑같이 그린다. */
+  forecast: number[];
 };
 
 export type BoardEvent = {
@@ -35,6 +41,8 @@ export type DashboardBoardProps = {
   loadError: string | null;
   metrics: BoardMetric[];
   events: BoardEvent[];
+  /** 예보. null이면 예보 블록만 빠지고 나머지는 그대로 그린다. */
+  forecast: ForecastResponse | null;
 };
 
 /**
@@ -82,7 +90,7 @@ export function toTickerItems(metrics: BoardMetric[]): TickerItem[] {
 }
 
 export function DashboardBoard({
-  siteName, clock, collectedAgo, stale, loadError, metrics, events,
+  siteName, clock, collectedAgo, stale, loadError, metrics, events, forecast,
 }: DashboardBoardProps) {
   const status = statusHeadline(events, { stale, failed: !!loadError });
   const shown = events.slice(0, MAX_EVENTS);
@@ -131,6 +139,10 @@ export function DashboardBoard({
         </div>
       )}
 
+      {/* 특보 배너와 **같은 줄이 아니라 바로 아래**에 둔다. 나란히 두면 벽에서
+          두 배너가 한 덩어리로 읽혀 "예고"와 "실제"의 구분이 사라진다. */}
+      {forecast && <ForecastBanner upcoming={forecast.upcoming} compact />}
+
       <div className="bd-cards">
         {metrics.map((m) => {
           const tone = toneOf(m);
@@ -150,11 +162,27 @@ export function DashboardBoard({
                 gradeLabel="주의보"
                 allowNegative={m.allowNegative}
                 tone={tone}
+                forecast={m.forecast}
               />
             </div>
           );
         })}
       </div>
+
+      {forecast?.stale && (
+        <div className="bd-alarm" role="status">
+          <span className="bd-alarm-title">예보를 받지 못하고 있습니다</span>
+          <span className="bd-alarm-detail">아래 예보는 갱신되지 않은 값입니다</span>
+        </div>
+      )}
+      {/* 월보드에는 미는 사람이 없다. density="spread"가 3시간 간격으로 솎아
+          48시간을 16칸에 전부 펼친다 — 스크롤 컨테이너가 붙지 않는다. */}
+      {forecast && <ForecastStrip hours={forecast.hourly} density="spread" />}
+      {forecast && (
+        <div className="bd-daily">
+          <ForecastDaily days={forecast.daily} />
+        </div>
+      )}
 
       <BoardTicker items={tickerItems} />
     </div>

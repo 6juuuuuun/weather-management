@@ -1,19 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { DashboardBoard, statusHeadline } from "../DashboardBoard";
 import type { BoardEvent, BoardMetric } from "../DashboardBoard";
+import { toBoardProps } from "../Dashboard";
+import type { ForecastResponse } from "../../lib/api/forecast";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const metrics: BoardMetric[] = [
   { key: "rain", label: "시간당 강수량", unit: "mm", value: 0, threshold: 20,
-    gradeLabel: "폭우 주의보", allowNegative: false, history: [0, 0, 0] },
+    gradeLabel: "폭우 주의보", allowNegative: false, history: [0, 0, 0], forecast: [] },
   { key: "temp", label: "기온", unit: "℃", value: 28.9, threshold: 33,
-    gradeLabel: "폭염 주의보", allowNegative: true, history: [27, 28, 28.9] },
+    gradeLabel: "폭염 주의보", allowNegative: true, history: [27, 28, 28.9], forecast: [] },
   { key: "wind", label: "풍속", unit: "m/s", value: 2.5, threshold: 14,
-    gradeLabel: "강풍 주의보", allowNegative: false, history: [1, 2, 2.5] },
+    gradeLabel: "강풍 주의보", allowNegative: false, history: [1, 2, 2.5], forecast: [] },
   { key: "feels", label: "체감온도", unit: "℃", value: 29.8, threshold: 31,
-    gradeLabel: "폭염 주의보", allowNegative: true, history: [28, 29, 29.8] },
+    gradeLabel: "폭염 주의보", allowNegative: true, history: [28, 29, 29.8], forecast: [] },
 ];
 
 const pending: BoardEvent = {
@@ -25,10 +27,11 @@ const sent: BoardEvent = {
   detail: "11:05 승인 · 5개 부서 12명 · 반복 3회차", severe: true,
 };
 
-function renderBoard(events: BoardEvent[] = []) {
+function renderBoard(events: BoardEvent[] = [], forecast: ForecastResponse | null = null) {
   return render(
     <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo="마지막 수집 2분 전"
-                    stale={false} loadError={null} metrics={metrics} events={events} />,
+                    stale={false} loadError={null} metrics={metrics} events={events}
+                    forecast={forecast} />,
   );
 }
 
@@ -71,14 +74,14 @@ describe("DashboardBoard 낡음·실패 표시", () => {
   function renderState(stale: boolean, loadError: string | null, collectedAgo = "02:00 관측 기준 · 3일 전") {
     return render(
       <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo={collectedAgo}
-        stale={stale} loadError={loadError} metrics={metrics} events={[]} />,
+        stale={stale} loadError={loadError} metrics={metrics} events={[]} forecast={null} />,
     );
   }
 
   it("정상일 때는 띠를 그리지 않는다", () => {
     const { container } = render(
       <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo="14:00 관측 기준"
-        stale={false} loadError={null} metrics={metrics} events={[]} />,
+        stale={false} loadError={null} metrics={metrics} events={[]} forecast={null} />,
     );
     expect(container.querySelector(".bd-alarm")).toBeNull();
     expect(container.querySelector(".bd-collected-stale")).toBeNull();
@@ -103,7 +106,7 @@ describe("DashboardBoard 낡음·실패 표시", () => {
   it("띠는 특보 배너보다 위에 온다", () => {
     const { container } = render(
       <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo="02:00 관측 기준 · 3일 전"
-        stale={true} loadError={null} metrics={metrics} events={[pending]} />,
+        stale={true} loadError={null} metrics={metrics} events={[pending]} forecast={null} />,
     );
     const alarm = container.querySelector(".bd-alarm")!;
     const events = container.querySelector(".bd-events")!;
@@ -151,7 +154,8 @@ describe("DashboardBoard", () => {
   it("값이 없는 지표는 대시 기호를 보여준다", () => {
     const { getByText } = render(
       <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo="—"
-        stale={false} loadError={null} metrics={[{ ...metrics[0], value: null, history: [] }]} events={[]} />,
+        stale={false} loadError={null} metrics={[{ ...metrics[0], value: null, history: [] }]} events={[]}
+        forecast={null} />,
     );
     expect(getByText("–")).toBeTruthy();
   });
@@ -171,11 +175,11 @@ describe("DashboardBoard", () => {
       // 값이어야 한다. [3,4,5]처럼 0에서 먼 값이면 기준선이 어차피 안 그려져
       // 가드가 우연히 통과한다 — 결함을 되살려도 초록이 되는 픽스처는 가드가 아니다.
       // [0.2,1.0,0.5] → computeScale(..., 0, false) = {lo:0, hi:1.15, thresholdVisible:true}.
-      gradeLabel: "폭우 주의보", allowNegative: false, history: [0.2, 1.0, 0.5],
+      gradeLabel: "폭우 주의보", allowNegative: false, history: [0.2, 1.0, 0.5], forecast: [],
     };
     const { container } = render(
       <DashboardBoard siteName="곤지암" clock="13:47" collectedAgo="마지막 수집 2분 전"
-        stale={false} loadError={null} metrics={[zeroThresholdMetric]} events={[]} />,
+        stale={false} loadError={null} metrics={[zeroThresholdMetric]} events={[]} forecast={null} />,
     );
     // 티커: threshold<=0 지표를 빼면 항목이 하나도 없어 트랙 자체가 렌더되지 않는다.
     expect(container.querySelector(".bt")).toBeNull();
@@ -183,6 +187,91 @@ describe("DashboardBoard", () => {
     expect(container.querySelector("line.mc-threshold")).toBeNull();
     // 카드: 값이 임계(0) 이상이어도 danger 색 클래스가 붙지 않는다.
     expect(container.querySelector(".bd-value-over")).toBeNull();
+  });
+});
+
+const FCST: ForecastResponse = {
+  fetched_at: new Date().toISOString(),
+  base_at: new Date().toISOString(),
+  stale: false,
+  hourly: Array.from({ length: 48 }, (_, i) => ({
+    at: new Date(Date.now() + (i + 1) * 3600e3).toISOString(),
+    temp_c: 20, pop_pct: 10, pty: 0, sky: 1, pcp_mm: null, sno_cm: null, wsd_ms: 2, exceeds: [],
+  })),
+  daily: [{
+    date: new Date(Date.now() + 33 * 3600e3).toISOString().slice(0, 10),
+    tmn_c: 16, tmx_c: 25, pop_max: 20, pcp_sum: null, sno_sum: null, sky: 1, derived: false,
+  }],
+  upcoming: [{ kind: "snow", grade: "watch", at: new Date(Date.now() + 12 * 3600e3).toISOString(),
+               value: 7, unit: "cm" }],
+};
+
+describe("월보드 예보", () => {
+  it("예고 배너를 그리고, 문자 미발송 문구도 함께 나온다", () => {
+    renderBoard([], FCST);
+    expect(screen.getByText(/폭설 주의보 예상/)).toBeInTheDocument();
+    expect(screen.getByText("예보 기준입니다 · 문자는 나가지 않았습니다")).toBeInTheDocument();
+  });
+
+  // **가장 중요한 줄.** 벽에 걸린 화면에는 미는 사람이 없다.
+  it("가로 스크롤을 쓰지 않는다", () => {
+    const { container } = renderBoard([], FCST);
+    expect(container.querySelector(".fc-scroll")).toBeNull();
+    expect(container.querySelector(".fc-spread")).not.toBeNull();
+  });
+
+  it("48시간을 3시간 간격 16칸으로 펼친다", () => {
+    const { container } = renderBoard([], FCST);
+    expect(container.querySelectorAll(".fc-col")).toHaveLength(16);
+  });
+
+  it("5일 줄도 그린다", () => {
+    renderBoard([], FCST);
+    expect(screen.getByText("5일")).toBeInTheDocument();
+  });
+
+  it("예보가 없으면 예보 블록만 빠지고 나머지는 그대로다", () => {
+    renderBoard([], null);
+    expect(screen.queryByText("앞으로 48시간")).not.toBeInTheDocument();
+    expect(screen.getByText("곤지암")).toBeInTheDocument();
+  });
+
+  it("예보가 낡았으면 그 사실을 말한다", () => {
+    renderBoard([], { ...FCST, stale: true });
+    expect(screen.getByText(/예보를 받지 못하고 있습니다/)).toBeInTheDocument();
+  });
+});
+
+// toBoardProps는 Dashboard.tsx에서 export한다.
+describe("toBoardProps — 예보", () => {
+  /** toBoardProps가 읽는 최소 필드만 담은 입력. 나머지는 이 검사와 무관하다. */
+  const data = (forecast: ForecastResponse | null) => ({
+    observation: {
+      observed_at: new Date().toISOString(), rain_mm_per_hr: 0, temp_c: 23, feels_c: 24,
+      wind_ms: 2, humidity_pct: 50, snow_new_cm: 0, missing: false,
+    },
+    history: [],
+    openEvents: [],
+    dispatches: [],
+    criteria: [{ kind: "rain", grade: "watch", threshold: { rain_mm_per_hr: 20 } }],
+    forecast,
+  });
+
+  it("지표마다 예보 값을 뽑아 넘긴다", () => {
+    const props = toBoardProps(data(FCST) as never, "곤지암", new Date());
+    expect(props.metrics.find((m) => m.key === "temp")!.forecast.length).toBeGreaterThan(0);
+  });
+
+  it("예보가 없으면 빈 배열이다", () => {
+    const props = toBoardProps(data(null) as never, "곤지암", new Date());
+    expect(props.metrics.every((m) => m.forecast.length === 0)).toBe(true);
+  });
+
+  // 체감온도는 예보에 없다(스펙 §3 함정 3). 없는 값을 기온으로 대신 채우면
+  // 차트가 실제와 다른 선을 그리고, 그것이 예보처럼 읽힌다.
+  it("체감온도 지표의 예보는 비어 있다", () => {
+    const props = toBoardProps(data(FCST) as never, "곤지암", new Date());
+    expect(props.metrics.find((m) => m.key === "feels")!.forecast).toEqual([]);
   });
 });
 
