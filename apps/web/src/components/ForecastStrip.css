@@ -50,6 +50,17 @@
 .fc-col-over { background: color-mix(in srgb, var(--warn-strong) 14%, var(--canvas)); }
 .fc-col-warning { background: color-mix(in srgb, var(--danger) 14%, var(--canvas)); }
 
+/* I4: 색 하나로만 "특보 기준을 넘는다"를 말하지 않는다 — 색약 운영자와
+   스크린 리더 모두 배경 틴트를 읽지 못한다. */
+.fc-exceed-label {
+  font-weight: 700;
+  font-size: 11px;
+  text-align: center;
+  line-height: 1.2;
+  color: var(--warn);
+}
+.fc-col-warning .fc-exceed-label { color: var(--danger); }
+
 .fc-time { font-weight: 600; color: var(--ink); white-space: nowrap; }
 .fc-date { display: block; font-size: 11px; font-weight: 400; color: var(--ink-muted-48); }
 .fc-glyph { font-size: 20px; line-height: 1; }
@@ -68,6 +79,8 @@
   color: var(--ink-muted-48);
 }
 
+.fc-legend-exceed { color: var(--warn); font-weight: 600; }
+
 /* 월보드는 3미터 밖에서 읽는다. 큰 화면에서 글자만 키운다. */
 .fc-spread .fc-time { font-size: 18px; }
 .fc-spread .fc-glyph { font-size: 30px; }
@@ -75,3 +88,4 @@
 .fc-spread .fc-temp { font-size: 24px; }
 .fc-spread .fc-pop,
 .fc-spread .fc-amount { font-size: 16px; }
+.fc-spread .fc-exceed-label { font-size: 14px; }

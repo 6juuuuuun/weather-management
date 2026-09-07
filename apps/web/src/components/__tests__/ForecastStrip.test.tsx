@@ -78,6 +78,43 @@ describe("ForecastStrip", () => {
     expect(container.querySelectorAll(".fc-col-warning")).toHaveLength(1);
   });
 
+  // I4: 색만으로 "무엇을 넘는지"를 말하면 색약 운영자·스크린 리더 모두 정보를
+  // 잃는다. exceeds의 kind+grade를 짧은 한글 글자로도 적어야 한다.
+  it("초과 칸에는 무엇을 넘는지 글자로도 적는다", () => {
+    render(
+      <ForecastStrip
+        hours={[h("2026-09-07T14:00:00+09:00", { pcp_mm: 60, exceeds: [{ kind: "rain", grade: "watch" }] })]}
+        density="scroll"
+      />,
+    );
+    expect(screen.getByText("폭우 주의보")).toBeInTheDocument();
+  });
+
+  it("초과하지 않는 칸에는 그 글자가 없다", () => {
+    render(
+      <ForecastStrip
+        hours={[h("2026-09-07T14:00:00+09:00", { pcp_mm: 5, exceeds: [] })]}
+        density="scroll"
+      />,
+    );
+    expect(screen.queryByText(/주의보|경보/)).not.toBeInTheDocument();
+  });
+
+  it("초과 칸이 있으면 범례에도 뜻을 적는다", () => {
+    render(
+      <ForecastStrip
+        hours={[h("2026-09-07T14:00:00+09:00", { pcp_mm: 60, exceeds: [{ kind: "rain", grade: "watch" }] })]}
+        density="scroll"
+      />,
+    );
+    expect(screen.getByText("색칠된 칸 = 특보 기준 초과 예상")).toBeInTheDocument();
+  });
+
+  it("초과 칸이 없으면 범례에도 뜻을 적지 않는다", () => {
+    render(<ForecastStrip hours={[h("2026-09-07T14:00:00+09:00", { exceeds: [] })]} density="scroll" />);
+    expect(screen.queryByText("색칠된 칸 = 특보 기준 초과 예상")).not.toBeInTheDocument();
+  });
+
   it("밀도에 따라 다른 클래스를 단다", () => {
     const { container: a } = render(<ForecastStrip hours={SIX} density="scroll" />);
     const { container: b } = render(<ForecastStrip hours={SIX} density="spread" />);

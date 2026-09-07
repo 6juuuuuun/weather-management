@@ -7,10 +7,13 @@
 import type { UpcomingRow } from "../lib/api/forecast";
 import "./ForecastBanner.css";
 
-const KIND_LABEL: Record<UpcomingRow["kind"], string> = {
+// ForecastStrip도 같은 라벨을 쓴다(48시간 스트립의 초과 칸 표시, I4) — 여기서
+// export해 다시 정의하지 않는다. 두 벌로 적히면 한쪽만 고쳤을 때 배너와
+// 스트립이 다른 말을 하게 된다.
+export const KIND_LABEL: Record<UpcomingRow["kind"], string> = {
   rain: "폭우", snow: "폭설", wind: "강풍", heat: "폭염",
 };
-const GRADE_LABEL: Record<UpcomingRow["grade"], string> = { watch: "주의보", warning: "경보" };
+export const GRADE_LABEL: Record<UpcomingRow["grade"], string> = { watch: "주의보", warning: "경보" };
 
 /** 이 문구는 지우면 안 된다. 테스트가 이 상수로 존재를 고정한다. */
 export const FORECAST_DISCLAIMER = "예보 기준입니다 · 문자는 나가지 않았습니다";
