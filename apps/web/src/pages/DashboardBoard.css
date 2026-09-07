@@ -208,7 +208,7 @@
   /* 지표 카드는 이 화면의 주 정보다. 예보 블록이 아무리 커져도 카드가 읽을 수
      없게 눌리면 안 되므로 **바닥을 둔다**. 예전에는 min-height:0이라 바닥이
      없었고, 예보 블록이 늘자 카드만 짜부라져 큰 숫자가 잘렸다. */
-  min-height: 38vh;
+  min-height: 33vh;
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   grid-template-rows: repeat(2, 1fr);
@@ -286,7 +286,7 @@
    5일 11 + 티커 8. */
 .bd .fc,
 .bd-daily .fd {
-  padding: 1.4vh 56px;
+  padding: 1.1vh 56px;
   border: none;
   border-radius: 0;
   border-top: 1px solid var(--hairline);
@@ -298,20 +298,20 @@
   margin-bottom: 0.8vh;
 }
 
-.bd .fc-spread .fc-col { gap: 0.5vh; padding: 0.5vh 4px; }
+.bd .fc-spread .fc-col { gap: 0.35vh; padding: 0.35vh 4px; }
 .bd .fc-spread .fc-time { font-size: 2.2vh; }
 .bd .fc-spread .fc-date { font-size: 1.4vh; }
-.bd .fc-spread .fc-glyph { font-size: 3.2vh; }
+.bd .fc-spread .fc-glyph { font-size: 2.6vh; }
 .bd .fc-spread .fc-skylabel { font-size: 1.5vh; }
-.bd .fc-spread .fc-temp { font-size: 2.8vh; }
+.bd .fc-spread .fc-temp { font-size: 2.5vh; }
 .bd .fc-spread .fc-pop,
 .bd .fc-spread .fc-amount { font-size: 1.8vh; }
 .bd .fc-legend { font-size: 1.5vh; margin-top: 0.6vh; }
 
-.bd-daily .fd-item { padding: 0.8vh 8px; gap: 0.4vh; }
+.bd-daily .fd-item { padding: 0.5vh 8px; gap: 0.25vh; }
 .bd-daily .fd-day { font-size: 1.9vh; }
 .bd-daily .fd-skylabel { font-size: 1.4vh; }
-.bd-daily .fd-temp { font-size: 2.1vh; }
+.bd-daily .fd-temp { font-size: 1.9vh; }
 .bd-daily .fd-pop,
 .bd-daily .fd-amount { font-size: 1.6vh; }
 
