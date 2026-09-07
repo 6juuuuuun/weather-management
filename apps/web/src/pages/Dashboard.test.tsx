@@ -936,4 +936,18 @@ describe("예보 블록", () => {
     renderDashboard();
     expect(await screen.findByText(/예보를 받지 못하고 있습니다/)).toBeInTheDocument();
   });
+
+  // I2 — 값이 낡았다면 그 아래 예고 배너("폭설 예상")는 전부 못 믿을 값이고,
+  // 그 사실을 알기 전에 자신 있는 예고를 먼저 읽게 해서는 안 된다.
+  it("낡음 알림이 예고 배너보다 먼저 나온다", async () => {
+    mocks.forecast.mockResolvedValue(forecastBody({ stale: true }));
+    const { container } = renderDashboard();
+    await screen.findByText(/폭설 주의보 예상/);
+    const stale = container.querySelector(".dash-error")!;
+    const banner = container.querySelector(".fb")!;
+    expect(stale).toBeTruthy();
+    expect(banner).toBeTruthy();
+    // DOCUMENT_POSITION_FOLLOWING(4) — stale이 banner보다 앞선 형제다.
+    expect(stale.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 });

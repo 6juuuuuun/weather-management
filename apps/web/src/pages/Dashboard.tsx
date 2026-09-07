@@ -485,6 +485,14 @@ export default function Dashboard() {
           </div>
         )}
 
+        {/* 예고 배너보다 먼저 읽혀야 한다(I2) — 예보 자체가 낡았다면 배너의
+            "폭설 예상" 문구도 낡은 값으로 계산된 것이고, 그 사실을 알기 전에
+            자신 있는 예고를 먼저 읽게 해서는 안 된다. */}
+        {data?.forecast?.stale && (
+          <div className="dash-error">
+            예보를 받지 못하고 있습니다 — 아래 예보는 갱신되지 않은 값입니다
+          </div>
+        )}
         {data?.forecast && <ForecastBanner upcoming={data.forecast.upcoming} />}
 
         {/* 카드가 보여주는 값이 '마지막 유효 관측'이므로 그 시각을 함께 밝힌다.
@@ -663,11 +671,6 @@ export default function Dashboard() {
           })()}
         </div>
 
-        {data?.forecast?.stale && (
-          <div className="dash-error">
-            예보를 받지 못하고 있습니다 — 아래 예보는 갱신되지 않은 값입니다
-          </div>
-        )}
         {data?.forecast && <ForecastStrip hours={data.forecast.hourly} density="scroll" />}
         {data?.forecast && <ForecastDaily days={data.forecast.daily} />}
 
