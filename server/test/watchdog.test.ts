@@ -666,17 +666,56 @@ describe("문제가 있으면 알린다", () => {
       expect((await health()).warnings.some((w) => /예보/.test(w))).toBe(false);
     });
 
+    // **설치 직후(=forecast-tick heartbeat 행이 아예 없음)를 실제로 만든다.**
+    // watchdog.ts의 쿼리는 `coalesce(..., false)`라 행이 없으면 경고하지 않는다 —
+    // 그 반대(coalesce(..., true))로 바뀌면 갓 설치한 시스템이 켜지자마자
+    // "예보를 못 받았습니다" 경고를 달고 시작한다. 이 파일의 다섯 테스트가 전부
+    // insert부터 하면 그 기본값 자체는 한 번도 실행되지 않는다 — 이 테스트가
+    // 그 빈 테이블 경로를 밟는 유일한 자리다. beforeEach가 이미 forecast-tick
+    // 행을 지워 두므로 아무것도 넣지 않고 바로 부른다.
+    it("예보 heartbeat 행이 아예 없으면(설치 직후) warnings에 오르지 않는다", async () => {
+      const h = await health();
+      expect(h.warnings.some((w) => /예보/.test(w))).toBe(false);
+    });
+
     // 워치독 문자는 "아무에게도 못 간다"를 알리는 자리다. 여기에 표시 기능의
     // 경고까지 섞으면 사람이 곧 전체를 무시하기 시작한다.
     it("워치독 문자에는 warnings를 싣지 않는다", async () => {
       await makeRecipient();
       await ensureGuideline();
+      // weather-tick heartbeat는 일부러 넣지 않는다 — 그래서 "관측 수집이 ...
+      // 멈춰 있습니다"가 reasons에 뜨고, reportIfUnhealthy가 실제로 문자를
+      // 보낸다. sent가 비면 아래 for 루프는 아무것도 검증하지 않고 통과해
+      // 버리므로(회귀 검증), 먼저 "이 테스트가 뭔가를 실제로 보냈는가"부터
+      // 확인한다.
       await withService((q) =>
         q.query(`insert into heartbeats (name, last_run_at, ok)
                  values ('forecast-tick', now() - interval '7 hours', true)`));
       const { sent, channel } = recorder();
       await reportIfUnhealthy({ channel });
+      expect(sent.length).toBeGreaterThan(0);
       for (const s of sent) expect(s.text).not.toMatch(/예보/);
+    });
+
+    // **"상태를 바꾸지 않는다"를 실제로 증명한다.** 위의 동명 테스트는 reasons에
+    // "예보"가 없다는 것만 보고, ok 자체는 한 번도 확인하지 않았다 — 그 fixture는
+    // weather-tick heartbeat가 없어 reasons가 이미 비어 있지 않으므로 ok는 항상
+    // false였고, warnings 하나만으로 상태가 안 바뀐다는 것은 증명되지 않았다.
+    // 여기서는 "정상이면 아무에게도 보내지 않는다"(위 describe)와 같은 재료로
+    // reasons를 실제로 비운 뒤, forecast-tick만 낡게 만든다.
+    it("진짜로 정상인 상태에 예보 경고만 더해도 ok는 true로 남는다", async () => {
+      await makeRecipient();
+      await ensureGuideline();
+      await withService(async (q) => {
+        await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
+        await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
+        await q.query(`insert into heartbeats (name, last_run_at, ok)
+                       values ('forecast-tick', now() - interval '${FORECAST_STALE_HOURS + 1} hours', true)`);
+      });
+      const h = await health();
+      expect(h.reasons, `이 fixture는 reasons가 비어야 하는데 남은 사유: ${JSON.stringify(h.reasons)}`).toEqual([]);
+      expect(h.ok).toBe(true);
+      expect(h.warnings.some((w) => /예보/.test(w))).toBe(true);
     });
   });
 });
