@@ -205,7 +205,10 @@
 
 .bd-cards {
   flex: 1;
-  min-height: 0;
+  /* 지표 카드는 이 화면의 주 정보다. 예보 블록이 아무리 커져도 카드가 읽을 수
+     없게 눌리면 안 되므로 **바닥을 둔다**. 예전에는 min-height:0이라 바닥이
+     없었고, 예보 블록이 늘자 카드만 짜부라져 큰 숫자가 잘렸다. */
+  min-height: 38vh;
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   grid-template-rows: repeat(2, 1fr);
@@ -267,26 +270,67 @@
   min-height: 0;
 }
 
-/* 지표 카드가 읽을 수 없을 만큼 눌리는 것보다, 덜 급한 블록이 빠지는 편이 낫다.
-   그래서 예보 블록 둘은 **줄어들지 않고**(flex-shrink:0) 카드가 남은 공간을 갖는다. */
+/* ─────────────────────────────────────────────────────────────────────────
+   예보 블록의 세로 예산.
+
+   월보드의 세로 리듬은 전부 vh다(파일 맨 위 주석) — 뷰포트 높이를 꽉 채우는
+   화면이라 vh가 자연 단위이기 때문이다. 그런데 ForecastStrip.css의 `.fc-spread`
+   확대는 **px 고정**이었다. 그래서 창이 낮아져도 스트립만 줄지 않았고,
+   1510×762에서 실측하니 스트립 294px / 지표 카드 4장 합계 258px —
+   **보조 정보가 주 정보보다 많이 먹고 차트는 15px로 뭉개졌다.**
+
+   여기서 vh로 덮어 같은 리듬에 넣는다. ForecastStrip.css 자체는 건드리지
+   않는다 — 그 값들은 책상에서 보는 일반 대시보드용이고 거기서는 옳다.
+
+   목표 배분(합 ≈ 99vh): 머리 12.6 + 알림 5.5 + 카드 42 + 스트립 20 +
+   5일 11 + 티커 8. */
 .bd .fc,
-.bd-daily {
-  flex-shrink: 0;
+.bd-daily .fd {
+  padding: 1.4vh 56px;
+  border: none;
+  border-radius: 0;
+  border-top: 1px solid var(--hairline);
 }
 
-/* 월보드는 스크롤 없이 한 화면에 들어가야 한다. **접기는 최후 수단이다** —
-   사용자가 "일반 대시보드에 있는 걸 월보드에도 전부" 라고 정했으므로, 화면이
-   조금 낮다고 내용을 감추면 요구를 되돌리는 셈이다.
-   위의 flex 차트가 눌림을 이미 흡수하므로(카드는 라벨·숫자를 지키고 차트만 줄인다)
-   일반적인 노트북 높이에서는 전부 들어간다. 아래 두 값은 차트가 0에 가까워져
-   더 줄일 것이 없는 극단적으로 낮은 창에서만 발동한다.
+.bd .fc-title,
+.bd-daily .fd-title {
+  font-size: 2vh;
+  margin-bottom: 0.8vh;
+}
 
-   한 번 1200px/950px으로 잡았다가 되돌렸다: 그 값에서는 흔한 노트북 창에서
-   5일 줄이 통째로 사라져, 넣기로 한 것을 화면이 다시 감췄다. */
-@media (max-height: 800px) {
+.bd .fc-spread .fc-col { gap: 0.5vh; padding: 0.5vh 4px; }
+.bd .fc-spread .fc-time { font-size: 2.2vh; }
+.bd .fc-spread .fc-date { font-size: 1.4vh; }
+.bd .fc-spread .fc-glyph { font-size: 3.2vh; }
+.bd .fc-spread .fc-skylabel { font-size: 1.5vh; }
+.bd .fc-spread .fc-temp { font-size: 2.8vh; }
+.bd .fc-spread .fc-pop,
+.bd .fc-spread .fc-amount { font-size: 1.8vh; }
+.bd .fc-legend { font-size: 1.5vh; margin-top: 0.6vh; }
+
+.bd-daily .fd-item { padding: 0.8vh 8px; gap: 0.4vh; }
+.bd-daily .fd-day { font-size: 1.9vh; }
+.bd-daily .fd-skylabel { font-size: 1.4vh; }
+.bd-daily .fd-temp { font-size: 2.1vh; }
+.bd-daily .fd-pop,
+.bd-daily .fd-amount { font-size: 1.6vh; }
+
+/* 압력은 덜 급한 쪽이 받아야 한다. 앞선 수정에서 예보 블록에 flex-shrink:0을
+   줬더니 줄어들 수 있는 것이 카드밖에 남지 않아 숫자가 잘렸다(사용자 화면에서
+   확인). 카드는 위에서 바닥을 얻었고, 여기서는 예보 블록이 줄어들게 둔다. */
+.bd .fc,
+.bd-daily {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 접기는 최후 수단이다. 위 vh 배분으로 일반적인 창에서는 전부 들어가므로,
+   더 줄일 것이 없는 극단적으로 낮은 창에서만 발동한다. */
+@media (max-height: 620px) {
   .bd-daily { display: none; }
 }
 
-@media (max-height: 650px) {
+@media (max-height: 520px) {
   .bd .fc { display: none; }
 }

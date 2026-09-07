@@ -338,10 +338,27 @@ describe("DashboardBoard.css 레이아웃 계약", () => {
     expect(height, "height를 고정하면 남은 공간과 무관해져 두 사고가 되돌아온다").toBeUndefined();
   });
 
-  // 지표 카드가 읽을 수 없게 눌리는 것보다 덜 급한 블록이 빠지는 편이 낫다.
-  // 예보 블록 둘이 줄어들면 그 압력이 카드로 옮겨간다.
-  it("예보 블록은 줄어들지 않는다(카드가 남은 공간을 갖는다)", () => {
-    expect(ruleOf(".bd .fc,\n.bd-daily")).toMatch(/flex-shrink:\s*0/);
+  // 압력은 **덜 급한 쪽**이 받아야 한다. 한 번 반대로 잡았다가 깨뜨렸다:
+  // 예보 블록에 flex-shrink:0을 주니 줄어들 수 있는 것이 지표 카드밖에 남지
+  // 않아, 창이 조금만 낮아도 카드의 큰 숫자가 잘렸다(사용자 화면에서 확인).
+  // 지표 카드는 이 화면의 주 정보이므로 바닥(min-height)을 갖고,
+  // 예보 블록이 줄어든다.
+  it("지표 카드에 바닥이 있고, 줄어드는 쪽은 예보 블록이다", () => {
+    expect(ruleOf(".bd-cards")).toMatch(/min-height:\s*\d+(?:\.\d+)?vh/);
+    const fc = ruleOf(".bd .fc,\n.bd-daily");
+    expect(fc).toMatch(/flex:\s*0\s+1\s+auto/);
+    expect(fc).toMatch(/min-height:\s*0/);
+  });
+
+  // 월보드의 세로 리듬은 전부 vh다 — 뷰포트를 꽉 채우는 화면이라 그래야 창
+  // 높이에 맞춰 같이 줄어든다. ForecastStrip.css의 spread 확대는 px 고정이라,
+  // 창이 낮아져도 스트립만 줄지 않았다: 1510×762에서 스트립 294px 대 지표 카드
+  // 4장 합계 258px — 보조 정보가 주 정보보다 많이 먹었다. 여기서 vh로 덮는다.
+  it("보드 안 예보 글자 크기가 px 고정이 아니라 vh다", () => {
+    for (const sel of [".bd .fc-spread .fc-temp", ".bd .fc-spread .fc-glyph", ".bd .fc-spread .fc-time"]) {
+      const size = /font-size:\s*([^;]+);/.exec(ruleOf(sel))?.[1].trim();
+      expect(size, `${sel}의 font-size`).toMatch(/vh$/);
+    }
   });
 
   // 배너 세로 크기가 px로 고정되면 뷰포트가 낮아져도 줄지 않아, 특보 1건이
