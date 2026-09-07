@@ -19,6 +19,15 @@ export type MetricChartProps = {
   gradeLabel: string;
   allowNegative: boolean;
   tone: "calm" | "near" | "over";
+  /**
+   * 앞으로의 예보. 비면 지금과 완전히 같게 그린다 — 기존 호출부를 지킨다.
+   *
+   * **이 값은 tone(색)에 영향을 주지 않는다.** 색과 큰 숫자는 "지금"만
+   * 말해야 한다. 예보가 임계를 넘는다고 카드를 빨갛게 만들면, 3미터 밖에서
+   * 흘끗 본 사람이 지금 폭우가 오는 줄 안다. 예보의 초과는 점선이 임계선을
+   * 넘는 그림으로만 말한다.
+   */
+  forecast?: number[];
 };
 
 function fmt(v: number): string {
@@ -26,7 +35,7 @@ function fmt(v: number): string {
 }
 
 export function MetricChart({
-  values, threshold, unit, gradeLabel, allowNegative, tone,
+  values, threshold, unit, gradeLabel, allowNegative, tone, forecast,
 }: MetricChartProps) {
   // 훅은 조건부 반환보다 먼저 호출해야 한다(React 규칙).
   // useId로 clipPath id를 만드는 이유: 월보드는 카드 4개가 한 화면에 동시에
@@ -40,11 +49,16 @@ export function MetricChart({
 
   if (values.length === 0) return <div className="mc-empty" />;
 
-  const { lo, hi, flat, thresholdVisible } = computeScale(values, threshold, allowNegative);
-  const pts = values.map((v, i) => ({
-    x: values.length === 1 ? W / 2 : (i * W) / (values.length - 1),
-    y: yOf(v, lo, hi, H, PAD_T, PAD_B),
-  }));
+  const fc = forecast ?? [];
+  // 축은 관측과 예보를 **함께** 본다. 관측 범위에만 맞추면 예보 점선이
+  // 화면 밖으로 나가 아무것도 보여주지 못한다.
+  const { lo, hi, flat, thresholdVisible } = computeScale([...values, ...fc], threshold, allowNegative);
+
+  // 가로축을 관측 구간과 예보 구간으로 나눈다. 관측이 왼쪽, 예보가 오른쪽이다.
+  const total = values.length + fc.length;
+  const xAt = (i: number) => (total <= 1 ? W / 2 : (i * W) / (total - 1));
+  const pts = values.map((v, i) => ({ x: xAt(i), y: yOf(v, lo, hi, H, PAD_T, PAD_B) }));
+  const fcPts = fc.map((v, i) => ({ x: xAt(values.length + i), y: yOf(v, lo, hi, H, PAD_T, PAD_B) }));
   const last = pts[pts.length - 1];
   const line = "M" + pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" L");
   const area = `${line} L${last.x.toFixed(1)},${H} L${pts[0].x.toFixed(1)},${H} Z`;
@@ -54,6 +68,8 @@ export function MetricChart({
 
   const allZero = values.every((v) => v === 0);
   // threshold가 null이면 "넘겼다"를 판정할 기준이 없으므로 항상 미달로 본다.
+  // **관측(values)만 본다** — 예보를 섞으면 색이 "지금"이 아니라 "앞으로"를
+  // 말하게 된다(이 파일에서 가장 중요한 불변식).
   const everOver = threshold !== null && Math.max(...values) >= threshold;
   const clipId = `mc-lo-${uid}`;
   const clipHiId = `mc-hi-${uid}`;
@@ -98,6 +114,17 @@ export function MetricChart({
 
       {values.length > 1 && <path className={`mc-line mc-tone-${tone}`} d={line} />}
       <circle className={`mc-dot mc-tone-${tone}`} cx={last.x} cy={last.y} r="6" />
+
+      {fcPts.length > 0 && (
+        <>
+          {/* "지금" 경계. 이 선이 없으면 어디까지가 실제로 일어난 일인지 알 수 없다. */}
+          <line className="mc-now" x1={last.x} y1="0" x2={last.x} y2={H} />
+          <path
+            className="mc-forecast"
+            d={"M" + [last, ...fcPts].map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" L")}
+          />
+        </>
+      )}
 
       <text className="mc-axis" x="0" y="12">{fmt(hi)}</text>
       <text className="mc-axis" x="0" y={H - 3}>{fmt(lo)}</text>

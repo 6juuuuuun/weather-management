@@ -164,3 +164,52 @@ describe("MetricChart", () => {
     expect(svg.querySelector("path.mc-area-above")).toBeNull();
   });
 });
+
+describe("예보 잇기", () => {
+  const base = {
+    values: [1, 2, 3], threshold: 10, unit: "mm",
+    gradeLabel: "주의보", allowNegative: false, tone: "calm" as const,
+  };
+
+  it("예보를 주지 않으면 지금과 똑같이 그린다(기존 호출부 보호)", () => {
+    const { container } = render(<MetricChart {...base} />);
+    expect(container.querySelector(".mc-forecast")).toBeNull();
+    expect(container.querySelector(".mc-now")).toBeNull();
+  });
+
+  it("예보를 주면 점선과 '지금' 세로선을 그린다", () => {
+    const { container } = render(<MetricChart {...base} forecast={[4, 5, 6]} />);
+    expect(container.querySelector(".mc-forecast")).not.toBeNull();
+    expect(container.querySelector(".mc-now")).not.toBeNull();
+  });
+
+  // 예보가 임계를 크게 넘는데 축이 관측 범위에만 맞으면 점선이 화면 밖으로 나간다.
+  it("축이 예보까지 포함한다", () => {
+    const { container } = render(<MetricChart {...base} forecast={[40]} />);
+    const top = container.querySelector(".mc-axis")!;
+    expect(Number(top.textContent)).toBeGreaterThanOrEqual(40);
+  });
+
+  // **가장 중요한 줄.** 예보가 임계를 넘어도 지금 값의 색은 바뀌지 않는다.
+  // 3미터 밖에서 흘끗 본 사람이 "지금 폭우"로 읽으면 안 된다.
+  //
+  // mc-line의 tone 클래스는 항상 tone prop을 그대로 반영한다 — 컴포넌트가
+  // 아니라 호출부가 "지금" 값만 보고 계산해 넘긴다. 그래서 그 클래스만
+  // 검사하면 everOver 계산이 잘못돼도(예보까지 포함해 판정해도) 절대
+  // 실패하지 않는다. 실제로 everOver가 좌우하는 것은 분할 채색
+  // (mc-area-above)이다 — 관측이 임계 아래인데 mc-area-above가 생기면
+  // 그것이 "지금 초과"로 잘못 칠해졌다는 뜻이다.
+  it("예보가 임계를 넘어도 tone(색)은 바뀌지 않는다", () => {
+    const { container } = render(<MetricChart {...base} forecast={[99]} />);
+    expect(container.querySelector(".mc-line.mc-tone-calm")).not.toBeNull();
+    expect(container.querySelector(".mc-line.mc-tone-over")).toBeNull();
+    expect(container.querySelector(".mc-area-above")).toBeNull();
+  });
+
+  it("최신값 점은 예보가 아니라 마지막 관측 위에 있다", () => {
+    const { container } = render(<MetricChart {...base} forecast={[40, 50]} />);
+    const dot = container.querySelector(".mc-dot")!;
+    const now = container.querySelector(".mc-now")!;
+    expect(dot.getAttribute("cx")).toBe(now.getAttribute("x1"));
+  });
+});
