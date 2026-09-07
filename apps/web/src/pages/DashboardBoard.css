@@ -100,6 +100,20 @@
   line-height: 1;
 }
 
+/* 예보(사전 예고) 수집 중단 전용. --danger의 빨간 띠는 "수집 중단"·"서버
+   연결 끊김"과 같은 자리다 — docs/운영.md §3-4가 그 색을 "특보가 뜨지 않는
+   상태 → §7-3"으로 가르친다. 예보만 멈춘 것은 그 뜻이 아니다(특보 발송은
+   정상이다, watchdog.ts의 warnings 주석 참고). 3미터 밖에서도 두 띠가
+   같은 색으로 뭉개지지 않도록 --warn-strong(호박색)으로 뚜렷하게 낮춘다. */
+.bd-alarm-warn {
+  border-color: var(--warn-strong);
+  background: color-mix(in srgb, var(--warn-strong) 10%, var(--canvas));
+}
+
+.bd-alarm-warn .bd-alarm-title {
+  color: var(--warn);
+}
+
 .bd-events {
   display: flex;
   flex-direction: column;

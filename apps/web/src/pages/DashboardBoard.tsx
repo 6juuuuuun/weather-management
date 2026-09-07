@@ -139,6 +139,17 @@ export function DashboardBoard({
         </div>
       )}
 
+      {/* 예고 배너보다 먼저 읽혀야 한다(I2) — 예보 자체가 낡았다면 그 아래
+          "폭설 예상" 문구도 낡은 값으로 계산된 것이고, 그 사실을 알기 전에
+          자신 있는 예고를 먼저 읽게 해서는 안 된다. 위 관측 낡음 띠와 같은
+          규칙이지만 색은 다르다(I3) — 이것은 "특보가 뜨지 않는다"는 뜻이
+          아니라 "사전 예고만 멈췄다"는 뜻이라 --danger를 쓰지 않는다. */}
+      {forecast?.stale && (
+        <div className="bd-alarm bd-alarm-warn" role="status">
+          <span className="bd-alarm-title">예보를 받지 못하고 있습니다</span>
+          <span className="bd-alarm-detail">아래 예보는 갱신되지 않은 값입니다 · 특보 발송은 정상입니다</span>
+        </div>
+      )}
       {/* 특보 배너와 **같은 줄이 아니라 바로 아래**에 둔다. 나란히 두면 벽에서
           두 배너가 한 덩어리로 읽혀 "예고"와 "실제"의 구분이 사라진다. */}
       {forecast && <ForecastBanner upcoming={forecast.upcoming} compact />}
@@ -169,12 +180,6 @@ export function DashboardBoard({
         })}
       </div>
 
-      {forecast?.stale && (
-        <div className="bd-alarm" role="status">
-          <span className="bd-alarm-title">예보를 받지 못하고 있습니다</span>
-          <span className="bd-alarm-detail">아래 예보는 갱신되지 않은 값입니다</span>
-        </div>
-      )}
       {/* 월보드에는 미는 사람이 없다. density="spread"가 3시간 간격으로 솎아
           48시간을 16칸에 전부 펼친다 — 스크롤 컨테이너가 붙지 않는다. */}
       {forecast && <ForecastStrip hours={forecast.hourly} density="spread" />}

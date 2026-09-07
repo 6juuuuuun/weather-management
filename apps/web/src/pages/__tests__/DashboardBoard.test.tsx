@@ -240,6 +240,31 @@ describe("월보드 예보", () => {
     renderBoard([], { ...FCST, stale: true });
     expect(screen.getByText(/예보를 받지 못하고 있습니다/)).toBeInTheDocument();
   });
+
+  // I2 — 값이 낡았다면 그 아래 예고 배너("폭설 예상")는 전부 못 믿을 값이고,
+  // 그 사실을 알기 전에 자신 있는 예고를 먼저 읽게 해서는 안 된다(월보드가
+  // 이미 관측 낡음에 적용한 같은 규칙). 문서 순서(compareDocumentPosition)로
+  // 못박아 마크업이 다시 갈라져도 이 테스트가 깨진다.
+  it("낡음 알림이 예고 배너보다 먼저 나온다", () => {
+    const { container } = renderBoard([], { ...FCST, stale: true });
+    const stale = container.querySelector(".bd-alarm-warn")!;
+    const banner = container.querySelector(".fb")!;
+    expect(stale).toBeTruthy();
+    expect(banner).toBeTruthy();
+    // DOCUMENT_POSITION_FOLLOWING(4) — stale이 banner보다 앞선 형제다.
+    expect(stale.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  // I3 — 예보만 멈춘 것은 "특보가 뜨지 않는다"는 뜻이 아니다(watchdog.ts의
+  // warnings 주석). 관측 낡음·연결 끊김과 같은 --danger 빨간 띠를 쓰면
+  // 3미터 밖에서 같은 사고로 읽힌다.
+  it("예보 낡음 띠는 danger 스타일이 아니라 별도의 amber 변형을 쓴다", () => {
+    const { container } = renderBoard([], { ...FCST, stale: true });
+    const alarms = [...container.querySelectorAll(".bd-alarm")];
+    const forecastAlarm = alarms.find((el) => /예보를 받지 못하고 있습니다/.test(el.textContent ?? ""));
+    expect(forecastAlarm).toBeTruthy();
+    expect(forecastAlarm!.classList.contains("bd-alarm-warn")).toBe(true);
+  });
 });
 
 // toBoardProps는 Dashboard.tsx에서 export한다.
