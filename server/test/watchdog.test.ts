@@ -636,8 +636,8 @@ describe("문제가 있으면 알린다", () => {
 
     it("예보를 6시간 넘게 못 받았으면 warnings에 오른다", async () => {
       await withService((q) =>
-        q.query(`insert into heartbeats (name, last_run_at, ok)
-                 values ('forecast-tick', now() - interval '7 hours', true)`));
+        q.query(`insert into weather_forecasts (fcst_at, base_at, fetched_at)
+                 values (now() + interval '1 hour', now(), now() - interval '7 hours')`));
       const h = await health();
       expect(h.warnings.some((w) => /예보/.test(w))).toBe(true);
     });
@@ -646,36 +646,54 @@ describe("문제가 있으면 알린다", () => {
     // 이유로 "특보가 못 나간다"는 신호가 켜진다. 운영자가 잘못 읽는다.
     it("warnings는 reasons에 섞이지 않고 상태를 바꾸지 않는다", async () => {
       await withService((q) =>
-        q.query(`insert into heartbeats (name, last_run_at, ok)
-                 values ('forecast-tick', now() - interval '7 hours', true)`));
+        q.query(`insert into weather_forecasts (fcst_at, base_at, fetched_at)
+                 values (now() + interval '1 hour', now(), now() - interval '7 hours')`));
       const h = await health();
       expect(h.reasons.some((r) => /예보/.test(r))).toBe(false);
     });
 
     it("방금 받았으면 warnings가 비어 있다", async () => {
       await withService((q) =>
-        q.query(`insert into heartbeats (name, last_run_at, ok) values ('forecast-tick', now(), true)`));
+        q.query(`insert into weather_forecasts (fcst_at, base_at, fetched_at)
+                 values (now() + interval '1 hour', now(), now())`));
       const h = await health();
       expect(h.warnings.some((w) => /예보/.test(w))).toBe(false);
     });
 
     it("기준은 forecastTick의 상수 하나를 쓴다", async () => {
       await withService((q) =>
-        q.query(`insert into heartbeats (name, last_run_at, ok)
-                 values ('forecast-tick', now() - interval '${FORECAST_STALE_HOURS - 1} hours', true)`));
+        q.query(`insert into weather_forecasts (fcst_at, base_at, fetched_at)
+                 values (now() + interval '1 hour', now(),
+                         now() - interval '${FORECAST_STALE_HOURS - 1} hours')`));
       expect((await health()).warnings.some((w) => /예보/.test(w))).toBe(false);
     });
 
-    // **설치 직후(=forecast-tick heartbeat 행이 아예 없음)를 실제로 만든다.**
+    // **설치 직후(=weather_forecasts 행이 아예 없음)를 실제로 만든다.**
     // watchdog.ts의 쿼리는 `coalesce(..., false)`라 행이 없으면 경고하지 않는다 —
     // 그 반대(coalesce(..., true))로 바뀌면 갓 설치한 시스템이 켜지자마자
     // "예보를 못 받았습니다" 경고를 달고 시작한다. 이 파일의 다섯 테스트가 전부
     // insert부터 하면 그 기본값 자체는 한 번도 실행되지 않는다 — 이 테스트가
-    // 그 빈 테이블 경로를 밟는 유일한 자리다. beforeEach가 이미 forecast-tick
-    // 행을 지워 두므로 아무것도 넣지 않고 바로 부른다.
-    it("예보 heartbeat 행이 아예 없으면(설치 직후) warnings에 오르지 않는다", async () => {
+    // 그 빈 테이블 경로를 밟는 유일한 자리다. beforeEach가 이미 weather_forecasts를
+    // 지워 두므로 아무것도 넣지 않고 바로 부른다.
+    it("예보 행이 아예 없으면(설치 직후) warnings에 오르지 않는다", async () => {
       const h = await health();
       expect(h.warnings.some((w) => /예보/.test(w))).toBe(false);
+    });
+
+    // C1 회귀 — upsertHeartbeat는 **실패해도** last_run_at을 now()로 찍는다
+    // (ok만 false로 남는다). last_run_at으로 낡음을 재던 옛 코드는 이 fixture
+    // (heartbeat는 방금 갱신됐지만 ok=false, 실제 예보는 낡음)에서 조용히
+    // "정상"을 반환했다 — KMA_API_KEY가 만료된 주말 내내 화면과 워치독이 함께
+    // 속는 그 결함이다. 낡음은 fetched_at으로만 판정해야 한다.
+    it("heartbeat는 방금 갱신됐지만(ok=false) 예보 자체가 낡았으면 warnings에 오른다", async () => {
+      await withService(async (q) => {
+        await q.query(`insert into heartbeats (name, last_run_at, ok, note)
+                       values ('forecast-tick', now(), false, 'KMA_API_KEY 만료')`);
+        await q.query(`insert into weather_forecasts (fcst_at, base_at, fetched_at)
+                       values (now() + interval '1 hour', now(), now() - interval '7 hours')`);
+      });
+      const h = await health();
+      expect(h.warnings.some((w) => /예보/.test(w))).toBe(true);
     });
 
     // 워치독 문자는 "아무에게도 못 간다"를 알리는 자리다. 여기에 표시 기능의
@@ -689,8 +707,8 @@ describe("문제가 있으면 알린다", () => {
       // 버리므로(회귀 검증), 먼저 "이 테스트가 뭔가를 실제로 보냈는가"부터
       // 확인한다.
       await withService((q) =>
-        q.query(`insert into heartbeats (name, last_run_at, ok)
-                 values ('forecast-tick', now() - interval '7 hours', true)`));
+        q.query(`insert into weather_forecasts (fcst_at, base_at, fetched_at)
+                 values (now() + interval '1 hour', now(), now() - interval '7 hours')`));
       const { sent, channel } = recorder();
       await reportIfUnhealthy({ channel });
       expect(sent.length).toBeGreaterThan(0);
@@ -709,8 +727,9 @@ describe("문제가 있으면 알린다", () => {
       await withService(async (q) => {
         await q.query("insert into heartbeats (name, last_run_at) values ('weather-tick', now())");
         await insertObs(q, [{ ago: "0 seconds", missing: false, temp: 20 }]);
-        await q.query(`insert into heartbeats (name, last_run_at, ok)
-                       values ('forecast-tick', now() - interval '${FORECAST_STALE_HOURS + 1} hours', true)`);
+        await q.query(`insert into weather_forecasts (fcst_at, base_at, fetched_at)
+                       values (now() + interval '1 hour', now(),
+                               now() - interval '${FORECAST_STALE_HOURS + 1} hours')`);
       });
       const h = await health();
       expect(h.reasons, `이 fixture는 reasons가 비어야 하는데 남은 사유: ${JSON.stringify(h.reasons)}`).toEqual([]);

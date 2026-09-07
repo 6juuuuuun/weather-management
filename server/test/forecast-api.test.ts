@@ -82,13 +82,47 @@ describe("GET /api/forecast", () => {
   });
 
   // 화면이 스스로 시간을 재면 두 화면의 기준이 갈라진다(notifiable과 같은 이유).
+  // 낡음은 heartbeats.last_run_at이 아니라 weather_forecasts.fetched_at으로
+  // 잰다(C1) — 실제로 화면에 나가는 값이 언제 것인지를 재는 것이 last_run_at을
+  // 재는 것과 다르기 때문이다.
   it("낡음 판정을 서버가 내려준다", async () => {
     const agent = await loggedIn();
     await seed([{ at: new Date(Date.now() + 3600e3).toISOString(), temp: 20 }]);
     await withService((q) =>
-      q.query(`update heartbeats set last_run_at = now() - interval '7 hours' where name = 'forecast-tick'`));
+      q.query(`update weather_forecasts set fetched_at = now() - interval '7 hours'`));
     const res = await agent.get("/api/forecast").expect(200);
     expect(res.body.stale).toBe(true);
+  });
+
+  // C1 회귀 — upsertHeartbeat는 실패해도 last_run_at을 now()로 찍는다(ok만
+  // false로 남는다). last_run_at으로 낡음을 재던 옛 코드라면 이 fixture
+  // (heartbeat는 방금 갱신됐지만 ok=false, 예보 자체는 낡음)에서 stale:false를
+  // 돌려줬다 — KMA_API_KEY가 만료된 주말 내내 화면이 "정상"으로 보인 그 결함이다.
+  it("heartbeat는 방금 갱신됐지만(ok=false) 예보 자체가 낡았으면 stale:true다", async () => {
+    const agent = await loggedIn();
+    await withService(async (q) => {
+      await q.query(
+        `insert into weather_forecasts (fcst_at, temp_c, base_at, fetched_at)
+         values ($1, 20, now(), now() - interval '7 hours')`,
+        [new Date(Date.now() + 3600e3).toISOString()],
+      );
+      await q.query(
+        `insert into heartbeats (name, last_run_at, ok, note)
+         values ('forecast-tick', now(), false, 'KMA_API_KEY 만료')`,
+      );
+    });
+    const res = await agent.get("/api/forecast").expect(200);
+    expect(res.body.stale).toBe(true);
+  });
+
+  // 성공한 수집은 fetched_at을 갱신한다 — I1의 뒤집힌 면. heartbeat.ok가
+  // true라도 fetched_at이 최신이 아니면 stale이어야 한다는 것을 이미 위에서
+  // 봤으니, 여기서는 반대로 fetched_at이 최신이면(성공) stale이 아님을 본다.
+  it("성공한 수집이 fetched_at을 갱신하면 낡음이 아니다", async () => {
+    const agent = await loggedIn();
+    await seed([{ at: new Date(Date.now() + 3600e3).toISOString(), temp: 20 }]);
+    const res = await agent.get("/api/forecast").expect(200);
+    expect(res.body.stale).toBe(false);
   });
 
   // 스트립이 어느 칸을 칠할지 화면이 스스로 정하면, 배너·스트립·실제 특보가

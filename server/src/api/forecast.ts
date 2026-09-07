@@ -26,10 +26,15 @@ forecastRouter.get("/forecast", async (req, res) => {
     );
     const { rows: criteria } = await q.query("select kind, grade, threshold from weather_criteria");
     const { rows: settings } = await q.query("select kind, enabled from alert_settings");
+    // heartbeats.last_run_at이 아니라 weather_forecasts.fetched_at을 본다.
+    // upsertHeartbeat는 실패해도 last_run_at을 now()로 찍는다(ok만 false로
+    // 남는다) — last_run_at으로 재면 수집이 계속 실패해도 이 값은 항상
+    // "방금"이라 화면이 영원히 stale:false를 받는다. watchdog.ts의 같은
+    // 판정과 반드시 같은 모양이어야 한다(두 벌로 적히면 한쪽만 낡음을 안다).
     const { rows: staleRow } = await q.query(
       `select coalesce(
-         (select now() - last_run_at > ($1 || ' hours')::interval
-            from heartbeats where name = 'forecast-tick'),
+         (select now() - max(fetched_at) > ($1 || ' hours')::interval
+            from weather_forecasts),
          false
        ) as stale`,
       [String(FORECAST_STALE_HOURS)],

@@ -362,10 +362,16 @@ export async function checkHealth(
 
       // 예보 수집. reasons가 아니라 warnings다(위 타입 주석 참고).
       // 낡음 판정은 Postgres 안에서 끝낸다 — 시계를 하나만 쓴다.
+      //
+      // heartbeats.last_run_at이 아니라 weather_forecasts.fetched_at을 본다.
+      // upsertHeartbeat는 **실패해도** last_run_at을 now()로 찍는다(ok만
+      // false로 남는다) — last_run_at으로 낡음을 재면 KMA_API_KEY가 만료돼
+      // 3시간마다 실패해도 last_run_at은 계속 "방금"이라 영원히 stale=false가
+      // 된다. 실제로 화면에 나가는 값(fetched_at)을 재야 이 결함이 없다.
       const { rows: fcstBeat } = await q.query(
         `select coalesce(
-           (select now() - last_run_at > ($1 || ' hours')::interval
-              from heartbeats where name = 'forecast-tick'),
+           (select now() - max(fetched_at) > ($1 || ' hours')::interval
+              from weather_forecasts),
            false
          ) as stale`,
         [String(FORECAST_STALE_HOURS)],
