@@ -10,6 +10,10 @@ import type { CriteriaRow, HeartbeatRow, ObservationRow } from "../lib/api/dashb
 import { listDepartments, alertRecipients, listRecipients } from "../lib/api/org";
 import { guidelines as fetchGuidelines, dispatches as fetchDispatches } from "../lib/api/content";
 import type { DispatchRow } from "../lib/api/content";
+import { forecast, type ForecastResponse } from "../lib/api/forecast";
+import { ForecastStrip } from "../components/ForecastStrip";
+import { ForecastDaily } from "../components/ForecastDaily";
+import { ForecastBanner } from "../components/ForecastBanner";
 import { computeSetupChecklist, hasGuidelineContent, isValidGridCoord } from "../lib/setup";
 import { leafDeptIds } from "../lib/deptTree";
 import type { SetupChecklist } from "../lib/setup";
@@ -35,6 +39,8 @@ type DashboardData = {
   heartbeat: HeartbeatRow | null;
   /** 월보드 차트용 최근 24시간 유효 관측 (오래된 것부터) */
   history: ObservationPoint[];
+  /** 예보. 조회에 실패하면 null이다 — 그때는 예보 블록만 그리지 않는다. */
+  forecast: ForecastResponse | null;
 };
 
 function formatDate(d: Date): string {
@@ -180,7 +186,7 @@ export default function Dashboard() {
     const isAdmin = employee?.role === "admin";
 
     try {
-      const [obs, openEventRows, dispatchRows, criteriaRows, site, snowTodayRows, historyRows, beat] = await Promise.all([
+      const [obs, openEventRows, dispatchRows, criteriaRows, site, snowTodayRows, historyRows, beat, fcst] = await Promise.all([
         // 결측 행(기상청 조회 실패로 기록되는 빈 행)을 제외하고 마지막 '유효' 관측을 읽는다.
         // 이 필터는 서버(dashboard.ts)가 항상 적용한다 — 제외하지 않으면 기상청이 한 번만
         // 삐끗해도 전 카드가 빈 값이 되는데, 상단의 "마지막 수집 N분 전"은 heartbeat(함수
@@ -199,6 +205,12 @@ export default function Dashboard() {
         // 관측이 하나도 없을 때 화면이 "왜" 비었는지 말하기 위한 값이다(QA W-21).
         // 수집이 아예 안 돈 것과, 돌았는데 기상청이 값을 안 준 것은 운영자가 할 일이 다르다.
         fetchHeartbeat("weather-tick"),
+        // **실패해도 화면 전체를 잃지 않는다.** 예보는 표시 기능이고, 그것이
+        // 죽어도 관측·특보·발송은 멀쩡하다. Promise.all에 그냥 넣으면 예보
+        // 하나가 거절될 때 배열 전체가 거절되어 관측 카드까지 "-"가 되고
+        // "데이터를 불러오지 못했습니다"가 뜬다 — 운영자는 특보 시스템이
+        // 죽은 줄 안다. 서버가 warnings/reasons를 나눈 것과 같은 판단이다.
+        forecast().catch(() => null),
       ]);
 
       const snowToday =
@@ -215,6 +227,7 @@ export default function Dashboard() {
         snowToday,
         history: historyRows,
         heartbeat: beat,
+        forecast: fcst,
       });
 
       if (isAdmin) {
@@ -472,6 +485,8 @@ export default function Dashboard() {
           </div>
         )}
 
+        {data?.forecast && <ForecastBanner upcoming={data.forecast.upcoming} />}
+
         {/* 카드가 보여주는 값이 '마지막 유효 관측'이므로 그 시각을 함께 밝힌다.
             이게 없으면 수집이 계속 실패해도 옛 수치가 현재값처럼 읽힌다. */}
         {data?.observation && (
@@ -647,6 +662,14 @@ export default function Dashboard() {
             );
           })()}
         </div>
+
+        {data?.forecast?.stale && (
+          <div className="dash-error">
+            예보를 받지 못하고 있습니다 — 아래 예보는 갱신되지 않은 값입니다
+          </div>
+        )}
+        {data?.forecast && <ForecastStrip hours={data.forecast.hourly} density="scroll" />}
+        {data?.forecast && <ForecastDaily days={data.forecast.daily} />}
 
         <div className="dash-panels">
           <div className="panel">
