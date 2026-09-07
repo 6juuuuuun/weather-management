@@ -318,16 +318,30 @@ function ruleOf(selector: string): string {
 // jsdom은 레이아웃을 계산하지 않아 "차트가 카드를 넘쳤다"를 렌더로 잡을 수 없다.
 // 그래서 넘침을 막는 CSS 계약 자체를 원문으로 고정한다.
 describe("DashboardBoard.css 레이아웃 계약", () => {
-  // height:auto(MetricChart.css의 종횡비 유래 기본값)는 카드 높이와 무관해서,
-  // 특보 배너가 카드 영역을 줄이면 차트가 카드 밖으로 넘치고 overflow:hidden이
-  // 하단을 잘라낸다. 뷰포트에 같이 줄어드는 vh여야 어떤 창 크기에서도 안전하다.
-  it(".bd-card .mc의 height가 vh 단위다", () => {
-    // 앞을 `^|;`로 묶는다 — 앵커가 없으면 `line-height`·`min-height`의 뒷부분에
-    // 물려서, height:auto가 살아 있어도 초록이 되거나 멀쩡한데 빨개진다.
-    const height = /(?:^|;)\s*height:\s*([^;]+);/.exec(ruleOf(".bd-card .mc"))?.[1].trim();
-    expect(height).toBeTruthy();
-    expect(height).not.toBe("auto");
-    expect(height).toMatch(/vh$/);
+  // 차트는 **카드에 남은 공간만** 차지해야 한다. 이 계약이 있는 이유는 두 번의
+  // 실제 사고 때문이다:
+  //   1) height:auto(MetricChart.css의 종횡비 기본값)는 카드 높이와 무관해서,
+  //      특보 배너가 카드를 줄이면 차트가 카드를 넘치고 overflow:hidden이 잘랐다.
+  //   2) 그래서 18vh 고정으로 바꿨는데, vh는 "이 화면에 카드 말고 무엇이 더
+  //      있는가"를 모른다. 예보 블록 두 개가 늘자 카드가 줄어드는데 차트는
+  //      그대로여서, 이번에는 **큰 숫자가 잘렸다**(사용자 화면에서 확인).
+  // 두 사고의 공통 원인은 "카드에 남은 공간과 무관한 높이"다. flex가 그것을
+  // 직접 없앤다 — 남은 만큼만 가져가므로 숫자와 라벨이 언제나 먼저 산다.
+  it(".bd-card .mc가 카드에 남은 공간을 받는다(고정 높이가 아니다)", () => {
+    const rule = ruleOf(".bd-card .mc");
+    // 늘어나고 줄어들 수 있어야 한다.
+    expect(rule).toMatch(/(?:^|;)\s*flex:\s*1\s/);
+    // flex 자식의 기본 min-height:auto는 축소를 막는다 — 0이어야 실제로 줄어든다.
+    expect(rule).toMatch(/(?:^|;)\s*min-height:\s*0\s*;/);
+    // 앞을 `^|;`로 묶는다 — 앵커가 없으면 `line-height`·`min-height`의 뒷부분에 물린다.
+    const height = /(?:^|;)\s*height:\s*([^;]+);/.exec(rule)?.[1].trim();
+    expect(height, "height를 고정하면 남은 공간과 무관해져 두 사고가 되돌아온다").toBeUndefined();
+  });
+
+  // 지표 카드가 읽을 수 없게 눌리는 것보다 덜 급한 블록이 빠지는 편이 낫다.
+  // 예보 블록 둘이 줄어들면 그 압력이 카드로 옮겨간다.
+  it("예보 블록은 줄어들지 않는다(카드가 남은 공간을 갖는다)", () => {
+    expect(ruleOf(".bd .fc,\n.bd-daily")).toMatch(/flex-shrink:\s*0/);
   });
 
   // 배너 세로 크기가 px로 고정되면 뷰포트가 낮아져도 줄지 않아, 특보 1건이
