@@ -219,15 +219,30 @@
 
 /* 16:9에서 4열 1행은 카드가 세로로 과하게 길어져 숫자와 차트 사이가 빈다.
    2×2가 카드 비율에 맞다(시안에서 실측). */
+/* 카드는 **가로**다. 이름·값 덩어리가 왼쪽, 차트가 오른쪽에서 카드 높이를
+   그대로 쓴다. 세로로 쌓던 때는 넓은 카드의 오른쪽 절반이 비어 있는데도
+   차트가 남은 세로 12px에 눌려 실선처럼 보였다(사용자 화면에서 확인).
+   가로 배치는 세로 예산을 한 톨도 더 쓰지 않고 차트를 8배 키운다. */
 .bd-card {
   background: var(--canvas);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-card);
-  padding: 1.85vh 30px 1.48vh;
+  padding: 1.6vh 30px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 28px;
   min-height: 0;
   overflow: hidden;
+}
+
+/* 숫자 덩어리는 자기 크기만 차지하고, 남는 가로는 전부 차트에게 넘긴다. */
+.bd-card-head {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
 }
 
 .bd-card-label {
@@ -241,9 +256,11 @@
   font-family: var(--font-num);
   font-size: 6.3vh;
   font-weight: 600;
+  /* 큰 글자는 자간이 넓어 보인다 — 크기에 비례하는 em으로 조인다(px 고정은
+     화면 높이가 달라지면 틀린 값이 된다). */
   line-height: 1;
-  letter-spacing: -2px;
-  margin: 0.74vh 0 0;
+  letter-spacing: -0.03em;
+  margin: 0.5vh 0 0;
   color: var(--ink);
 }
 
@@ -259,7 +276,9 @@
 }
 
 .bd-card .mc {
-  margin-top: 0.56vh;
+  /* 카드의 남은 **가로**를 받는다. 세로는 카드 높이를 그대로 쓴다
+     (MetricChart.css의 height:100% + 위의 align-items:stretch). */
+  min-width: 0;
   /* 차트는 **카드에 남은 공간을 받는다**(flex). 예전에는 18vh 고정이었는데,
      그 값은 "화면에 이 카드들 말고 무엇이 더 있는가"를 모른다 — 예보 블록
      두 개가 늘어나자 카드가 줄어드는데 차트는 그대로라, 카드의 overflow:hidden이

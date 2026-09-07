@@ -159,11 +159,17 @@ export function DashboardBoard({
           const tone = toneOf(m);
           return (
             <div className="bd-card" key={m.key}>
-              <span className="bd-card-label">{m.label}</span>
-              <span className={`bd-card-value bd-value-${tone}`}>
-                {m.value === null ? "–" : Number(m.value.toFixed(1))}
-                <span className="bd-card-unit">{m.unit}</span>
-              </span>
+              {/* 이름과 값을 한 덩어리로 묶어 **차트 옆에** 세운다. 예전에는 셋을
+                  세로로 쌓아, 카드가 가로로 넓은데도 차트가 남은 세로(12px)만
+                  받아 실선처럼 뭉개졌다 — 오른쪽 절반은 빈 채로. 가로로 놓으면
+                  차트가 카드 높이를 그대로 쓰고 세로 예산은 하나도 더 쓰지 않는다. */}
+              <div className="bd-card-head">
+                <span className="bd-card-label">{m.label}</span>
+                <span className={`bd-card-value bd-value-${tone}`}>
+                  {m.value === null ? "–" : Number(m.value.toFixed(1))}
+                  <span className="bd-card-unit">{m.unit}</span>
+                </span>
+              </div>
               <MetricChart
                 values={m.history}
                 // threshold<=0은 "기준 미설정"이다. 그대로 넘기면 값 0이 임계
