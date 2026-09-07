@@ -16,11 +16,15 @@ vi.mock("../src/jobs/weatherTick.ts", () => ({ runWeatherTick: vi.fn(async () =>
 vi.mock("../src/jobs/remindTick.ts", () => ({ runRemindTick: vi.fn(async () => ({ reminded: 0 })) }));
 vi.mock("../src/auth/session.ts", () => ({ purgeExpired: vi.fn(async () => 0) }));
 vi.mock("../src/jobs/watchdog.ts", () => ({ reportIfUnhealthy: vi.fn(async () => {}) }));
+vi.mock("../src/jobs/forecastTick.ts", () => ({
+  runForecastTick: vi.fn(async () => ({ ok: true, saved: 0, note: null })),
+}));
 
 const { runWeatherTick } = await import("../src/jobs/weatherTick.ts");
 const { runRemindTick } = await import("../src/jobs/remindTick.ts");
 const { purgeExpired } = await import("../src/auth/session.ts");
 const { reportIfUnhealthy } = await import("../src/jobs/watchdog.ts");
+const { runForecastTick } = await import("../src/jobs/forecastTick.ts");
 const { startScheduler } = await import("../src/jobs/scheduler.ts");
 
 // startScheduler는 마지막에 catchUpIfMissed도 부른다. 그건 실제 DB를 읽으므로
@@ -39,6 +43,7 @@ beforeEach(() => {
   vi.mocked(runRemindTick).mockClear();
   vi.mocked(purgeExpired).mockClear();
   vi.mocked(reportIfUnhealthy).mockClear();
+  vi.mocked(runForecastTick).mockClear();
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -65,6 +70,16 @@ describe("스케줄 콜백이 실제로 작업을 부른다", () => {
     const cb = registeredCallbacks().get("*/10 * * * *");
     await cb!();
     expect(runRemindTick).toHaveBeenCalledTimes(1);
+  });
+
+  // 이 테스트가 없으면 예보 수집도 "등록만 되고 아무것도 안 부르는" 구멍을
+  // 그대로 다시 열 수 있다 — 워치독이 한 번 그랬던 것과 같은 모양이다.
+  it("단기예보 발표 시각 콜백은 예보 수집을 부른다", async () => {
+    const cb = registeredCallbacks().get("15 2,5,8,11,14,17,20,23 * * *");
+    expect(cb).toBeTypeOf("function");
+    vi.mocked(runForecastTick).mockClear(); // 등록 시점의 catch-up 호출을 제외한다
+    await cb!();
+    expect(runForecastTick).toHaveBeenCalledTimes(1);
   });
 
   it("새벽 4시 콜백은 세션 정리를 부른다", async () => {

@@ -5,6 +5,7 @@ import { authRouter, adminUserRouter } from "./auth/routes.ts";
 import { dashboardRouter } from "./api/dashboard.ts";
 import { orgRouter } from "./api/org.ts";
 import { contentRouter } from "./api/content.ts";
+import { forecastRouter } from "./api/forecast.ts";
 import { requireAuth } from "./auth/middleware.ts";
 import { allowedDomains } from "./auth/emailDomain.ts";
 import { withService } from "./db.ts";
@@ -73,6 +74,7 @@ app.use("/api/admin/users", adminUserRouter);
 app.use("/api", dashboardRouter);
 app.use("/api", orgRouter);
 app.use("/api", contentRouter);
+app.use("/api", forecastRouter);
 
 // 화면이 부르던 Edge Function invoke("send")를 대신한다(이관 전 구조).
 // 권한 검사(알림 수신자만 승인, 테스트 발송은 관리자만)는 runSend 안에 그대로 있다 —

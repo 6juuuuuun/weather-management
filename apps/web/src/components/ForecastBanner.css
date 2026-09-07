@@ -1,0 +1,48 @@
+/* 실제 특보 배너(.approval-banner)와 **눈으로 구분되어야** 한다.
+   특보는 경고색을 쓰므로 예고는 정보색(Action Blue)을 쓴다. */
+.fb {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 28px;
+  background: color-mix(in srgb, var(--primary) 8%, var(--canvas));
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--hairline));
+  border-radius: var(--radius-card);
+}
+
+.fb-tag {
+  flex: none;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--primary) 16%, var(--canvas));
+  color: var(--primary);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.fb-main { min-width: 0; }
+
+.fb-title {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.fb-more { font-weight: 400; color: var(--ink-muted-48); }
+
+.fb-note {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--ink-muted-48);
+}
+
+/* 월보드용. 3미터 밖에서 읽히도록 키우되 문구는 그대로 둔다. */
+.fb-compact .fb-title { font-size: 22px; }
+.fb-compact .fb-note { font-size: 15px; }
+.fb-compact .fb-tag { font-size: 15px; padding: 6px 14px; }

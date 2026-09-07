@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   listRecipients: vi.fn(),
   guidelines: vi.fn(),
   dispatches: vi.fn(),
+  forecast: vi.fn(),
   authState: {
     employee: { id: "emp1", name: "김운영", role: "admin", department_id: "d1" },
     loading: false,
@@ -51,7 +52,12 @@ vi.mock("../lib/api/content", () => ({
   dispatches: (...args: unknown[]) => mocks.dispatches(...args),
 }));
 
+vi.mock("../lib/api/forecast", () => ({
+  forecast: (...args: unknown[]) => mocks.forecast(...args),
+}));
+
 import { ApiError } from "../lib/api/client";
+import type { ForecastResponse } from "../lib/api/forecast";
 import Dashboard, { toBoardProps } from "./Dashboard";
 
 const validObs = {
@@ -100,6 +106,17 @@ beforeEach(() => {
   mocks.listRecipients.mockReset().mockResolvedValue([]);
   mocks.guidelines.mockReset().mockResolvedValue([]);
   mocks.dispatches.mockReset().mockResolvedValue([]);
+  // 예보는 표시 기능이라 대부분의 테스트는 관심이 없다 — 기본값은 빈 예보다.
+  // 이 기본값이 없으면 forecast()를 부르는 순간 아래 46개 기존 테스트가 전부
+  // "no mock response queued"류로 깨진다. 예보 전용 테스트만 이 값을 덮어쓴다.
+  mocks.forecast.mockReset().mockResolvedValue({
+    fetched_at: null,
+    base_at: null,
+    stale: false,
+    hourly: [],
+    daily: [],
+    upcoming: [],
+  });
 });
 
 describe("Dashboard 관측 카드", () => {
@@ -843,5 +860,94 @@ describe("Dashboard 하단 티커", () => {
     const { container } = renderAt("");
     await waitFor(() => expect(container.querySelector(".obs-grid")).toBeTruthy());
     expect(container.querySelector(".bt")).toBeNull();
+  });
+});
+
+// Task 10: 예보(48시간 스트립·5일 요약·예고 배너)를 대시보드에 붙인다.
+// 예보는 표시 기능이다 — 그것이 실패해도 관측·특보·발송 화면은 멀쩡해야 한다.
+const IN_12H = new Date(Date.now() + 12 * 3600e3).toISOString();
+
+function forecastBody(over: Partial<ForecastResponse> = {}): ForecastResponse {
+  return {
+    fetched_at: new Date().toISOString(),
+    base_at: new Date().toISOString(),
+    stale: false,
+    hourly: [
+      {
+        at: new Date(Date.now() + 3600e3).toISOString(),
+        temp_c: 23,
+        pop_pct: 10,
+        pty: 0,
+        sky: 1,
+        pcp_mm: null,
+        sno_cm: null,
+        wsd_ms: 2,
+        exceeds: [],
+      },
+    ],
+    daily: [
+      {
+        date: new Date(Date.now() + 33 * 3600e3).toISOString().slice(0, 10),
+        tmn_c: 16,
+        tmx_c: 25,
+        pop_max: 20,
+        pcp_sum: null,
+        sno_sum: null,
+        sky: 1,
+        derived: false,
+      },
+    ],
+    upcoming: [{ kind: "snow", grade: "watch", at: IN_12H, value: 7, unit: "cm" }],
+    ...over,
+  };
+}
+
+describe("예보 블록", () => {
+  it("예고가 있으면 배너를 그리고, 문자 미발송 문구도 함께 나온다", async () => {
+    mocks.forecast.mockResolvedValue(forecastBody());
+    renderDashboard();
+    expect(await screen.findByText(/폭설 주의보 예상/)).toBeInTheDocument();
+    expect(screen.getByText("예보 기준입니다 · 문자는 나가지 않았습니다")).toBeInTheDocument();
+  });
+
+  it("48시간 스트립과 5일 요약을 그린다", async () => {
+    mocks.forecast.mockResolvedValue(forecastBody());
+    renderDashboard();
+    expect(await screen.findByText("앞으로 48시간")).toBeInTheDocument();
+    expect(screen.getByText("5일")).toBeInTheDocument();
+  });
+
+  // **가장 중요한 테스트.** 예보는 표시 기능이다. 그것이 실패했다고 관측 카드와
+  // 진행 중 특보까지 사라지면, 표시 하나 때문에 운영 화면 전체를 잃는다.
+  it("예보 조회가 실패해도 나머지 화면은 그대로 그린다", async () => {
+    mocks.forecast.mockRejectedValue(new Error("서버 오류"));
+    renderDashboard();
+    // 관측 카드는 그대로 채워진다 — setData가 정상적으로 불렸다는 뜻이다.
+    expect(await screen.findByText(/관측 기준/)).toBeInTheDocument();
+    // 예보 블록만 사라진다.
+    expect(screen.queryByText("앞으로 48시간")).not.toBeInTheDocument();
+    expect(screen.queryByText("5일")).not.toBeInTheDocument();
+    // 전체 오류 배너를 띄우지 않는다 — 특보 발송은 멀쩡하기 때문이다.
+    expect(screen.queryByText(/데이터를 불러오지 못했습니다/)).not.toBeInTheDocument();
+  });
+
+  it("예보가 낡았으면 그 사실을 말한다", async () => {
+    mocks.forecast.mockResolvedValue(forecastBody({ stale: true }));
+    renderDashboard();
+    expect(await screen.findByText(/예보를 받지 못하고 있습니다/)).toBeInTheDocument();
+  });
+
+  // I2 — 값이 낡았다면 그 아래 예고 배너("폭설 예상")는 전부 못 믿을 값이고,
+  // 그 사실을 알기 전에 자신 있는 예고를 먼저 읽게 해서는 안 된다.
+  it("낡음 알림이 예고 배너보다 먼저 나온다", async () => {
+    mocks.forecast.mockResolvedValue(forecastBody({ stale: true }));
+    const { container } = renderDashboard();
+    await screen.findByText(/폭설 주의보 예상/);
+    const stale = container.querySelector(".dash-error")!;
+    const banner = container.querySelector(".fb")!;
+    expect(stale).toBeTruthy();
+    expect(banner).toBeTruthy();
+    // DOCUMENT_POSITION_FOLLOWING(4) — stale이 banner보다 앞선 형제다.
+    expect(stale.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

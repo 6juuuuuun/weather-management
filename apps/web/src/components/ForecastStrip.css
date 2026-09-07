@@ -1,0 +1,91 @@
+/* apps/web/src/components/ForecastStrip.css */
+.fc {
+  padding: 24px 28px;
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+}
+
+.fc-title {
+  margin: 0 0 12px;
+  font-family: var(--font-ui);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.fc-track {
+  display: flex;
+  gap: 4px;
+}
+
+/* 일반 대시보드에서만. 월보드에는 이 클래스가 붙지 않는다 — 미는 사람이 없다. */
+.fc-scroll {
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  padding-bottom: 6px;
+}
+
+.fc-col {
+  flex: 0 0 auto;
+  min-width: 54px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 6px;
+  border-radius: 10px;
+  scroll-snap-align: start;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--ink-muted-80);
+}
+
+/* 월보드는 16칸이 화면을 가득 채운다. 고정폭 대신 균등 분할한다. */
+.fc-spread .fc-col {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.fc-col-over { background: color-mix(in srgb, var(--warn-strong) 14%, var(--canvas)); }
+.fc-col-warning { background: color-mix(in srgb, var(--danger) 14%, var(--canvas)); }
+
+/* I4: 색 하나로만 "특보 기준을 넘는다"를 말하지 않는다 — 색약 운영자와
+   스크린 리더 모두 배경 틴트를 읽지 못한다. */
+.fc-exceed-label {
+  font-weight: 700;
+  font-size: 11px;
+  text-align: center;
+  line-height: 1.2;
+  color: var(--warn);
+}
+.fc-col-warning .fc-exceed-label { color: var(--danger); }
+
+.fc-time { font-weight: 600; color: var(--ink); white-space: nowrap; }
+.fc-date { display: block; font-size: 11px; font-weight: 400; color: var(--ink-muted-48); }
+.fc-glyph { font-size: 20px; line-height: 1; }
+/* 아이콘 옆의 글자. 화면에 보이되 작게 둔다 — 아이콘만으로는 정보가 아니다. */
+.fc-skylabel { display: block; font-size: 11px; color: var(--ink-muted-48); }
+.fc-temp { font-family: var(--font-num); font-size: 15px; color: var(--ink); }
+.fc-pop { font-size: 12px; color: var(--ink-muted-48); }
+.fc-amount { font-family: var(--font-num); font-size: 12px; color: var(--ink-muted-80); }
+
+.fc-legend {
+  display: flex;
+  gap: 16px;
+  margin-top: 10px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--ink-muted-48);
+}
+
+.fc-legend-exceed { color: var(--warn); font-weight: 600; }
+
+/* 월보드는 3미터 밖에서 읽는다. 큰 화면에서 글자만 키운다. */
+.fc-spread .fc-time { font-size: 18px; }
+.fc-spread .fc-glyph { font-size: 30px; }
+.fc-spread .fc-skylabel { font-size: 14px; }
+.fc-spread .fc-temp { font-size: 24px; }
+.fc-spread .fc-pop,
+.fc-spread .fc-amount { font-size: 16px; }
+.fc-spread .fc-exceed-label { font-size: 14px; }

@@ -55,6 +55,17 @@ describe("운영 안내서 §3-3 — /api/health/deep의 사유가 전부 표에
     ...[...watchdog.matchAll(/reasons:\s*\[\s*([\s\S]*?)\s*\]/g)].map(([, body]) => literals(body!)),
   ].filter((t) => t.length > 0);
 
+  // warnings는 reasons와 다른 칸이다(Task 4) — 하나라도 있어도 503을 만들지 않는다.
+  // 그렇다고 안내서에서 빼도 되는 것은 아니다: 표시 기능(사전 예고)이 죽은 것을
+  // 운영자가 알아야 하는 것은 reasons와 똑같다. 위 `pushed`가 `reasons.push`만
+  // 긁는 바람에 `warnings.push(...)`는 이 검사에 전혀 걸리지 않았다 — 문구를 통째로
+  // 지우거나 흐려도 §3-3 대조는 조용히 통과했을 것이다. 그래서 같은 방식으로
+  // 따로 긁는다. catch 분기는 항상 `warnings: []`라 문자열 리터럴이 없으므로
+  // `reasons:` 자리에 대응하는 스캔은 필요 없다.
+  const pushedWarnings = [
+    ...[...watchdog.matchAll(/warnings\.push\(\s*([\s\S]*?)\s*\);/g)].map(([, body]) => literals(body!)),
+  ].filter((t) => t.length > 0);
+
   // **상수로 뺀 사유는 위 정규식에 잡히지 않는다.** `reasons.push(LOG_ONLY_REASON)`에는
   // 문자열 리터럴이 없어서, 문구를 "발송 준비 중입니다"로 흐려도 위 대조는 조용히
   // 통과한다(변이로 확인했다). 이 파일이 한 번 "막겠다고 선언하고 못 막은" 전력이
@@ -78,6 +89,14 @@ describe("운영 안내서 §3-3 — /api/health/deep의 사유가 전부 표에
     expect(pushed.length).toBeGreaterThanOrEqual(13);
   });
 
+  // warnings 쪽도 같은 함정이 있다: 정규식이 `warnings.push(` 형태 변화(예: 상수로
+  // 뺀 경우, 여러 줄로 접은 경우)로 빗나가면 `pushedWarnings`가 조용히 0건이 되고
+  // 아래 it.each는 실행할 것이 없어 통과한다 — reasons 쪽에서 이미 한 번 일어난
+  // 실수(회귀 검증 §C-1/§C-2)를 warnings에서 되풀이하지 않는다.
+  it("warnings를 한 건도 못 찾았다면 이 테스트 자체가 고장 난 것이다", () => {
+    expect(pushedWarnings.length).toBeGreaterThanOrEqual(1);
+  });
+
   it.each(pushed.map((t) => [t.slice(0, 40), t] as const))(
     "«%s…» 가 §3-3 표에 적혀 있다",
     (_label, template) => {
@@ -89,6 +108,19 @@ describe("운영 안내서 §3-3 — /api/health/deep의 사유가 전부 표에
       expect(
         missing,
         `안내서 §3-3이 이 사유를 그대로 인용하지 않습니다:\n  ${template}\n  빠진 조각: ${missing.join(" / ")}`,
+      ).toEqual([]);
+    },
+  );
+
+  it.each(pushedWarnings.map((t) => [t.slice(0, 40), t] as const))(
+    "«%s…»(warnings) 가 §3-3 표에 적혀 있다",
+    (_label, template) => {
+      const fragments = fixedFragments(template);
+      expect(fragments.length).toBeGreaterThan(0);
+      const missing = fragments.filter((f) => !manual.includes(f));
+      expect(
+        missing,
+        `안내서 §3-3이 이 warnings 문구를 그대로 인용하지 않습니다:\n  ${template}\n  빠진 조각: ${missing.join(" / ")}`,
       ).toEqual([]);
     },
   );

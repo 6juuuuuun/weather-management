@@ -7,6 +7,7 @@ import { runWeatherTick } from "./weatherTick.ts";
 import { runRemindTick } from "./remindTick.ts";
 import { purgeExpired } from "../auth/session.ts";
 import { reportIfUnhealthy } from "./watchdog.ts";
+import { runForecastTick } from "./forecastTick.ts";
 
 // 관측은 매시 1회다. 70분이 지났다면 최소 한 번은 놓친 것이다.
 const STALE_MINUTES = 70;
@@ -36,6 +37,32 @@ export async function catchUpIfMissed(): Promise<boolean> {
     return rows[0].stale as boolean;
   });
   if (stale) await runWeatherTick();
+  return stale;
+}
+
+/** 예보 발표는 3시간 간격이다. 3.5시간이 지났다면 최소 한 회차를 놓쳤다. */
+const FORECAST_STALE_MINUTES = 210;
+
+/**
+ * 관측의 catchUpIfMissed와 같은 처방·같은 이유(컨테이너 재시작·정전).
+ *
+ * "오래됐는가"의 계산을 Postgres 안에서 끝내는 것도 같다 — Node의 Date.now()로
+ * 비교하면 컨테이너 시계와 DB 시계 두 개를 섞어 쓰게 되고, 이 프로젝트는 그
+ * 실수를 계정 잠금 만료에서 이미 한 번 했다(2fc6b13).
+ */
+export async function catchUpForecastIfMissed(): Promise<boolean> {
+  const stale = await withService(async (q) => {
+    const { rows } = await q.query(
+      `select coalesce(
+         (select now() - last_run_at > ($1 || ' minutes')::interval
+            from heartbeats where name = 'forecast-tick'),
+         true
+       ) as stale`,
+      [String(FORECAST_STALE_MINUTES)],
+    );
+    return rows[0].stale as boolean;
+  });
+  if (stale) await runForecastTick();
   return stale;
 }
 
@@ -73,6 +100,12 @@ export function startScheduler(): void {
   // 도는 이유: 수집 주기가 1시간이라 130분 기준으로 사고를 판정하는데, 점검을
   // 그보다 훨씬 자주 돌리면 같은 사고를 반복해서 알려 사람이 무시하게 된다.
   cron.schedule("0 */6 * * *", () => guarded("watchdog", reportIfUnhealthy), { timezone: TIMEZONE });
+  // 단기예보 발표 시각(KST 02·05·08·11·14·17·20·23시)에 맞춘다. 매시 돌리면
+  // 발표되지 않은 사이에 같은 값을 여덟 번 더 받는다 — 기상청 호출만 늘고
+  // 얻는 것이 없다. 15분은 발표가 실제로 열릴 때까지의 여유다
+  // (shared/forecast.ts의 PUBLISH_DELAY_MIN과 같은 이유).
+  cron.schedule("15 2,5,8,11,14,17,20,23 * * *",
+    () => guarded("forecast-tick", runForecastTick), { timezone: TIMEZONE });
   // 새벽 5시 20분에 돌던 카카오워크 재연결 tick은 사라졌다. 그 작업이 있었던 이유는
   // **연결이 나중에 고쳐지기 때문**이었다(설치 직후엔 봇 키가 없고, 카카오워크 계정이
   // 늦게 만들어지고, 이메일 오타를 며칠 뒤 고친다) — 즉 발송 주소를 이메일에서
@@ -80,4 +113,5 @@ export function startScheduler(): void {
   // 상태 자체가 없다. 번호가 없으면 사람이 넣어야 하고, 그 사실은 셋업 체크리스트·
   // /api/health/deep·워치독이 계속 말한다.
   void guarded("catch-up", catchUpIfMissed);
+  void guarded("forecast-catch-up", catchUpForecastIfMissed);
 }

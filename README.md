@@ -31,6 +31,8 @@ Supabase(관리형 Postgres + Edge Functions) + Cloudflare 정적 호스팅으�
                    │   ├─ /api/health/deep : 실제로 일을 하고 있는가(503이면 문제)        │
                    │   └─ 스케줄러(node-cron, KST 고정)                                   │
                    │        ├─ 매시 5분   weather-tick  ← 기상청 초단기실황                │
+                   │        ├─ 3시간마다  forecast-tick ← 기상청 단기예보(02·05·08·11·   │
+                   │        │              14·17·20·23시 15분)                            │
                    │        ├─ 10분마다   remind-tick                                     │
                    │        ├─ 매일 04시  세션 정리                                        │
                    │        └─ 6시간마다  watchdog → 문제면 담당자에게 문자              │

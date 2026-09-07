@@ -100,6 +100,20 @@
   line-height: 1;
 }
 
+/* 예보(사전 예고) 수집 중단 전용. --danger의 빨간 띠는 "수집 중단"·"서버
+   연결 끊김"과 같은 자리다 — docs/운영.md §3-4가 그 색을 "특보가 뜨지 않는
+   상태 → §7-3"으로 가르친다. 예보만 멈춘 것은 그 뜻이 아니다(특보 발송은
+   정상이다, watchdog.ts의 warnings 주석 참고). 3미터 밖에서도 두 띠가
+   같은 색으로 뭉개지지 않도록 --warn-strong(호박색)으로 뚜렷하게 낮춘다. */
+.bd-alarm-warn {
+  border-color: var(--warn-strong);
+  background: color-mix(in srgb, var(--warn-strong) 10%, var(--canvas));
+}
+
+.bd-alarm-warn .bd-alarm-title {
+  color: var(--warn);
+}
+
 .bd-events {
   display: flex;
   flex-direction: column;
@@ -248,4 +262,11 @@
      배너로 카드가 줄면 차트가 카드를 넘친다. vh는 뷰포트 높이에 맞춰
      같이 줄어들므로 어떤 창 크기에서도 넘치지 않는다. */
   height: 18vh;
+}
+
+/* 월보드는 스크롤 없이 한 화면에 들어가야 한다. 세로가 부족하면 5일 줄부터
+   접는다 — 벽걸이 앞에 선 사람의 지금 행동을 가장 덜 바꾸는 정보다.
+   16:9 큰 화면에서는 전부 들어간다. */
+@media (max-height: 900px) {
+  .bd-daily { display: none; }
 }
