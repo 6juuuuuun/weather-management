@@ -31,7 +31,10 @@ const FIELD: Record<Kind, { unit: string; pick: (p: ForecastPoint) => number | n
   snow: { unit: "cm",  pick: (p) => p.snoCm, key: "snow_cm" },
   wind: { unit: "m/s", pick: (p) => p.wsdMs, key: "wind_ms" },
   // 예보에는 체감온도가 없다. 실황 판정은 기온·체감 둘 다 보므로 여기서는
-  // 기온만으로 판정하고, 그래서 예고와 실제 특보가 어긋날 수 있다.
+  // 기온만으로 판정하고, 그래서 예고와 실제 특보가 어긋날 수 있다. 반대
+  // 방향도 있다 — thresholdUsable은 heat에 temp_c·feels_c 둘 다 요구하므로
+  // feels_c가 빠진 기준 행은 여기서 조용히 판정 제외되어, 실제로는 특보가
+  // 뜨는데도 예고가 뜨지 않는 경우가 생길 수 있다.
   heat: { unit: "℃",  pick: (p) => p.tempC, key: "temp_c" },
 };
 

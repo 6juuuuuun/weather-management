@@ -193,4 +193,30 @@ describe("markExceeds — 시각마다의 초과 표시", () => {
     expect(out).toHaveLength(1);
     expect(out[0]!.at.toISOString()).toBe("2026-09-07T12:00:00.000Z"); // 21시 KST
   });
+
+  // findUpcoming의 "누적은 KST 자정에서 끊긴다"와 같은 불변식을 markExceeds
+  // 쪽에서도 지켜야 한다 — UTC로 끊으면 스트립이 자정 넘어 누적을 이어붙여
+  // 00시 칸을 잘못 칠한다. 배너는 이 값으로는 애초에 아무것도 내지 않는다.
+  it("누적은 KST 자정에서 끊긴다(markExceeds도 같다)", () => {
+    const out = markExceeds([
+      p("2026-09-07T23:00:00+09:00", { snoCm: 4 }),
+      p("2026-09-08T00:00:00+09:00", { snoCm: 4 }),   // 다른 날 → 누적 리셋
+    ], CRITERIA, ALL_ON);
+    expect(out).toEqual([]);
+  });
+
+  // findUpcoming의 "임계가 설정되지 않은 종류는 예고하지 않는다"와 같은 게이트다.
+  // 이 게이트가 없으면 임계 0을 매시간 초과로 보아 배너는 비었는데 스트립은
+  // 전부 칠해지는 모순이 생긴다.
+  it("임계가 설정되지 않은 종류는 표시하지 않는다", () => {
+    const bad: CriterionRow[] = [{ kind: "rain", grade: "watch", threshold: { rain_mm_per_hr: 0 } }];
+    expect(markExceeds([p("2026-09-07T10:00:00+09:00", { pcpMm: 5 })], bad, ALL_ON)).toEqual([]);
+  });
+
+  // findUpcoming의 "임계와 같은 값도 초과로 본다"와 같은 경계다. 여기서 어긋나면
+  // 배너는 주의보라 말하는데 스트립은 아무 칸도 칠하지 않는 모순이 생긴다.
+  it("임계와 같은 값도 초과로 본다(markExceeds도 같다)", () => {
+    const out = markExceeds([p("2026-09-07T10:00:00+09:00", { pcpMm: 20 })], CRITERIA, ALL_ON);
+    expect(out).toHaveLength(1);
+  });
 });
