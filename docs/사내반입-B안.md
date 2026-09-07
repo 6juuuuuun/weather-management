@@ -69,16 +69,48 @@ Gitea가 GitHub를 끌어오는 것과, **Docker가 Docker Hub·npm에 나가는
 | ❌ | ✅ | **B-1** — 코드만 넣으면 서버가 알아서 빌드합니다 |
 | ❌ | ❌ | **B-2** — 코드와 이미지를 함께 넣습니다 |
 
-확인 명령(서버에서):
+### 이게 왜 필요한지부터
+
+우리가 만든 것은 **설계도(코드)**입니다. 그것만으로는 돌지 않고, **남이 만든 부품**을
+가져와야 조립이 됩니다.
+
+| 가져올 곳 | 무엇을 | 비유 |
+|---|---|---|
+| GitHub | 우리가 쓴 코드 | 설계도 |
+| Docker Hub | 우분투 위에서 도는 Node·PostgreSQL 완제품 | 엔진·바퀴 같은 큰 부품 |
+| npm | 코드가 쓰는 라이브러리 수백 개 | 나사·볼트 |
+
+사내 서버는 보안 때문에 밖으로 못 나가는 경우가 많습니다. 그러면 설계도는 있는데
+부품이 없어 조립이 멈춥니다. **어디까지 나갈 수 있는지를 먼저 알아야** 어떤 방법으로
+넣을지 정해집니다 — 순서를 거꾸로 하면 헛수고가 됩니다.
+
+Gitea 미러가 되면 GitHub 줄은 신경 쓰지 않아도 됩니다(Gitea가 대신 가져다줍니다).
+**Docker Hub와 npm은 대신해 줄 것이 없습니다.**
+
+### 확인 명령 (사내 PC에서 서버에 접속한 뒤, 그대로 붙여넣기)
+
+결과를 한글로 말해 주도록 만들었습니다.
 
 ```bash
-for h in github.com registry-1.docker.io registry.npmjs.org; do
-  printf "%-24s " "$h"
-  curl -s -m 8 -o /dev/null -w "%{http_code}\n" "https://$h" || echo 000
+for h in registry-1.docker.io registry.npmjs.org github.com; do
+  code=$(curl -s -m 8 -o /dev/null -w "%{http_code}" "https://$h" 2>/dev/null || echo 000)
+  case "$h" in
+    registry-1.docker.io) n="Docker Hub — 프로그램 부품 상자";;
+    registry.npmjs.org)   n="npm — 코드 라이브러리";;
+    github.com)           n="GitHub — 우리 코드";;
+  esac
+  if [ "$code" = "000" ]; then echo "❌ 막힘    $n"; else echo "✅ 나감    $n  (응답 $code)"; fi
 done
 ```
 
-`000`이면 막힌 것입니다.
+**읽는 법**
+
+- `✅ 나감` — 닿았습니다. 괄호 안 숫자는 무엇이든(200·301·401·403) 상관없습니다.
+  "말을 걸었더니 대답이 왔다"는 뜻이고, 401은 "너 누구냐"고 되묻는 것이라
+  **연결은 된 것**입니다.
+- `❌ 막힘` — 대답이 없습니다. 방화벽이 막았거나 인터넷이 아예 없습니다.
+
+`curl: command not found`가 나오면 우분투에서 `sudo apt install -y curl` 후 다시 합니다.
 
 ---
 
@@ -149,11 +181,16 @@ git bundle create ~/weather-transfer/weather-update.bundle <지난커밋>..main
 uname -m
 ```
 
-- `x86_64` → 아래 `--platform linux/amd64` 그대로
+- `x86_64` → 아래 `--platform linux/amd64` 그대로 (대부분의 서버)
 - `aarch64` → `linux/arm64`로 바꿉니다
 
-**이것을 틀리면 이미지가 서버에서 아예 실행되지 않습니다.** 개발용 맥은 arm64라
-기본 빌드 결과가 서버(대개 x86_64)와 맞지 않습니다. 반드시 지정해야 합니다.
+**왜 중요한가:** 프로그램은 CPU 종류에 맞게 만들어져야 합니다. **엔진이 차체에
+맞지 않으면 아예 시동이 걸리지 않는 것**과 같아서, 조금 느리게 도는 정도가 아니라
+`exec format error`로 **실행 자체가 안 됩니다.**
+
+개발용 맥(Apple Silicon)은 `arm64`입니다. 아무 옵션 없이 빌드하면 arm64용이 나오고,
+그것은 x86_64 서버에서 돌지 않습니다. 그래서 서버의 `uname -m`을 먼저 보고
+`--platform`을 맞춰야 합니다.
 
 ### ① 사외망 PC에서 — 이미지 두 개를 파일로 만든다
 
