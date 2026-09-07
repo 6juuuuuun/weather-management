@@ -15,6 +15,7 @@ import { GRID_NX_MAX, GRID_NY_MAX, isValidGrid } from "../kmaGrid.ts";
 import { effectiveGuidelineSql } from "../guidelineContent.ts";
 import { KIND_LABEL_KO, thresholdUsable, type CriteriaKind } from "../criteriaFields.ts";
 import { REMIND_LIMIT } from "./remindTick.ts";
+import { FORECAST_STALE_HOURS } from "./forecastTick.ts";
 import type { NotificationChannel } from "../shared/channel.ts";
 
 /** 관측은 매시 1회다. 130분이면 최소 2회를 연속으로 놓친 상태다. */
@@ -34,7 +35,17 @@ export const LOG_ONLY_REASON = "SMS 발송 설정이 아직 없습니다 — 인
 /** 사유 문구용. shared/template.ts의 GRADE_LABEL과 같은 말이다. */
 const GRADE_LABEL_KO: Record<string, string> = { watch: "주의보", warning: "경보" };
 
-export type Health = { ok: boolean; reasons: string[] };
+/**
+ * `reasons`와 `warnings`는 뜻이 다르다.
+ *
+ *  - `reasons`  — **특보가 사람에게 못 간다.** 하나라도 있으면 503이다.
+ *  - `warnings` — 기능 하나가 죽었지만 발송은 살아 있다. **상태 코드를 바꾸지 않는다.**
+ *
+ * 예보 수집이 멈춘 것이 두 번째다. 사전 예고는 사라지지만 실제 특보는 그대로
+ * 난다. reasons에 넣으면 진짜 사유가 묻히고, 아무 데도 안 넣으면 멈춘 것을
+ * 아무도 모른다 — 이 프로젝트가 여섯 라운드 내내 고친 그 결함이다.
+ */
+export type Health = { ok: boolean; reasons: string[]; warnings: string[] };
 
 /** withService와 같은 모양의 트랜잭션 실행기. 테스트에서 "DB에 못 닿는 상태"를
  * 만들어 보기 위해서만 갈아 끼운다. */
@@ -50,6 +61,7 @@ export async function checkHealth(
   try {
     return await runner(async (q) => {
       const reasons: string[] = [];
+      const warnings: string[] = [];
 
       // "오래됐는가"의 계산을 Postgres 안에서 끝낸다. Node의 Date.now()로
       // 비교하면 컨테이너 시계와 DB 시계 두 개를 섞어 쓰는 셈이 된다 — 이
@@ -348,13 +360,33 @@ export async function checkHealth(
         );
       }
 
-      return { ok: reasons.length === 0, reasons };
+      // 예보 수집. reasons가 아니라 warnings다(위 타입 주석 참고).
+      // 낡음 판정은 Postgres 안에서 끝낸다 — 시계를 하나만 쓴다.
+      const { rows: fcstBeat } = await q.query(
+        `select coalesce(
+           (select now() - last_run_at > ($1 || ' hours')::interval
+              from heartbeats where name = 'forecast-tick'),
+           false
+         ) as stale`,
+        [String(FORECAST_STALE_HOURS)],
+      );
+      // 행이 아예 없으면(예보 기능을 아직 한 번도 안 돌린 배포) 경고하지 않는다.
+      // 관측과 달리 예보는 없어도 특보가 정상 동작하므로, 설치 직후부터
+      // 경고를 띄우면 새 배포가 항상 경고를 달고 시작한다.
+      if (fcstBeat[0]?.stale === true) {
+        warnings.push(
+          `예보를 ${FORECAST_STALE_HOURS}시간 넘게 받지 못했습니다 — 사전 예고가 뜨지 않습니다 ` +
+            `(특보 발송은 정상입니다)`,
+        );
+      }
+
+      return { ok: reasons.length === 0, reasons, warnings };
     });
   } catch (e) {
     // 앱은 살아 있는데 DB에 못 닿는 상태다. 여기서 예외를 그대로 흘리면
     // /api/health/deep이 500 "서버 오류가 발생했습니다"만 뱉고 운영자는
     // 무엇이 잘못됐는지 알 수 없다. 사유로 바꿔서 돌려준다.
-    return { ok: false, reasons: [`데이터베이스에 연결할 수 없습니다 (${String(e)})`] };
+    return { ok: false, reasons: [`데이터베이스에 연결할 수 없습니다 (${String(e)})`], warnings: [] };
   }
 }
 

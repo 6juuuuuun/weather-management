@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, afterEach, afterAll, vi } from "vites
 import request from "supertest";
 import { withService, type Querier } from "../src/db.ts";
 import { checkHealth, reportIfUnhealthy, COLLECT_STALE_MIN, MISSING_STREAK } from "../src/jobs/watchdog.ts";
+import { FORECAST_STALE_HOURS } from "../src/jobs/forecastTick.ts";
 import type { NotificationChannel } from "../src/shared/channel.ts";
 // 25번째 경로(실효 채널이 로그 전용)를 재현하려면 그 채널 객체가 필요하다.
 import { LogOnlyChannel } from "../src/shared/sms.ts";
@@ -617,6 +618,66 @@ describe("문제가 있으면 알린다", () => {
     expect(sent).toHaveLength(0);
     // 조용히 지나가면 안 된다 — 알릴 대상이 없다는 사실이 로그에 남아야 한다.
     expect(errors).toMatch(/알릴 대상이 없습니다/);
+  });
+
+  // 예보 수집(forecastTick)이 멈춘 것은 "특보가 못 나간다"가 아니다 — 사전 예고만
+  // 사라지고 실제 특보는 그대로 뜬다. 같은 칸(reasons)에 넣으면 진짜 사유가 묻히고,
+  // 아무 데도 안 넣으면 멈춘 것을 아무도 모른다. 그래서 warnings로 따로 잡는다.
+  //
+  // makeRecipient()·ensureGuideline()을 그대로 쓸 수 있도록 이 describe 안에
+  // 중첩한다 — 마지막 테스트(워치독 문자)가 그 둘을 필요로 한다.
+  describe("예보 수집 중단은 warnings이지 reasons가 아니다", () => {
+    beforeEach(async () => {
+      await withService(async (q) => {
+        await q.query("delete from heartbeats where name = 'forecast-tick'");
+        await q.query("delete from weather_forecasts");
+      });
+    });
+
+    it("예보를 6시간 넘게 못 받았으면 warnings에 오른다", async () => {
+      await withService((q) =>
+        q.query(`insert into heartbeats (name, last_run_at, ok)
+                 values ('forecast-tick', now() - interval '7 hours', true)`));
+      const h = await health();
+      expect(h.warnings.some((w) => /예보/.test(w))).toBe(true);
+    });
+
+    // **가장 중요한 줄.** warnings가 503을 만들면 예보(표시 기능)가 죽었다는
+    // 이유로 "특보가 못 나간다"는 신호가 켜진다. 운영자가 잘못 읽는다.
+    it("warnings는 reasons에 섞이지 않고 상태를 바꾸지 않는다", async () => {
+      await withService((q) =>
+        q.query(`insert into heartbeats (name, last_run_at, ok)
+                 values ('forecast-tick', now() - interval '7 hours', true)`));
+      const h = await health();
+      expect(h.reasons.some((r) => /예보/.test(r))).toBe(false);
+    });
+
+    it("방금 받았으면 warnings가 비어 있다", async () => {
+      await withService((q) =>
+        q.query(`insert into heartbeats (name, last_run_at, ok) values ('forecast-tick', now(), true)`));
+      const h = await health();
+      expect(h.warnings.some((w) => /예보/.test(w))).toBe(false);
+    });
+
+    it("기준은 forecastTick의 상수 하나를 쓴다", async () => {
+      await withService((q) =>
+        q.query(`insert into heartbeats (name, last_run_at, ok)
+                 values ('forecast-tick', now() - interval '${FORECAST_STALE_HOURS - 1} hours', true)`));
+      expect((await health()).warnings.some((w) => /예보/.test(w))).toBe(false);
+    });
+
+    // 워치독 문자는 "아무에게도 못 간다"를 알리는 자리다. 여기에 표시 기능의
+    // 경고까지 섞으면 사람이 곧 전체를 무시하기 시작한다.
+    it("워치독 문자에는 warnings를 싣지 않는다", async () => {
+      await makeRecipient();
+      await ensureGuideline();
+      await withService((q) =>
+        q.query(`insert into heartbeats (name, last_run_at, ok)
+                 values ('forecast-tick', now() - interval '7 hours', true)`));
+      const { sent, channel } = recorder();
+      await reportIfUnhealthy({ channel });
+      for (const s of sent) expect(s.text).not.toMatch(/예보/);
+    });
   });
 });
 
