@@ -73,6 +73,9 @@ export async function runForecastTick(
     return fetched.rows.length;
   });
 
-  await upsertHeartbeat("forecast-tick", true, null);
+  // HTTP는 성공(resultCode "00")했지만 items가 비어 온 경우가 있다(키 만료,
+  // 관측소 점검 — observation 쪽 watchdog.ts:98-101이 이미 같은 부류를 본다).
+  // saved:0인데 ok:true로 남기면 이 실패가 어디에도 보이지 않는다.
+  await upsertHeartbeat("forecast-tick", saved > 0, saved === 0 ? "예보 응답이 비어 있습니다" : null);
   return { ok: true, saved, note: null };
 }

@@ -107,4 +107,19 @@ describe("runForecastTick", () => {
   it("낡음 기준은 6시간이다", () => {
     expect(FORECAST_STALE_HOURS).toBe(6);
   });
+
+  // I1: HTTP는 성공(resultCode "00")했지만 items가 비어 오면 saved:0이다.
+  // 이걸 ok:true로 기록하면 이 실패가 heartbeat 어디에도 남지 않는다 —
+  // observation 쪽 watchdog.ts:98-101에는 있는 안전망이 예보 쪽에는 없었다.
+  it("성공했지만 빈 응답이면 heartbeat를 실패로 남긴다", async () => {
+    const out = await runForecastTick({
+      now: NOW,
+      fetchFn: fakeKma([]) as unknown as typeof fetch,
+    });
+    expect(out.saved).toBe(0);
+    const beat = await withService(async (q) =>
+      (await q.query("select ok, note from heartbeats where name = 'forecast-tick'")).rows[0]);
+    expect(beat.ok).toBe(false);
+    expect(beat.note).toMatch(/비어/);
+  });
 });
