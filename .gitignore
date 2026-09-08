@@ -11,3 +11,13 @@ apps/web/dist/
 
 # SDD 작업용 격리 워크트리. 저장소에 들어가면 안 된다.
 .worktrees/
+
+# Pencil 디자인 원본(.pen). 파일 안에 fileToken(디자인 파일 접근용 값)이 들어 있어
+# 저장소에 두면 비밀값 스캐너(gitleaks)가 매번 잡는다. 디자인 작업이 끝나 더 이상
+# 필요하지 않으므로 저장소에서 뺐다.
+#
+# 화면의 기준은 design/previews/*.png 다 — 그 이미지들은 추적하고, CSS 주석이
+# 그것을 근거로 인용한다(예: Dashboard.css 첫 줄). 디자인을 다시 손대야 하면
+# 마지막으로 추적된 판을 이력에서 꺼낼 수 있다:
+#   git show 60fbbf2:design/weather-management.pen > design/weather-management.pen
+*.pen
