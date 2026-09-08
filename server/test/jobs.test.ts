@@ -1366,8 +1366,11 @@ describe("POST /api/send — 권한", () => {
     expect(s.message.status).toBe("approved");
     expect(s.dispatches).toEqual([{ repeat_no: 1, is_test: false }]);
     // 실제로 부서 수신자에게 나갔는지 — 관측 줄까지 붙어야 한다(스펙 결정 11).
+    // 로그에는 **가린 번호**가 남는다(phone.ts의 maskPhone). 앞 3자리와 뒤 4자리가
+    // 남으므로 "그 수신자에게 나갔다"는 이 검증은 그대로 성립한다.
     const text = log.mock.calls.map((c) => String(c[0])).join("\n");
-    expect(text).toContain("010-0000-0011");
+    expect(text).toContain("010-****-0011");
+    expect(text).not.toContain("010-0000-0011");
     expect(text).toContain("수건 2개 배포");
     expect(text).toContain("시간당 32.5mm");
   });

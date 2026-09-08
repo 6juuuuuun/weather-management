@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterAll } from "vitest";
 import request from "supertest";
 import { app } from "../src/index.ts";
 import { withService } from "../src/db.ts";
-import { normalizePhone } from "../src/phone.ts";
+import { normalizePhone, maskPhone } from "../src/phone.ts";
 
 // employees.phone을 채우는 쓰기 경로는 셋이고(가입 · 사전 등록 · 직원 수정),
 // 이 파일은 **그 셋을 한자리에서** 본다. 이 저장소는 "한 경로에만 걸린 규칙"으로
@@ -243,6 +243,40 @@ describe("세 쓰기 경로가 같은 규칙을 쓴다", () => {
         want,
       ]);
       n += 1;
+    }
+  });
+});
+
+describe("maskPhone — 기록에는 가린 번호만 남긴다", () => {
+  it("가운데를 가리고 앞뒤는 남긴다", () => {
+    expect(maskPhone("010-1234-5678")).toBe("010-****-5678");
+  });
+
+  it("하이픈이 없어도 정규형으로 맞춘 뒤 가린다", () => {
+    expect(maskPhone("01012345678")).toBe("010-****-5678");
+  });
+
+  it("10자리 번호도 자릿수에 맞게 가린다", () => {
+    expect(maskPhone("011-234-5678")).toBe("011-***-5678");
+  });
+
+  it("빈 값은 '번호 없음'이다", () => {
+    expect(maskPhone(null)).toBe("(번호 없음)");
+    expect(maskPhone("")).toBe("(번호 없음)");
+  });
+
+  // 무엇이 들어 있는지 모르는 값은 일부라도 흘리지 않는다.
+  it("형식이 어긋난 값은 통째로 가린다", () => {
+    expect(maskPhone("02-123-4567")).toBe("***");
+    expect(maskPhone("abc")).toBe("***");
+    expect(maskPhone(12345678901)).toBe("***");
+  });
+
+  // **가장 중요한 줄.** 어떤 입력에도 가운데 네 자리가 그대로 남으면 안 된다.
+  it("원본 숫자 전체가 결과에 남지 않는다", () => {
+    for (const raw of ["010-1234-5678", "01098765432", "011-234-5678"]) {
+      const digits = raw.replace(/\D/g, "");
+      expect(maskPhone(raw)).not.toContain(digits);
     }
   });
 });

@@ -176,7 +176,21 @@ describe("로그 전용 채널", () => {
     log.mockRestore();
     expect(r.ok).toBe(true);
     expect(printed).toContain("[log-channel]");
-    expect(printed).toContain("010-1234-5678");
+    expect(printed).toContain("본문");
+  });
+
+  // **번호를 그대로 찍지 않는다.** 이 채널이 도는 동안 docker logs에 수신자
+  // 번호가 통째로 쌓이고, 로그는 장애 조사 때 복사돼 돌아다니고 백업·모니터링으로
+  // 흘러간다. 어느 번호였는지 구분할 수 있으면 조사에는 충분하다.
+  // 예전에는 이 테스트가 원본이 **찍히는 것**을 고정하고 있었다.
+  it("수신 번호를 가려서 남긴다", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await new LogOnlyChannel().send("010-1234-5678", "본문");
+    const printed = log.mock.calls.map((c) => String(c[0])).join("\n");
+    log.mockRestore();
+    expect(printed).toContain("010-****-5678");
+    expect(printed).not.toContain("010-1234-5678");
+    expect(printed).not.toContain("1234");
   });
 
   // 이름이 "log"인 것이 **지표의 근거**다. 이름을 바꾸면 /api/health/deep이 조용히

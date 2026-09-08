@@ -94,6 +94,28 @@ export function isSendablePhone(raw: unknown): boolean {
 }
 
 /**
+ * 로그·화면에 남길 때 쓰는 가린 형태. `010-1234-5678` → `010-****-5678`.
+ *
+ * **왜 필요한가:** 문자 발송이 아직 로그로만 나가는 동안 `docker logs`에 수신자
+ * 번호가 그대로 쌓인다. 로그는 장애 조사 때 복사돼 돌아다니고, 백업·모니터링으로
+ * 흘러가며, 지워야 할 곳이 늘어난다. 발송 자체에는 원본이 필요하지만 **기록에는
+ * 필요 없다** — 어느 번호였는지 구분할 수 있으면 조사에는 충분하다.
+ *
+ * 가리는 자리를 가운데로 잡은 이유: 앞 3자리(통신사 대역)와 뒤 4자리가 남아야
+ * "이 사람이 맞나"를 확인할 수 있고, 그 둘만으로는 번호를 복원할 수 없다.
+ *
+ * 형식이 어긋난 값은 통째로 가린다 — 무엇이 들어 있는지 모르는 값을 일부라도
+ * 흘리지 않는다.
+ */
+export function maskPhone(raw: unknown): string {
+  const r = normalizePhone(raw);
+  if (!r.ok) return "***";
+  if (r.phone === null) return "(번호 없음)";
+  const parts = r.phone.split("-");
+  return `${parts[0]}-${"*".repeat(parts[1]!.length)}-${parts[2]}`;
+}
+
+/**
  * 위 판정과 같은 뜻의 SQL 조건. `col`은 전화번호 컬럼의 정규화된 참조
  * (`"e.phone"`처럼 **코드에 적힌 식별자**만 넣는다 — 사용자 입력이 아니다).
  *

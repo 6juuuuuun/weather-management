@@ -245,8 +245,12 @@ if [ ! -f "$ENV_FILE" ]; then
   env_set APP_BASE_URL "$APP_BASE_URL"
   env_set ALLOWED_EMAIL_DOMAINS "$ALLOWED_EMAIL_DOMAINS"
   env_set COMPOSE_PROJECT_NAME "$PROJECT"
-  ok ".env 를 만들었습니다 (비밀번호 3개 자동 생성, 권한 600)"
-  warn "이 파일이 사라지면 데이터베이스에 다시 접속할 수 없습니다. 안전한 곳에 한 부 복사해 두세요."
+  # 백업 암호화 비밀번호도 여기서 만든다. 사람이 나중에 "보안 조치"로 켜기를
+  # 기다리면 대개 안 켜지고, 그 사이 백업 파일이 평문으로 서버 밖에 쌓인다.
+  env_set BACKUP_PASSPHRASE "$(openssl rand -hex 24)"
+  ok ".env 를 만들었습니다 (비밀번호 4개 자동 생성, 권한 600)"
+  warn "이 파일이 사라지면 데이터베이스에 다시 접속할 수 없고, **백업도 열 수 없습니다.**"
+  warn "안전한 곳에 한 부 복사해 두세요 (비밀번호 관리도구 권장)."
 else
   ok ".env 가 이미 있습니다 — 덮어쓰지 않고 검사만 합니다"
 fi

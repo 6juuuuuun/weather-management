@@ -16,16 +16,20 @@
 #   3) 꼭 있어야 할 테이블이 담겼는가 — 위 실패는 뒤쪽 테이블부터 사라진다
 set -eu
 
+cd "$(dirname "$0")/.."
+. "$(dirname "$0")/_crypt.sh"
+
 FILE="${1:?검사할 백업 파일 경로를 넘기세요 (예: ./ops/verify-backup.sh /backup/weather/weather-*.sql.gz)}"
 [ -f "$FILE" ] || { echo "그런 파일이 없습니다: $FILE" >&2; exit 1; }
 
 fail() { echo "❌ 못 쓰는 백업입니다: $FILE" >&2; echo "   $1" >&2; exit 1; }
 
 # 1) gzip 온전성
-gzip -t "$FILE" 2>/dev/null || fail "파일이 손상됐습니다(gzip 검사 실패). 다시 백업하세요."
+# 암호화된 백업(.gpg)이면 먼저 푼 뒤 검사한다 — 세 검사 전부 crypt_stream을 지난다.
+crypt_stream "$FILE" | gzip -t 2>/dev/null || fail "파일이 손상됐습니다(gzip 검사 실패). 다시 백업하세요."
 
 # 2) 완료 표지. pg_dump는 정상 종료할 때만 이 줄을 마지막에 쓴다.
-if ! gunzip -c "$FILE" | tail -20 | grep -q "PostgreSQL database dump complete"; then
+if ! crypt_stream "$FILE" | gunzip -c | tail -20 | grep -q "PostgreSQL database dump complete"; then
   fail "덤프가 중간에 끊겼습니다(완료 표지가 없습니다). 이 파일로 복구하면 데이터가 사라집니다."
 fi
 
@@ -40,7 +44,7 @@ fi
 #    스키마에서 표 이름이 바뀌면 이 목록도 함께 고쳐야 한다(그럴 때 이 검사가
 #    "테이블이 빠졌습니다"로 시끄럽게 실패하므로 놓치지 않는다).
 #    ops/migrate.sh의 BASELINE도 같은 이유로 손으로 적은 고정 목록이다.
-DUMPED=$(gunzip -c "$FILE" | grep '^COPY public\.' || true)
+DUMPED=$(crypt_stream "$FILE" | gunzip -c | grep '^COPY public\.' || true)
 MISSING=""
 for t in departments employees weather_criteria weather_observations; do
   echo "$DUMPED" | grep -q "^COPY public\.$t " || MISSING="$MISSING $t"

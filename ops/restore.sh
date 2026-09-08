@@ -10,6 +10,7 @@ FILE="${1:?복구할 파일 경로를 넘기세요 (예: ./ops/restore.sh /backu
 [ -f "$FILE" ] || { echo "그런 파일이 없습니다: $FILE" >&2; exit 1; }
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/_crypt.sh"
 
 # 덮어쓰기 전에 백업 파일부터 검사한다. 중간에 끊긴 덤프로 복구하면
 # 데이터베이스가 비고 앱이 뜨지 않는데, 그때는 되돌릴 원본이 이미 없다.
@@ -30,7 +31,7 @@ docker compose stop app >/dev/null 2>&1 || true
 echo "복구 중..."
 # -o /dev/null: 덤프 안의 set_config/setval 결과 표가 화면을 가득 채우는 것을 막는다.
 # 오류는 표준오류로 나오므로 그대로 보인다.
-gunzip -c "$FILE" | docker compose exec -T postgres psql -U postgres -d weather -v ON_ERROR_STOP=1 -q -o /dev/null
+crypt_stream "$FILE" | gunzip -c | docker compose exec -T postgres psql -U postgres -d weather -v ON_ERROR_STOP=1 -q -o /dev/null
 
 echo "앱을 다시 띄웁니다..."
 docker compose start app >/dev/null

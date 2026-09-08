@@ -28,6 +28,7 @@
 // │   `docker-compose.yml`의 `SMS_` 항목에 자리만 만들어 두었다.               │
 // └──────────────────────────────────────────────────────────────────────────┘
 import type { NotificationChannel } from "./channel.ts";
+import { maskPhone } from "../phone.ts";
 export type { NotificationChannel };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -134,7 +135,10 @@ export const LMS_CONTENT_BUDGET_BYTES = LMS_MAX_BYTES - 400;
 export class LogOnlyChannel implements NotificationChannel {
   readonly name = "log";
   async send(to: string, text: string) {
-    console.log(`[log-channel] to=${to}\n${text}`);
+    // **번호를 그대로 찍지 않는다.** 이 채널이 도는 동안 docker logs에 수신자
+    // 번호가 통째로 쌓이고, 로그는 장애 조사 때 복사돼 돌아다닌다. 발송에는
+    // 원본이 필요하지만 기록에는 가린 형태로 충분하다(phone.ts의 maskPhone).
+    console.log(`[log-channel] to=${maskPhone(to)}\n${text}`);
     return { ok: true };
   }
 }

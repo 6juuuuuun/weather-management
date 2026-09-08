@@ -17,6 +17,7 @@ set -eu
 # 저장소 루트에서 실행한다 — docker compose가 docker-compose.yml을 찾아야 한다.
 cd "$(dirname "$0")/.."
 HERE="$(pwd)"
+. "$HERE/ops/_crypt.sh"
 
 # 초까지 넣는다. 분 단위였을 때는 같은 분에 두 번 돌리면 앞 파일이 조용히
 # 덮였다(크론은 하루 1회라 실무 영향은 작지만, 손으로 두 번 돌리는 일은 흔하다).
@@ -27,7 +28,7 @@ OUT="$BACKUP_DIR/weather-${STAMP}.sql.gz"
 TMP="$OUT.$$.partial"
 RC="$TMP.rc"
 
-cleanup() { rm -f "$TMP" "$RC"; }
+cleanup() { rm -f "$TMP" "$TMP.enc" "$RC"; }
 
 # 신호로 끊겨도(서버 재부팅, docker stop, 운영자의 Ctrl+C) 임시 파일을 남기지 않는다.
 # trap이 없던 동안에는 수십 MB짜리 .partial이 백업 디스크에 계속 쌓였다 — 정리
@@ -84,6 +85,19 @@ if ! "$HERE/ops/verify-backup.sh" "$TMP" >/dev/null 2>&1; then
   "$HERE/ops/verify-backup.sh" "$TMP" >&2 || true
   cleanup
   exit 1
+fi
+
+# 검사를 전부 통과한 뒤에 암호화한다 — 검사는 평문 gz를 읽어야 하고,
+# 암호화가 실패하면 백업이 없는 것으로 끝나야 한다(반쯤 된 파일을 남기지 않는다).
+if crypt_enabled; then
+  OUT="$OUT.enc"
+  if ! crypt_encrypt_file "$TMP" "$TMP.enc"; then
+    rm -f "$TMP.enc"
+    echo "백업 실패: 암호화에 실패했습니다(gpg)." >&2
+    cleanup
+    exit 1
+  fi
+  TMP="$TMP.enc"
 fi
 
 mv "$TMP" "$OUT"
