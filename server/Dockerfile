@@ -20,6 +20,11 @@ WORKDIR /app
 RUN apk add --no-cache tzdata
 ENV TZ=Asia/Seoul
 
+# 베이스 이미지에 남아 있는 OS 패키지 보안 수정을 당겨 온다. node:22-alpine 태그는
+# 다시 만들어질 때까지 그때의 alpine 패키지를 그대로 들고 있어서, 그 사이에 나온
+# libssl/libcrypto 같은 수정이 빠진 채로 굳는다(trivy가 정확히 그것을 잡는다).
+RUN apk upgrade --no-cache
+
 COPY server/package.json server/package-lock.json ./
 RUN npm ci --omit=dev
 COPY server/src ./src
@@ -27,6 +32,14 @@ COPY --from=web /build/apps/web/dist ./public
 
 ENV NODE_ENV=production WEB_ROOT=/app/public
 # 이미지 안에서 굳이 root로 돌 이유가 없다. node:22-alpine에 이미 있는 계정이다.
+# **npm을 지운다.** 이 컨테이너는 `node src/index.ts`로 뜨고 npm을 한 번도 부르지
+# 않는다(아래 CMD). 그런데 node:22-alpine에는 npm이 통째로 들어 있고, 그 안의
+# tar·pacote·sigstore·brace-expansion 같은 패키지가 취약점 스캐너에 그대로 잡힌다 —
+# 실제로 trivy 결과 13건 중 11건이 전부 이 npm 번들이었고, **우리 앱 의존성에서
+# 나온 것은 0건**이었다. 쓰지도 않는 코드가 만드는 공격면이므로 이미지에서 뺀다.
+# 의존성 설치는 위 빌드 단계에서 이미 끝났다.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 USER node
 EXPOSE 3000
 
